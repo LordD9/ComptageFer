@@ -8,7 +8,7 @@ Outil collaboratif pour compter la fréquentation des TER en France, puis rendre
 
 **Dépôt :** https://github.com/LordD9/ComptageFer — licence du code : GPL-3.0.
 
-**Décision d'architecture :** un seul processus Python, deux fichiers SQLite, pages statiques servies par ce processus. Aucun service managé. Le même artefact se déploie sur un VPS, un Raspberry Pi, Coolify, ou n'importe quel hébergeur qui sait lancer un conteneur ou une commande.
+**Décision d'architecture :** un seul processus Python, deux fichiers SQLite, pages statiques servies par ce processus. Aucun service managé. Le déploiement, c'est un conteneur : `docker compose up`, un volume pour les bases. Pas de second mode d'installation.
 
 ---
 
@@ -49,7 +49,7 @@ L'export des données brutes, lui, arrive tôt. C'est le retour dû aux gens qui
 
 ## 3. Principes
 
-- **Simple à poser n'importe où.** Un processus, une base fichier, pas de base managée obligatoire. Pas de runtime propre à un hébergeur.
+- **Simple à poser.** Un conteneur, une base fichier, pas de base managée. La commande est la même partout où Docker tourne.
 - **Le téléphone dans le train est le client principal.** Grandes zones tactiles, peu d'étapes, une saisie qui ne se perd pas si le réseau coupe.
 - **Brut avant estimé.** Pas de chiffre annuel tant que la règle d'extrapolation n'est pas écrite et affichée à côté du chiffre.
 - **Anonyme par défaut.** Pas de compte pour contribuer. Un identifiant local permet de retrouver ses saisies, pas d'identifier une personne.
@@ -75,21 +75,23 @@ Rien d'autre. Pas de Postgres, pas de Redis, pas de file de messages, pas de fro
 
 ### Pourquoi ce choix
 
-La contrainte est de déployer la même chose quel que soit l'hébergeur. Donc : un artefact, des fichiers, des variables d'environnement.
+La contrainte est de déployer la même chose quel que soit l'hébergeur. Donc un artefact, pas une procédure par machine.
+
+Le déploiement est Docker Compose. Une commande, un conteneur, un volume `data/`. Ça ne complique pas : c'est ce qui évite de documenter un virtualenv, une unité systemd et un PaaS en parallèle. Trois notices, c'est trois façons de se tromper. Une seule, testée, suffit.
+
+Docker compliquerait les choses s'il embarquait une base à part, un Redis, un worker. Ici il n'embarque que le processus. SQLite est un fichier dans le volume. Oublier le volume est le seul piège, et le `compose.yaml` le monte par défaut.
+
+L'hôte doit savoir lancer un conteneur. VPS, Raspberry Pi, Coolify, NAS, PaaS conteneur : même commande. Un mutualisé sans Docker n'est pas une cible. Un import GTFS et une carte n'y tiendraient pas de toute façon.
 
 | Option écartée | Raison |
 | --- | --- |
 | Next.js + Postgres managé (Vercel, Supabase, Firebase) | Deux runtimes, base à part, lié à un hébergeur. |
+| Docker + Postgres | Un second conteneur pour une charge qui tient dans un fichier. |
 | Microservices | Pas assez de charge, pas assez d'équipes. |
 | Application native | Un store de plus, deux codebases. Le web mobile suffit. |
 | PHP + SQLite | Très portable sur mutualisé, mais le GTFS et les calculs seront en Python. Inutile de couper en deux. |
 | PocketBase seul | Pratique pour du CRUD, gênant dès que le rapprochement GTFS devient le cœur du métier. |
-
-Trois façons de lancer le même code :
-
-1. `docker compose up` — un conteneur, un volume `data/`.
-2. Un virtualenv et une unité systemd, sans Docker.
-3. Un PaaS qui lance une image ou la commande du serveur.
+| Notice systemd en plus de Docker | Une seconde procédure qu'on ne testera pas. |
 
 La configuration tient dans l'environnement : chemin des bases, jeton d'admin le moment venu, URL publique. Pas de fichier de config propre à un hébergeur.
 
@@ -208,7 +210,7 @@ Fichiers :
 - création du schéma `app.db` au démarrage
 - `Dockerfile`, `compose.yaml`, volume `./data`
 - `.gitignore` pour `data/`, `.env`, `.venv/`
-- notice de déploiement dans le README : Docker, et venv + systemd
+- notice de déploiement dans le README : `docker compose up`, et rien d'autre
 
 Vérification : sur une machine neuve, `docker compose up` répond sur le port annoncé, et `data/app.db` survit à un redémarrage.
 
@@ -292,7 +294,7 @@ Cette phase peut passer avant la carte si le terrain le demande. Voir la questio
 3. Confirmer : le dépôt public reste sans marque institutionnelle.
 4. Confirmer : la v1 s'arrête au GTFS national SNCF. Cars TER SNCF inclus, cars d'AOM et opérateurs non SNCF exclus.
 5. Confirmer : Licence Ouverte 2.0 pour les comptages exportés.
-6. Un hébergeur est-il déjà visé ? L'architecture n'en dépend pas. Le pas à pas de la phase 1, si.
+6. Fermée. Le déploiement est `docker compose up`. L'hébergeur est celui qui lance un conteneur. Pas de notice systemd.
 
 ## 9. Ce qui n'est pas une promesse
 
