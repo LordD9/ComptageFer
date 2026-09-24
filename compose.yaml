@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      COMPTAGEFER_DATA: /data
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+    volumes:
+      - ./data:/data
