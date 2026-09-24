@@ -26,18 +26,18 @@ Ce dépôt est un projet personnel. Il ne porte pas la marque d'un établissemen
 
 ### Contribuer
 
-Le cas d'usage est un téléphone, dans un train, souvent avec un réseau médiocre.
+Le cas d'usage est un téléphone, dans un train, souvent avec un réseau médiocre. La saisie part d'une origine et d'une destination. La carte vient après, pour lire les résultats.
 
 1. J'ouvre l'application. Si je l'autorise, la position propose la gare la plus proche, puis elle est oubliée. Sinon je cherche mon origine.
-2. Je donne ma destination. L'outil cherche les circulations qui desservent cette origine-destination autour de maintenant.
-3. Il propose la circulation en cours, déjà corrigée par le temps réel : heure, retard, suppression. Il montre aussi le train précédent et le train suivant sur la même origine-destination, avec leur état. Je confirme d'un geste. Si ce n'est pas le bon, j'en choisis un autre dans la liste. Je ne repars pas d'un formulaire vide.
-4. Si aucune circulation ne correspond, je signale une offre manquante. Je ne l'invente pas dans le référentiel.
-5. Je compte. Le retard, l'heure et la suppression du train précédent ne se tapent pas.
+2. Je donne ma destination.
+3. L'outil liste les circulations qui desservent cette origine-destination, sur une plage de 4 heures centrée sur maintenant : les deux heures passées, les deux heures à venir. Chaque ligne montre l'horaire théorique, et l'état temps réel quand on l'a (retard, suppression). Je sélectionne mon train. S'il n'y est pas, je signale une offre manquante. Je ne l'invente pas dans le référentiel.
+4. Je passe au formulaire. Le retard, l'heure et la suppression ne se tapent pas.
    - **Comptage unique.** Une interstation (les deux arrêts qui l'encadrent), un effectif, et trois indicateurs approximatifs : part de gens debout, part de places assises restantes, écart de charge entre la partie la plus chargée et la moins chargée.
    - **Serpent de charge.** Je monte, je compte une fois les portes fermées, puis à chaque arrêt j'indique montées et descentes jusqu'à ma descente. Les indicateurs du mode unique sont optionnels sur chaque interstation. Compter sa propre descente est optionnel.
+5. Pseudo, si je veux. Facultatif. Pas un compte.
 6. En quittant, j'indique un pourcentage de fiabilité. Commentaire et modèle de véhicule seulement si j'ai quelque chose à ajouter.
 
-Au moment de la confirmation, l'outil fige l'état des trois circulations. C'est cette photo qui voyage avec le comptage. On ne relit pas le flux plus tard pour reconstituer le contexte : il ne le contient plus.
+À la sélection, l'outil fige l'état du train choisi, du précédent et du suivant sur la même origine-destination. C'est cette photo qui voyage avec le comptage. On ne relit pas le flux plus tard pour reconstituer le contexte : il ne le contient plus.
 
 ### Lire
 
@@ -54,10 +54,11 @@ L'export des données brutes, lui, arrive tôt. C'est le retour dû aux gens qui
 - **Simple à poser.** Un conteneur, une base fichier, pas de base managée. La commande est la même partout où Docker tourne.
 - **Le téléphone dans le train est le client principal.** Grandes zones tactiles, peu d'étapes. On saisit le compte, pas le contexte que le flux connaît déjà.
 - **Brut avant estimé.** Pas de chiffre annuel tant que la règle d'extrapolation n'est pas écrite et affichée à côté du chiffre. Une suppression du train précédent est un fait conservé, pas un effectif qu'on réécrit.
-- **Anonyme par défaut.** Pas de compte pour contribuer. Un identifiant local permet de retrouver ses saisies, pas d'identifier une personne.
+- **Anonyme par défaut.** Pas de compte pour contribuer. Un pseudo facultatif peut signer un comptage. Il n'identifie personne, et il n'ouvre aucun droit.
 - **L'offre vient du GTFS, le contexte du temps réel, les comptages des gens.** On ne mélange pas les trois. Une circulation absente est un signalement, pas une ligne créée à la main.
 - **Pas de trace GPS.** La position peut proposer l'arrêt le plus proche. Elle n'est pas enregistrée.
-- **Les comptages exportés sont des données ouvertes**, sous une licence de données distincte du code. Proposition : Licence Ouverte 2.0. Le code reste en GPL-3.0.
+- **Les comptages partagés sont en Licence Ouverte 2.0.** Le code reste en GPL-3.0. Les deux licences ne se mélangent pas.
+- **Pas de marque institutionnelle**, pour le moment. Le dépôt est personnel.
 - **Un effectif saisi n'est pas une fréquentation officielle.** Chaque écran de résultat le dit.
 
 ## 4. Architecture
@@ -130,7 +131,15 @@ Sources, sur le même jeu SNCF :
 
 Le flux Trip Updates est une photo des trains qui circulent dans les 60 prochaines minutes, rafraîchie toutes les 2 minutes. Il n'a pas d'historique. Un train déjà parti en sort. Une suppression d'il y a deux heures n'y est plus.
 
-Conséquence : le processus interroge le flux toutes les 2 minutes et garde 6 heures dans `rt.db`, puis efface. Au moment où l'utilisateur confirme sa circulation, on copie trois lignes dans `app.db` : la sienne, la précédente, la suivante. Cette copie survit à l'effacement du cache. Si l'application était éteinte, ou si le flux est vide, l'état est `inconnu`. On ne l'invente pas, et le comptage n'est pas bloqué : on retombe sur le GTFS théorique.
+La liste de saisie couvre 4 heures, centrées sur maintenant : deux heures avant, deux heures après. Le flux, lui, ne décrit que les trains des 60 prochaines minutes. Les deux ne coïncident pas.
+
+- L'heure à venir au-delà de 60 minutes vient du GTFS théorique. Le retard n'est pas encore connu.
+- Les deux heures passées viennent du cache, si le processus tournait. Sinon l'horaire théorique s'affiche, état `inconnu`.
+- On ne cache pas pour faire joli. Sans ces 6 heures de cache, la moitié gauche de la liste n'aurait aucun temps réel.
+
+Le processus interroge le flux toutes les 2 minutes et garde 6 heures dans `rt.db`, puis efface.
+
+À la sélection, on copie trois lignes dans `app.db` : le train choisi, le précédent, le suivant, sur la même origine-destination. Cette copie survit à l'effacement du cache. Si le flux ne sait pas, l'état est `inconnu`. On ne l'invente pas, et le comptage n'est pas bloqué.
 
 Même origine-destination veut dire : le train immédiatement précédent et le train immédiatement suivant qui desservent les deux arrêts du voyageur. C'est l'unité utile pour un report de charge. Si aucun voisin ne dessert les deux arrêts, on prend le voisin sur la même ligne au départ de l'origine, et on le marque comme correspondance faible.
 
@@ -160,14 +169,16 @@ data/            # volume, hors git
   app.db         # comptages + photo du contexte
   gtfs.db        # offre théorique, jetable
   rt.db          # cache temps réel, quelques heures, jetable
-.env             # hors git
+.env             # hors git, contient ADMIN_TOKEN
 Dockerfile
-compose.yaml
+compose.yaml     # déclare ADMIN_TOKEN, ne contient pas sa valeur
 ```
+
+Celui qui lance le conteneur définit `ADMIN_TOKEN` dans `.env`, lu par Compose. Ce jeton est l'administration : masquer une saisie, rien de plus. Il n'est pas dans l'image, ni dans git. Pas de compte administrateur.
 
 ## 5. Modèle
 
-Deux bases, pour pouvoir jeter l'offre sans toucher aux comptages.
+Trois fichiers, pour pouvoir jeter l'offre ou le cache sans toucher aux comptages.
 
 ### Offre (`gtfs.db`, jetable)
 
@@ -184,6 +195,7 @@ Les heures GTFS peuvent dépasser 24:00. La date de service n'est pas toujours l
 - `id` et `client_id`. Le `client_id` est un UUID créé dans le navigateur avant l'envoi. Il rend l'envoi idempotent : un réessai après un tunnel ne crée pas un doublon. On le pose dès la première saisie, pas à la phase hors-ligne.
 - mode : `unique` ou `serpent`
 - jeton contributeur anonyme, généré dans le navigateur
+- pseudo, facultatif, texte libre court. Pas un compte, pas un droit.
 - date de service, heure de départ, heure d'arrivée prévue, copiées de la circulation confirmée, pas tapées
 - origine et destination du voyageur, qui ne sont pas forcément celles du train
 - circulation confirmée (`trip_id`, `route_id`), sinon rien
@@ -219,7 +231,7 @@ On ne stocke pas de position GPS.
 - Géométrie réelle des lignes.
 - Archivage permanent de tout le flux national. Seuls le cache court et les photos liées à un comptage sont gardés.
 - Application native, et PWA installable.
-- Modération élaborée. Un jeton d'admin dans l'environnement suffira pour masquer une saisie aberrante.
+- Modération multi-utilisateurs. L'administration, c'est `ADMIN_TOKEN` dans l'environnement du conteneur.
 - Édition du GTFS depuis l'interface.
 
 ## 7. Plan
@@ -230,7 +242,7 @@ Le plan tâche par tâche, avec tests, s'écrit au début de chaque phase. Pas a
 
 ### Phase 0 — Cadrage
 
-Ce document. À valider, surtout les questions de la section 8.
+Ce document. Les questions de la section 8 sont tranchées.
 
 ### Phase 1 — Squelette qui se déploie
 
@@ -243,7 +255,8 @@ Fichiers :
 - création du schéma `app.db` au démarrage
 - `Dockerfile`, `compose.yaml`, volume `./data`
 - `.gitignore` pour `data/`, `.env`, `.venv/`
-- notice de déploiement dans le README : `docker compose up`, et rien d'autre
+- `compose.yaml` déclare `ADMIN_TOKEN`, la valeur vient du `.env` local
+- notice de déploiement dans le README : `docker compose up`, et le jeton d'admin à définir au lancement
 
 Vérification : sur une machine neuve, `docker compose up` répond sur le port annoncé, et `data/app.db` survit à un redémarrage.
 
@@ -258,62 +271,62 @@ Proposer une circulation à partir d'un arrêt et d'une heure.
 
 Vérification : une grande gare à une heure de pointe renvoie des TER, et distingue train et car quand les deux existent.
 
-### Phase 3 — Comptage unique, contexte déjà rempli
+### Phase 3 — Saisie : origine, destination, train, compte
 
-Le parcours téléphone. On confirme un train, on ne le décrit pas.
+Le parcours téléphone. On choisit un train dans une liste, on ne le décrit pas.
 
 - poller dans le même processus : Trip Updates et alertes toutes les 2 minutes, cache 6 heures dans `rt.db`
 - repli SIRI ET Lite si Trip Updates est vide
-- `GET /api/proposal?from=&to=` : circulation proposée, précédent, suivant, photo datée
-- si le flux ne sait pas, la liste théorique s'affiche quand même, états à `inconnu`
-- formulaire réduit : confirmation, interstation, effectif, indicateurs, fiabilité
-- `POST /api/sessions` enregistre le comptage et la photo reçue, sans relire le flux
+- `GET /api/trips?from=&to=&at=` : circulations qui desservent les deux arrêts entre `at - 2 h` et `at + 2 h`, horaire théorique, état temps réel si connu
+- au-delà de 60 minutes dans le futur, ou sans cache pour le passé : la ligne est là, l'état est `inconnu`
+- à la sélection, photo du train choisi, du précédent et du suivant
+- formulaire : interstation, effectif, indicateurs, fiabilité, pseudo facultatif
+- `POST /api/sessions` enregistre le comptage, le pseudo s'il y en a un, et la photo reçue, sans relire le flux
 - idempotent sur `client_id`
 - signalement d'offre manquante
 
-Vérification : un comptage relu après effacement de `rt.db` a encore ses trois circulations et leurs états. Renvoyer le même `client_id` ne crée pas une seconde session. Couper le flux ne bloque pas la saisie.
+Vérification : la liste d'une origine-destination couvre bien 4 heures. Un comptage relu après effacement de `rt.db` a encore ses trois circulations et leurs états. Renvoyer le même `client_id` ne crée pas une seconde session. Couper le flux ne bloque pas la saisie.
 
-### Phase 4 — Lecture et export
+### Phase 4 — Réseau coupé
 
-Tenir la promesse du retour.
+Priorité avant la carte. Dans un TER, le réseau lâche. Un comptage perdu ne sert à personne.
 
-- liste des comptages
-- carte Leaflet : arrêts comptés, segments droits entre les arrêts d'une saisie
-- recherche par nom
-- page ligne : liste brute, ou invitation à contribuer s'il n'y a rien
-- `GET /api/export.csv`
-- mention visible : ce n'est pas une fréquentation officielle
+- si l'envoi échoue, le payload reste dans le navigateur, photo comprise
+- réessai au retour du réseau, même `client_id`
+- le choix du train se fait quand le réseau passe. Pas de GTFS hors ligne en v1.
 
-Vérification : le comptage de la phase 3 est sur la carte et dans le CSV.
+Vérification : mode avion après la sélection, saisie, retour réseau, une seule session créée, avec la photo prise avant le tunnel.
 
 ### Phase 5 — Serpent de charge
 
-Le second mode, pas avant que le premier soit solide.
+Le second mode, pas avant que le premier survive à un tunnel.
 
 - saisie arrêt par arrêt, reprise si on quitte la page
+- même file d'attente que la phase 4
 - reconstruction : effectif suivant = effectif + montées − descentes
 - indicateurs de charge optionnels
 
 Vérification : une session de trois arrêts donne un profil cohérent avec cette égalité.
 
-### Phase 6 — Réseau coupé
+### Phase 6 — Lecture, carte, export
 
-Ne pas perdre un comptage dans un tunnel.
+La carte sert à voir les résultats, pas à saisir.
 
-- si l'envoi échoue, le payload reste dans le navigateur
-- réessai au retour du réseau, même `client_id`
-- le choix de circulation, lui, se fait quand le réseau passe. Pas de GTFS hors ligne en v1.
+- liste des comptages, pseudo affiché s'il a été donné
+- carte Leaflet : arrêts comptés, segments droits entre les arrêts d'une saisie
+- recherche par nom
+- page ligne : liste brute, ou invitation à contribuer s'il n'y a rien
+- `GET /api/export.csv`, licence indiquée : Licence Ouverte 2.0
+- mention visible : ce n'est pas une fréquentation officielle
 
-Vérification : mode avion, saisie, retour réseau, une seule session créée.
-
-Cette phase peut passer avant la carte si le terrain le demande. Voir la question 1.
+Vérification : le comptage de la phase 3 est sur la carte et dans le CSV.
 
 ### Phase 7 — Qualité minimale
 
-- `ADMIN_TOKEN` pour masquer une saisie, comparaison en temps constant, jeton absent du dépôt
+- `ADMIN_TOKEN`, lu depuis l'environnement du conteneur, comparaison en temps constant, valeur absente du dépôt
 - refus : effectif négatif, fiabilité hors 0–100
 - effectif au-dessus d'un plafond : signalé, pas bloqué
-- page « méthode » : ce que les chiffres sont, ce qu'ils ne sont pas
+- page « méthode » : ce que les chiffres sont, ce qu'ils ne sont pas, et la licence des exports
 
 ### Ensuite, dans cet ordre
 
@@ -323,15 +336,15 @@ Cette phase peut passer avant la carte si le terrain le demande. Voir la questio
 4. Comparaison de lignes et agrégats géographiques.
 5. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton.
 
-## 8. Questions ouvertes
+## 8. Décisions
 
-1. La file d'attente hors ligne passe-t-elle avant la carte ? Dans un TER, le réseau est le point faible.
-2. Pseudo optionnel, ou anonyme strict ?
-3. Confirmer : le dépôt public reste sans marque institutionnelle.
-4. Confirmer : la v1 s'arrête au GTFS national SNCF. Cars TER SNCF inclus, cars d'AOM et opérateurs non SNCF exclus.
-5. Confirmer : Licence Ouverte 2.0 pour les comptages exportés.
-6. Fermée. Le déploiement est `docker compose up`. L'hébergeur est celui qui lance un conteneur. Pas de notice systemd.
-7. Fermée. Le contexte de circulation vient du GTFS-RT, figé à la confirmation avec le train précédent et le suivant sur la même origine-destination. L'utilisateur confirme, il ne le tape pas.
+1. Fermée. La file d'attente hors ligne passe avant la carte. La carte sert à lire, pas à saisir.
+2. Fermée. Pseudo facultatif. Pas de compte.
+3. Fermée. Pas de marque institutionnelle, pour le moment.
+4. Fermée. La v1 s'arrête au GTFS et au GTFS-RT nationaux SNCF. Cars TER SNCF inclus, cars d'AOM et opérateurs non SNCF exclus.
+5. Fermée. Licence Ouverte 2.0 pour les comptages partagés. GPL-3.0 pour le code.
+6. Fermée. L'hébergeur est celui qui lance le conteneur. Il définit `ADMIN_TOKEN` à côté de Compose, et administre avec ce jeton.
+7. Fermée. On choisit son train dans une liste de 4 heures centrée sur maintenant, annotée par le temps réel. À la sélection, on fige ce train, le précédent et le suivant.
 
 ## 9. Ce qui n'est pas une promesse
 
