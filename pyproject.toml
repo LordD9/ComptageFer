@@ -1,0 +1,13 @@
+[project]
+name = "comptagefer"
+version = "0.1.0"
+description = "Comptage collaboratif de la fréquentation des TER"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.32",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
