@@ -9,6 +9,12 @@ dependencies = [
   "gtfs-realtime-bindings>=1.0",
 ]
 
+[tool.setuptools]
+packages = ["comptagefer"]
+
+[tool.setuptools.package-data]
+comptagefer = ["*.js"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
