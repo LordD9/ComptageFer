@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import shutil
 import sqlite3
 import threading
 import time
@@ -15,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from comptagefer.offer import nearest_stops, search_stops, trips_serving
+from comptagefer.timetable import listed_trips
 from comptagefer.page import PAGE
 from comptagefer.rt import (
     ALERTS_URL,
@@ -89,6 +91,15 @@ def create_app(data_dir: Path) -> FastAPI:
         parsed = datetime.fromisoformat(at.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
+        if (data_dir / "timetable.db").exists():
+            return listed_trips(
+                data_dir / "timetable.db",
+                data_dir / "rt.db",
+                from_,
+                to,
+                parsed,
+                stops_database=data_dir / "stops.db",
+            )
         return trips_serving(data_dir / "rt.db", from_, to, parsed, stops_database=data_dir / "stops.db")
 
     @app.get("/api/sessions")
@@ -137,7 +148,7 @@ def _fetch(url: str, timeout: int = 60) -> bytes:
 
 def _poll_forever(database: Path) -> None:
     try:
-        ensure_stop_names(database.parent / "stops.db")
+        ensure_referential(database.parent)
     except Exception:
         import logging
         logging.getLogger("comptagefer.rt").exception("import des noms de gares échoué")
@@ -154,6 +165,42 @@ def _poll_forever(database: Path) -> None:
             import logging
             logging.getLogger("comptagefer.rt").exception("poll GTFS-RT échoué")
         time.sleep(120)
+
+
+def ensure_referential(data_dir: Path) -> None:
+    from comptagefer.offer import import_stop_names, open_stops
+    from comptagefer.timetable import import_timetable
+
+    stops = data_dir / "stops.db"
+    timetable = data_dir / "timetable.db"
+    need_stops = True
+    if stops.exists():
+        with open_stops(stops) as connection:
+            need_stops = connection.execute("SELECT COUNT(*) FROM stop").fetchone()[0] == 0
+    need_times = not timetable.exists()
+    if not need_stops and not need_times:
+        return
+    payload = _fetch(STOPS_URL, timeout=180)
+    folder = data_dir / "import"
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(BytesIO(payload)) as archive:
+            for name in ("stops.txt", "trips.txt", "stop_times.txt", "calendar_dates.txt"):
+                with archive.open(name) as raw, (folder / name).open("wb") as target:
+                    shutil.copyfileobj(raw, target)
+        if need_stops:
+            import_stop_names(stops, folder / "stops.txt")
+        if need_times:
+            importing = data_dir / "timetable.importing"
+            import_timetable(
+                importing,
+                folder / "trips.txt",
+                folder / "stop_times.txt",
+                folder / "calendar_dates.txt",
+            )
+            importing.replace(timetable)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def ensure_stop_names(database: Path) -> None:
@@ -280,6 +327,19 @@ def _photo_status(snapshot: object, key: str) -> str:
     return str(item.get("status") or "")
 
 
+def _photo_label(snapshot: object, key: str) -> str:
+    if not isinstance(snapshot, dict):
+        return _photo_status(snapshot, key)
+    item = snapshot.get(key) or {}
+    if not isinstance(item, dict):
+        return ""
+    kind = item.get("kind") or ""
+    etat = item.get("etat") or item.get("status") or ""
+    delay = item.get("delay_seconds")
+    minutes = f" {round(delay / 60)} min" if delay else ""
+    return f"{kind} {etat}{minutes}".strip()
+
+
 def _reading_page(rows: list[dict]) -> str:
     cards = []
     for row in rows:
@@ -291,9 +351,11 @@ def _reading_page(rows: list[dict]) -> str:
             "<article class='card'>"
             f"<strong>{origin} → {destination}</strong>"
             f"<p>{passengers} voyageurs · {who}</p>"
-            f"<p class='status'>précédent {_photo_status(row['snapshot'], 'precedent')} · "
-            f"choisi {_photo_status(row['snapshot'], 'courant')} · "
-            f"suivant {_photo_status(row['snapshot'], 'suivant')}</p>"
+            f"<p class='status'>précédent {_photo_label(row['snapshot'], 'precedent')} · "
+            f"même type {_photo_label(row['snapshot'], 'precedent_meme_type')} · "
+            f"choisi {_photo_label(row['snapshot'], 'courant')} · "
+            f"suivant {_photo_label(row['snapshot'], 'suivant')} · "
+            f"même type {_photo_label(row['snapshot'], 'suivant_meme_type')}</p>"
             "</article>"
         )
     body = "\n".join(cards) or "<p>Aucun comptage pour l'instant.</p>"
