@@ -40,5 +40,5 @@ jobs:
             ${{ env.IMAGE }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/LordD9/ComptageFer
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=main
+          cache-to: ${{ github.event_name == 'pull_request' && 'type=gha,scope=pr,mode=max,ignore-error=true' || 'type=gha,scope=main,mode=max,ignore-error=true' }}
