@@ -5,6 +5,7 @@ description = "Comptage collaboratif de la fréquentation des TER"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115",
+  "python-multipart>=0.0.9",
   "uvicorn>=0.32",
   "gtfs-realtime-bindings>=1.0",
   "tzdata>=2024.1",

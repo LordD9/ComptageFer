@@ -1,6 +1,9 @@
 import csv
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import shutil
 import sqlite3
 import threading
@@ -12,7 +15,7 @@ from html import escape
 from io import BytesIO, StringIO
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from comptagefer.offer import nearest_stops, search_stops, trips_serving
@@ -29,10 +32,13 @@ from comptagefer.rt import (
 STOPS_URL = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip"
 
 
-def create_app(data_dir: Path) -> FastAPI:
+def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     database = data_dir / "app.db"
+    if admin_token is None:
+        admin_token = os.environ.get("ADMIN_TOKEN", "")
+    admin_sessions: set[str] = set()
     with sqlite3.connect(database) as connection:
         connection.execute(
             """
@@ -124,6 +130,39 @@ def create_app(data_dir: Path) -> FastAPI:
     @app.post("/api/missing")
     def missing(body: dict) -> dict:
         return _save_saisie(database, body, kind="missing")
+
+    def admin_open(request: Request) -> bool:
+        cookie = request.cookies.get("comptagefer_admin", "")
+        return bool(cookie) and cookie in admin_sessions
+
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin(request: Request) -> str:
+        if not admin_open(request):
+            return _admin_login()
+        return _admin_list(_list_saisies(database))
+
+    @app.post("/admin/login", response_class=HTMLResponse)
+    def admin_login(response: Response, token: str = Form("")) -> str:
+        if not _admin_token_matches(token, admin_token):
+            raise HTTPException(status_code=401, detail="jeton refusé")
+        cookie = secrets.token_urlsafe(32)
+        admin_sessions.add(cookie)
+        response.set_cookie(
+            "comptagefer_admin",
+            cookie,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+        return _admin_list(_list_saisies(database))
+
+    @app.post("/admin/supprimer", response_class=HTMLResponse)
+    def admin_delete(request: Request, client_id: str = Form("")) -> str:
+        if not admin_open(request):
+            raise HTTPException(status_code=401, detail="connexion requise")
+        with sqlite3.connect(database) as connection:
+            connection.execute("DELETE FROM saisie WHERE client_id = ?", (client_id,))
+        return _admin_list(_list_saisies(database))
 
     return app
 
@@ -218,6 +257,77 @@ def ensure_stop_names(database: Path) -> None:
         import_stop_names(database, temporary)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _admin_token_matches(provided: str, expected: str) -> bool:
+    if not expected:
+        return False
+    return hmac.compare_digest(
+        hashlib.sha256(provided.encode()).digest(),
+        hashlib.sha256(expected.encode()).digest(),
+    )
+
+
+def _admin_login() -> str:
+    return """<!doctype html>
+<html lang="fr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin</title>
+<style>
+  body { margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }
+  main { max-width: 32rem; margin: 0 auto; padding: 1rem; }
+  input, button { font: inherit; width: 100%; min-height: 3.2rem; box-sizing: border-box; }
+  button { border: 0; border-radius: 0.8rem; background: #1c1915; color: #fff; }
+  input { border: 1px solid #c9c1b4; border-radius: 0.8rem; padding: 0.6rem 0.8rem; }
+</style>
+</head><body><main>
+  <h1>Admin</h1>
+  <p>Le jeton est celui du conteneur. Il n'est pas un compte.</p>
+  <form method="post" action="/admin/login">
+    <label for="token">Jeton</label>
+    <p><input id="token" name="token" type="password" autocomplete="current-password"></p>
+    <button type="submit">Ouvrir</button>
+  </form>
+</main></body></html>
+"""
+
+
+def _admin_list(rows: list[dict]) -> str:
+    cards = []
+    for row in rows:
+        who = escape(row["pseudo"]) if row["pseudo"] else "anonyme"
+        origin = escape(row["origin_name"] or row.get("origin_stop_id") or "")
+        destination = escape(row["destination_name"] or "")
+        passengers = "" if row["passengers"] is None else row["passengers"]
+        client_id = escape(row["client_id"])
+        cards.append(
+            "<article class='card'>"
+            f"<strong>{origin} → {destination}</strong>"
+            f"<p>{passengers} voyageurs · {who}</p>"
+            "<form method='post' action='/admin/supprimer'>"
+            f"<input type='hidden' name='client_id' value='{client_id}'>"
+            "<button type='submit'>Supprimer</button>"
+            "</form></article>"
+        )
+    body = "\n".join(cards) or "<p>Aucun comptage.</p>"
+    return f"""<!doctype html>
+<html lang="fr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin</title>
+<style>
+  body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
+  main {{ max-width: 32rem; margin: 0 auto; padding: 1rem; }}
+  .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
+  button {{ font: inherit; min-height: 3.2rem; width: 100%; border: 0; border-radius: 0.8rem; background: #8a2b1b; color: #fff; }}
+</style>
+</head><body><main>
+  <h1>Admin</h1>
+  <p>Supprimer retire le comptage de la liste et du CSV.</p>
+  {body}
+</main></body></html>
+"""
 
 
 def _save_saisie(database: Path, body: dict, kind: str) -> dict:
