@@ -30,7 +30,7 @@ PAGE = """<!doctype html>
 <body>
 <main>
   <h1>ComptageFer</h1>
-  <p class="hint">Choisis ton train, puis compte. Le reste vient du flux.</p>
+  <p class="hint">Choisis ton train, puis compte. Le reste vient du flux. <a href="/comptages">Voir les comptages</a></p>
   <section id="origin-step">
     <label for="origin-q">Origine</label>
     <input id="origin-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Gare de départ">
@@ -59,6 +59,10 @@ PAGE = """<!doctype html>
       <summary>Pseudo, commentaire</summary>
       <label for="standing">Part de gens debout, si tu la vois</label>
       <input id="standing" type="number" inputmode="numeric" min="0" max="100" placeholder="0 à 100">
+      <label for="seats">Part de places assises restantes</label>
+      <input id="seats" type="number" inputmode="numeric" min="0" max="100" placeholder="0 à 100">
+      <label for="imbalance">Écart de charge entre les voitures</label>
+      <input id="imbalance" type="number" inputmode="numeric" min="0" max="100" placeholder="0 à 100">
       <label for="pseudo">Pseudo, si tu veux</label>
       <input id="pseudo" type="text" maxlength="40" autocomplete="nickname">
       <label for="comment">Commentaire</label>
@@ -73,6 +77,7 @@ PAGE = """<!doctype html>
     <button id="again" type="button">Un autre comptage</button>
   </section>
 </main>
+<script src="/offline.js"></script>
 <script>
 const state = { origin: null, destination: null, trip: null, trains: [] };
 const $ = (id) => document.getElementById(id);
@@ -127,7 +132,17 @@ async function loadTrains() {
   const url = "/api/trips?from=" + encodeURIComponent(state.origin.stop_id)
     + "&to=" + encodeURIComponent(state.destination.stop_id)
     + "&at=" + encodeURIComponent(at);
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    $("trains").textContent = "Le choix du train demande le réseau.";
+    return;
+  }
+  if (!response.ok) {
+    $("trains").textContent = "Le choix du train demande le réseau.";
+    return;
+  }
   state.trains = await response.json();
   $("trains").replaceChildren();
   if (!state.trains.length) {
@@ -143,6 +158,7 @@ async function loadTrains() {
     button.appendChild(strong);
     button.onclick = () => {
       state.trip = train;
+      state.photo = photo(state.trains, train.trip_id);
       $("train-chip").textContent = formatTrain(train);
       show("form-step");
       $("passengers").focus();
@@ -182,30 +198,81 @@ $("missing").onclick = async () => {
   });
   show("done-step");
 };
-$("send").onclick = async () => {
-  $("error").textContent = "";
+function optionalNumber(id) {
+  return $(id).value === "" ? null : Number($(id).value);
+}
+function countPayload() {
+  return {
+    client_id: clientId(),
+    origin_stop_id: state.origin.stop_id,
+    destination_stop_id: state.destination.stop_id,
+    origin_name: state.origin.name,
+    destination_name: state.destination.name,
+    trip_id: state.trip.trip_id,
+    passengers: Number($("passengers").value),
+    reliability: Number($("reliability").value),
+    pseudo: $("pseudo").value,
+    comment: $("comment").value,
+    standing: optionalNumber("standing"),
+    seats_free: optionalNumber("seats"),
+    imbalance: optionalNumber("imbalance"),
+    snapshot: state.photo
+  };
+}
+function readQueue() {
+  return JSON.parse(localStorage.getItem("comptagefer-queue") || "[]");
+}
+function writeQueue(queue) {
+  localStorage.setItem("comptagefer-queue", JSON.stringify(queue));
+}
+async function postCount(body) {
   const response = await fetch("/api/sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      client_id: clientId(),
-      origin_stop_id: state.origin.stop_id,
-      destination_stop_id: state.destination.stop_id,
-      trip_id: state.trip.trip_id,
-      passengers: Number($("passengers").value),
-      reliability: Number($("reliability").value),
-      pseudo: $("pseudo").value,
-      comment: $("comment").value,
-      standing: $("standing").value === "" ? null : Number($("standing").value),
-      snapshot: state.trains
-    })
+    body: JSON.stringify(body)
   });
-  if (!response.ok) {
-    $("error").textContent = "Le compte n'a pas été gardé. Vérifie l'effectif et la fiabilité.";
+  if (response.status >= 500) return false;
+  return response.ok || response.status < 500;
+}
+async function flushQueue() {
+  const queue = readQueue();
+  if (!queue.length) return;
+  const kept = await drain(queue, postCount);
+  const sent = new Set(queue.map((item) => item.client_id));
+  for (const item of kept) sent.delete(item.client_id);
+  if (sent.has(localStorage.getItem("comptagefer-client"))) {
+    localStorage.removeItem("comptagefer-client");
+  }
+  writeQueue(kept);
+}
+window.addEventListener("online", flushQueue);
+flushQueue();
+$("send").onclick = async () => {
+  $("error").textContent = "";
+  const body = countPayload();
+  try {
+    const response = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (response.ok) {
+      localStorage.removeItem("comptagefer-client");
+      writeQueue(readQueue().filter((item) => item.client_id !== body.client_id));
+      show("done-step");
+      return;
+    }
+    if (response.status < 500) {
+      $("error").textContent = "Le compte n'a pas été gardé. Vérifie l'effectif et la fiabilité.";
+      return;
+    }
+  } catch (error) {
+    writeQueue(remember(readQueue(), body));
+    $("error").textContent = "Pas de réseau. Le comptage est gardé sur ce téléphone, photo comprise.";
     return;
   }
-  localStorage.removeItem("comptagefer-client");
-  show("done-step");
+  writeQueue(remember(readQueue(), body));
+  $("error").textContent = "Pas de réseau. Le comptage est gardé sur ce téléphone, photo comprise.";
 };
 $("again").onclick = () => location.reload();
 </script>

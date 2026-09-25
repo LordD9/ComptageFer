@@ -29,6 +29,15 @@ def test_home_is_a_mobile_form(tmp_path: Path):
     assert "Voyageurs dans le train" in page.text
 
 
+def test_form_keeps_a_failed_count_and_asks_for_the_load_indicators(tmp_path):
+    page = TestClient(create_app(tmp_path)).get("/").text
+    assert 'src="/offline.js"' in page
+    assert "comptagefer-queue" in page
+    assert "places assises" in page
+    assert "Écart de charge" in page
+    assert "addEventListener(\"online\"" in page
+
+
 def test_stop_search_and_count_are_stored_once(tmp_path: Path):
     _stops(tmp_path)
     client = TestClient(create_app(tmp_path))
