@@ -30,7 +30,7 @@ Le cas d'usage est un téléphone, dans un train, souvent avec un réseau médio
 
 1. J'ouvre l'application. Si je l'autorise, la position propose la gare la plus proche, puis elle est oubliée. Sinon je cherche mon origine.
 2. Je donne ma destination.
-3. L'outil liste les circulations qui desservent cette origine-destination, sur une plage de 4 heures centrée sur maintenant : les deux heures passées, les deux heures à venir. Chaque ligne montre l'horaire théorique, et l'état temps réel quand on l'a (retard, suppression). Je sélectionne mon train. S'il n'y est pas, je signale une offre manquante. Je ne l'invente pas dans le référentiel.
+3. L'outil liste les circulations qui desservent cette origine-destination, sur une plage de 4 heures centrée sur maintenant : les deux heures passées, les deux heures à venir. L'heure et l'état viennent du flux temps réel, pas de l'horaire théorique. Je sélectionne mon train. S'il n'y est pas, je signale une offre manquante. Je ne l'invente pas dans le référentiel.
 4. Je passe au formulaire. Le retard, l'heure et la suppression ne se tapent pas.
    - **Comptage unique.** Une interstation (les deux arrêts qui l'encadrent), un effectif, et trois indicateurs approximatifs : part de gens debout, part de places assises restantes, écart de charge entre la partie la plus chargée et la moins chargée.
    - **Serpent de charge.** Je monte, je compte une fois les portes fermées, puis à chaque arrêt j'indique montées et descentes jusqu'à ma descente. Les indicateurs du mode unique sont optionnels sur chaque interstation. Compter sa propre descente est optionnel.
@@ -73,7 +73,7 @@ flowchart LR
   cron[Import GTFS] --> gtfsdb
 ```
 
-`app.db` garde les comptages et la photo du contexte au moment de la saisie. `gtfs.db` garde l'offre théorique, jetable. `rt.db` garde quelques heures de temps réel, jetable aussi.
+`app.db` garde les comptages et la photo du contexte au moment de la saisie. `stops.db` garde les noms de gares, pas l'horaire. `rt.db` garde quelques heures de temps réel, jetable aussi.
 
 Rien d'autre. Pas de Postgres, pas de Redis, pas de file de messages, pas de frontend à builder sur le serveur.
 
@@ -131,11 +131,7 @@ Sources, sur le même jeu SNCF :
 
 Le flux Trip Updates est une photo des trains qui circulent dans les 60 prochaines minutes, rafraîchie toutes les 2 minutes. Il n'a pas d'historique. Un train déjà parti en sort. Une suppression d'il y a deux heures n'y est plus.
 
-La liste de saisie couvre 4 heures, centrées sur maintenant : deux heures avant, deux heures après. Le flux, lui, ne décrit que les trains des 60 prochaines minutes. Les deux ne coïncident pas.
-
-- L'heure à venir au-delà de 60 minutes vient du GTFS théorique. Le retard n'est pas encore connu.
-- Les deux heures passées viennent du cache, si le processus tournait. Sinon l'horaire théorique s'affiche, état `inconnu`.
-- On ne cache pas pour faire joli. Sans ces 6 heures de cache, la moitié gauche de la liste n'aurait aucun temps réel.
+La liste vient du cache temps réel, pas de l'horaire théorique. Chaque train du flux porte déjà son heure absolue et ses arrêts. On garde ceux dont le départ tombe dans la fenêtre de 4 heures. Le flux vivant ne couvre que l'heure qui vient : le passé vient du cache, et l'heure au-delà n'apparaît que lorsqu'elle entre dans le flux. Le flux n'a pas le nom des gares. Une table de noms, tirée uniquement de `stops.txt`, sert à la recherche. Ce n'est pas l'horaire.
 
 Le processus interroge le flux toutes les 2 minutes et garde 6 heures dans `rt.db`, puis efface.
 
@@ -277,8 +273,7 @@ Le parcours téléphone. On choisit un train dans une liste, on ne le décrit pa
 
 - poller dans le même processus : Trip Updates et alertes toutes les 2 minutes, cache 6 heures dans `rt.db`
 - repli SIRI ET Lite si Trip Updates est vide
-- `GET /api/trips?from=&to=&at=` : circulations qui desservent les deux arrêts entre `at - 2 h` et `at + 2 h`, horaire théorique, état temps réel si connu
-- au-delà de 60 minutes dans le futur, ou sans cache pour le passé : la ligne est là, l'état est `inconnu`
+- `GET /api/trips?from=&to=&at=` : circulations du cache temps réel qui desservent les deux arrêts entre `at - 2 h` et `at + 2 h`
 - à la sélection, photo du train choisi, du précédent et du suivant
 - formulaire : interstation, effectif, indicateurs, fiabilité, pseudo facultatif
 - `POST /api/sessions` enregistre le comptage, le pseudo s'il y en a un, et la photo reçue, sans relire le flux

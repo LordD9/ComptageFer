@@ -26,7 +26,7 @@ def test_home_names_the_project(tmp_path: Path):
     assert "ComptageFer" in response.text
 
 
-def test_startup_creates_session_table(tmp_path: Path):
+def test_startup_creates_saisie_table(tmp_path: Path):
     create_app(data_dir=tmp_path)
 
     with sqlite3.connect(tmp_path / "app.db") as connection:
@@ -37,4 +37,4 @@ def test_startup_creates_session_table(tmp_path: Path):
             )
         }
 
-    assert "session" in tables
+    assert "saisie" in tables

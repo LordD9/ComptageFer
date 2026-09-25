@@ -31,6 +31,27 @@ def _feed() -> bytes:
     return feed.SerializeToString()
 
 
+def test_duplicate_stop_in_one_trip_is_stored_once(tmp_path: Path):
+    feed = gtfs_realtime_pb2.FeedMessage()
+    feed.header.gtfs_realtime_version = "2.0"
+    feed.header.timestamp = 1
+    entity = feed.entity.add()
+    entity.id = "1"
+    entity.trip_update.trip.trip_id = "TRIP1"
+    first = entity.trip_update.stop_time_update.add()
+    first.stop_id = "STOP"
+    first.departure.delay = 60
+    second = entity.trip_update.stop_time_update.add()
+    second.stop_id = "STOP"
+    second.departure.delay = 120
+    database = tmp_path / "rt.db"
+
+    stored = store_trip_updates(database, feed.SerializeToString(), datetime(2026, 9, 24, 10, tzinfo=timezone.utc))
+
+    assert stored == 1
+    assert departure_delay(database, "TRIP1", "STOP") == 120
+
+
 def test_stores_a_trip_update(tmp_path: Path):
     database = tmp_path / "rt.db"
     fetched_at = datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc)
