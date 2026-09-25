@@ -16,6 +16,6 @@ cp .env.example .env
 docker compose up --build
 ```
 
-L'application répond sur http://localhost:8000/health. Le cache temps réel est sur http://localhost:8000/api/rt. Les bases restent dans `./data` après un redémarrage.
+L'application répond sur http://localhost:8000/. Le formulaire est sur cette page. Le cache temps réel est sur http://localhost:8000/api/rt. Les bases restent dans `./data` après un redémarrage. Au premier lancement, le conteneur charge les noms de gares, pas l'horaire théorique.
 
 `ADMIN_TOKEN` est déclaré par Compose. Sa valeur vient du `.env` local. Elle n'est pas dans l'image.

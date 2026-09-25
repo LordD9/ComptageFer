@@ -30,6 +30,7 @@ def _connect(database: Path) -> sqlite3.Connection:
             stop_id TEXT NOT NULL,
             arrival_delay INTEGER,
             departure_delay INTEGER,
+            departure_time INTEGER,
             PRIMARY KEY (trip_id, fetched_at, stop_id)
         )
         """
@@ -44,6 +45,9 @@ def _connect(database: Path) -> sqlite3.Connection:
         )
         """
     )
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(stop_update)")}
+    if "departure_time" not in columns:
+        connection.execute("ALTER TABLE stop_update ADD COLUMN departure_time INTEGER")
     return connection
 
 
@@ -65,7 +69,7 @@ def _refresh_if_unchanged(connection, trip_id: str, relationship: str, stops, st
         return False
     previous = connection.execute(
         """
-        SELECT stop_id, arrival_delay, departure_delay FROM stop_update
+        SELECT stop_id, arrival_delay, departure_delay, departure_time FROM stop_update
         WHERE trip_id = ? AND fetched_at = ?
         ORDER BY stop_id
         """,
@@ -103,9 +107,16 @@ def store_trip_updates(database: Path, payload: bytes, fetched_at: datetime) -> 
                     stop.stop_id,
                     stop.arrival.delay if stop.HasField("arrival") else None,
                     stop.departure.delay if stop.HasField("departure") else None,
+                    int(stop.departure.time)
+                    if stop.HasField("departure") and stop.departure.HasField("time")
+                    else None,
                 )
                 for stop in entity.trip_update.stop_time_update
             ]
+            unique = {}
+            for stop in stops:
+                unique[stop[0]] = stop
+            stops = [unique[stop_id] for stop_id in sorted(unique)]
             if _refresh_if_unchanged(connection, trip.trip_id, relationship, stops, stamp):
                 stored += 1
                 continue
@@ -117,14 +128,23 @@ def store_trip_updates(database: Path, payload: bytes, fetched_at: datetime) -> 
                 """,
                 (trip.trip_id, trip.start_date, relationship, stamp),
             )
-            for stop_id, arrival_delay, departure_delay in stops:
+            for stop_id, arrival_delay, departure_delay, departure_time in stops:
                 connection.execute(
                     """
-                    INSERT INTO stop_update
-                        (trip_id, fetched_at, stop_id, arrival_delay, departure_delay)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO stop_update (
+                        trip_id, fetched_at, stop_id,
+                        arrival_delay, departure_delay, departure_time
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (trip.trip_id, stamp, stop_id, arrival_delay, departure_delay),
+                    (
+                        trip.trip_id,
+                        stamp,
+                        stop_id,
+                        arrival_delay,
+                        departure_delay,
+                        departure_time,
+                    ),
                 )
             stored += 1
     return stored
