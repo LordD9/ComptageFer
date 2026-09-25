@@ -1,6 +1,7 @@
 services:
   app:
-    build: .
+    image: ghcr.io/lordd9/comptagefer:latest
+    pull_policy: always
     ports:
       - "8000:8000"
     environment:
@@ -8,3 +9,4 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
     volumes:
       - ./data:/data
+    restart: unless-stopped
