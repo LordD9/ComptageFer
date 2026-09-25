@@ -89,7 +89,7 @@ function show(id) {
 function clientId() {
   let value = localStorage.getItem("comptagefer-client");
   if (!value) {
-    value = crypto.randomUUID();
+    value = newId();
     localStorage.setItem("comptagefer-client", value);
   }
   return value;
@@ -249,7 +249,13 @@ window.addEventListener("online", flushQueue);
 flushQueue();
 $("send").onclick = async () => {
   $("error").textContent = "";
-  const body = countPayload();
+  let body;
+  try {
+    body = countPayload();
+  } catch (error) {
+    $("error").textContent = "Le compte n'a pas pu partir. Réessaie.";
+    return;
+  }
   try {
     const response = await fetch("/api/sessions", {
       method: "POST",

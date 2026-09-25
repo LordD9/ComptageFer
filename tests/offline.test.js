@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { remember, drain, photo } = require("../comptagefer/offline.js");
+const { remember, drain, photo, newId } = require("../comptagefer/offline.js");
 
 test("a failed send keeps the photo and the same token", () => {
   const payload = {
@@ -37,4 +37,18 @@ test("photo is the selected train and its two neighbours", () => {
     suivant: { trip_id: "NEXT" },
   });
   assert.equal(photo(trains, "PREV").precedent, null);
+});
+
+test("newId works when the browser refuses randomUUID", () => {
+  const id = newId({
+    randomUUID() {
+      throw new Error("insecure");
+    },
+    getRandomValues(bytes) {
+      for (let i = 0; i < bytes.length; i += 1) bytes[i] = i + 1;
+      return bytes;
+    },
+  });
+
+  assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 });
