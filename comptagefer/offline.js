@@ -41,6 +41,23 @@ function newId(source) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+function snapshot(train) {
+  return {
+    courant: {
+      trip_id: train.trip_id,
+      kind: train.kind || null,
+      departure_time: train.departure_time,
+      status: train.status || null,
+      delay_seconds: train.delay_seconds || null,
+      etat: train.etat || null,
+    },
+    precedent: train.precedent || null,
+    suivant: train.suivant || null,
+    precedent_meme_type: train.precedent_meme_type || null,
+    suivant_meme_type: train.suivant_meme_type || null,
+  };
+}
+
 if (typeof module !== "undefined") {
-  module.exports = { remember, photo, drain, newId };
+  module.exports = { remember, photo, drain, newId, snapshot };
 }

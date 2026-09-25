@@ -45,7 +45,7 @@ PAGE = """<!doctype html>
   </section>
   <section id="train-step" class="hidden">
     <div class="chip"><span id="od-chip"></span><button class="ghost" id="change-od" type="button">Changer</button></div>
-    <p class="hint">Trains vus par le flux, deux heures avant et après maintenant. L'heure lointaine n'y est pas encore.</p>
+    <p class="hint">Trains des deux heures avant et après, TER, car, Intercités et TGV. Le retard et la suppression viennent du flux. Sinon le train est seulement programmé.</p>
     <div id="trains" class="choices"></div>
     <button class="ghost" id="missing" type="button">Mon train n'est pas dans la liste</button>
   </section>
@@ -121,9 +121,13 @@ function chooseStop(listId, stop) {
 }
 function formatTrain(train) {
   const time = new Date(train.departure_time).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-  if (train.status === "CANCELED") return time + " · supprimé";
-  if (train.delay_seconds) return time + " · +" + Math.round(train.delay_seconds / 60) + " min";
-  return time + " · à l'heure";
+  const kind = train.kind ? " · " + train.kind : "";
+  if (train.etat === "supprimé" || train.status === "CANCELED") return time + kind + " · supprimé";
+  if (train.delay_seconds) {
+    const minutes = Math.round(train.delay_seconds / 60);
+    return time + kind + " · " + (minutes > 0 ? "+" : "") + minutes + " min";
+  }
+  return time + kind + " · " + (train.etat || "à l'heure");
 }
 async function loadTrains() {
   show("train-step");
@@ -146,7 +150,7 @@ async function loadTrains() {
   state.trains = await response.json();
   $("trains").replaceChildren();
   if (!state.trains.length) {
-    $("trains").textContent = "Aucun train vu par le flux sur cette origine-destination.";
+    $("trains").textContent = "Aucun train sur cette origine-destination dans les 4 heures.";
     return;
   }
   for (const train of state.trains) {
@@ -158,7 +162,7 @@ async function loadTrains() {
     button.appendChild(strong);
     button.onclick = () => {
       state.trip = train;
-      state.photo = photo(state.trains, train.trip_id);
+      state.photo = snapshot(train);
       $("train-chip").textContent = formatTrain(train);
       show("form-step");
       $("passengers").focus();
