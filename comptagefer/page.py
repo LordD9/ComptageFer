@@ -25,6 +25,9 @@ PAGE = """<!doctype html>
   .hidden { display: none; }
   .status { font-size: 0.95rem; color: #5c564c; }
   .bad { color: #8a2b1b; }
+  .counter { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; }
+  .counter button { flex: 1; min-height: 3.6rem; font-size: 1.1rem; }
+  #count-display { flex: 0 0 6rem; font: 1.8rem/1 system-ui, sans-serif; text-align: center; }
 </style>
 </head>
 <body>
@@ -68,7 +71,14 @@ PAGE = """<!doctype html>
   <section id="form-step" class="hidden">
     <div class="chip"><span id="train-chip"></span><button class="ghost" id="change-train" type="button">Changer</button></div>
     <label for="passengers">Voyageurs dans le train</label>
-    <input id="passengers" type="number" inputmode="numeric" min="0" step="1" placeholder="0">
+    <div class="counter" id="counter">
+      <button type="button" id="minus">−1</button>
+      <span id="count-display">0</span>
+      <button type="button" id="plus1">+1</button>
+      <button type="button" id="plus5">+5</button>
+      <button type="button" id="plus10">+10</button>
+    </div>
+    <input id="passengers" type="number" inputmode="numeric" min="0" step="1" placeholder="0" class="hidden">
     <label for="reliability">Fiabilité du compte, de 0 à 100</label>
     <input id="reliability" type="number" inputmode="numeric" min="0" max="100" step="1" value="80">
     <details>
@@ -95,7 +105,7 @@ PAGE = """<!doctype html>
 </main>
 <script src="/offline.js"></script>
 <script>
-const state = { origin: null, destination: null, trip: null, trains: [] };
+const state = { origin: null, destination: null, trip: null, trains: [], passengers: 0 };
 const $ = (id) => document.getElementById(id);
 function show(id) {
   for (const step of ["origin-step", "destination-step", "train-step", "form-step", "done-step"]) {
@@ -192,12 +202,32 @@ $("change-od").onclick = () => show("destination-step");
 $("change-train").onclick = () => show("train-step");
 $("change-mode").onclick = () => show("train-step");
 $("mode-unique").onclick = () => {
-  $("train-chip").textContent = formatTrain(state.trip);
+  $("#train-chip").textContent = formatTrain(state.trip);
+  state.passengers = 0;
+  $("#count-display").textContent = "0";
+  $("#passengers").value = 0;
   show("form-step");
-  $("passengers").focus();
+  $("#passengers").focus();
 };
-$("mode-snake").onclick = startSnake;
-$("snake-back").onclick = () => show("mode-step");
+
+function updateCount(delta) {
+  state.passengers = Math.max(0, (state.passengers || 0) + delta);
+  $("#count-display").textContent = state.passengers;
+  $("#passengers").value = state.passengers;
+}
+
+$("#plus1").onclick = () => updateCount(1);
+$("#plus5").onclick = () => updateCount(5);
+$("#plus10").onclick = () => updateCount(10);
+$("#minus").onclick = () => updateCount(-1);
+
+$("#passengers").addEventListener("input", (e) => {
+  const v = parseInt(e.target.value, 10);
+  state.passengers = isNaN(v) || v < 0 ? 0 : v;
+  $("#count-display").textContent = state.passengers;
+});
+
+$("#snake-back").onclick = () => show("mode-step");
 function field(id, label, placeholder) {
   const wrap = document.createElement("label");
   wrap.htmlFor = id;
@@ -382,6 +412,7 @@ $("missing").onclick = async () => {
 function optionalNumber(id) {
   return $(id).value === "" ? null : Number($(id).value);
 }
+
 function countPayload() {
   return {
     client_id: clientId(),
@@ -390,10 +421,10 @@ function countPayload() {
     origin_name: state.origin.name,
     destination_name: state.destination.name,
     trip_id: state.trip.trip_id,
-    passengers: Number($("passengers").value),
-    reliability: Number($("reliability").value),
-    pseudo: $("pseudo").value,
-    comment: $("comment").value,
+    passengers: state.passengers != null ? state.passengers : Number($("#passengers").value),
+    reliability: Number($("#reliability").value),
+    pseudo: $("#pseudo").value,
+    comment: $("#comment").value,
     standing: optionalNumber("standing"),
     seats_free: optionalNumber("seats"),
     imbalance: optionalNumber("imbalance"),
