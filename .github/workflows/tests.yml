@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    # amd64 seulement : les tests navigateur ne valent rien sous QEMU, et le
+    # job publish reste chargé de couvrir arm64 pour l'image.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installer le projet et les dépendances de test
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Installer Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Tests
+        run: pytest -q
+
+      - name: Rapport si échec
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: |
+            .pytest_cache/
+            test-results/
+          retention-days: 7

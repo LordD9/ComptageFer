@@ -108,9 +108,13 @@ PAGE = """<!doctype html>
 <script>
 const state = { origin: null, destination: null, trip: null, trains: [], passengers: 0 };
 const $ = (id) => document.getElementById(id);
+// Les étapes se listent ici à la main depuis l'ajout du serpent : mode-step
+// et snake-step manquaient, donc choisir un train masquait toutes les
+// sections et l'utilisateur restait sur un écran vide. On prend le DOM comme
+// source de vérité, plus besoin d'entretenir la liste.
 function show(id) {
-  for (const step of ["origin-step", "destination-step", "train-step", "form-step", "done-step"]) {
-    $(step).classList.toggle("hidden", step !== id);
+  for (const step of document.querySelectorAll("main > section")) {
+    step.classList.toggle("hidden", step.id !== id);
   }
 }
 function clientId() {
