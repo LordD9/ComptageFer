@@ -183,6 +183,60 @@ def _pairs(database, origin_stop_id, destination_stop_id, local, window, stops_d
     return found
 
 
+def stops_between(
+    database: Path,
+    trip_id: str,
+    origin: str,
+    destination: str,
+    stops_database: Path | None = None,
+) -> list[dict]:
+    origins = set(_family(stops_database, origin))
+    destinations = set(_family(stops_database, destination))
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(passage)")}
+        order = "COALESCE(seq, depart_sec), depart_sec" if "seq" in columns else "depart_sec"
+        rows = connection.execute(
+            f"SELECT stop_id FROM passage WHERE trip_id = ? ORDER BY {order}",
+            (trip_id,),
+        ).fetchall()
+    start = next((index for index, row in enumerate(rows) if row[0] in origins), None)
+    if start is None:
+        return []
+    end = next(
+        (index for index, row in enumerate(rows) if index > start and row[0] in destinations),
+        None,
+    )
+    if end is None:
+        return []
+    names = _station_names(stops_database)
+    found = []
+    seen = None
+    for (stop_id,) in rows[start : end + 1]:
+        name, key = names.get(stop_id, (stop_id, stop_id))
+        if key == seen:
+            continue
+        seen = key
+        found.append({"stop_id": stop_id, "name": name})
+    return found
+
+
+def _station_names(stops_database: Path | None) -> dict[str, tuple[str, str]]:
+    if stops_database is None or not Path(stops_database).exists():
+        return {}
+    from comptagefer.offer import open_stops
+
+    with open_stops(stops_database) as connection:
+        rows = connection.execute("SELECT stop_id, name, parent FROM stop").fetchall()
+    by_id = {row[0]: row for row in rows}
+    names = {}
+    for stop_id, name, parent in rows:
+        if parent and parent in by_id:
+            names[stop_id] = (by_id[parent][1], parent)
+        else:
+            names[stop_id] = (name, stop_id)
+    return names
+
+
 def _realtime(database: Path, trip_ids: list[str], origin_stop_id: str, stops_database) -> dict:
     if not trip_ids or not database.exists():
         return {}

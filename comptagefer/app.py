@@ -19,7 +19,7 @@ from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from comptagefer.offer import nearest_stops, search_stops, trips_serving
-from comptagefer.timetable import listed_trips
+from comptagefer.timetable import listed_trips, stops_between
 from comptagefer.page import PAGE
 from comptagefer.rt import (
     ALERTS_URL,
@@ -58,10 +58,14 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
                 imbalance INTEGER,
                 snapshot TEXT,
                 kind TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                legs TEXT
             )
             """
         )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(saisie)")}
+        if "legs" not in columns:
+            connection.execute("ALTER TABLE saisie ADD COLUMN legs TEXT")
 
     app = FastAPI(title="ComptageFer")
 
@@ -108,6 +112,23 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
             )
         return trips_serving(data_dir / "rt.db", from_, to, parsed, stops_database=data_dir / "stops.db")
 
+    @app.get("/api/trip-stops")
+    def trip_stops(
+        trip: str,
+        from_: str = Query(alias="from"),
+        to: str = Query(...),
+    ) -> list[dict]:
+        timetable = data_dir / "timetable.db"
+        if not timetable.exists():
+            return []
+        return stops_between(
+            timetable,
+            trip,
+            from_,
+            to,
+            stops_database=data_dir / "stops.db",
+        )
+
     @app.get("/api/sessions")
     def list_sessions() -> list[dict]:
         return _list_saisies(database)
@@ -125,7 +146,8 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
 
     @app.post("/api/sessions")
     def sessions(body: dict) -> dict:
-        return _save_saisie(database, body, kind="count")
+        kind = "serpent" if body.get("kind") == "serpent" else "count"
+        return _save_saisie(database, body, kind=kind)
 
     @app.post("/api/missing")
     def missing(body: dict) -> dict:
@@ -338,11 +360,19 @@ def _save_saisie(database: Path, body: dict, kind: str) -> dict:
         raise HTTPException(status_code=422, detail="origine, destination et jeton requis")
     passengers = body.get("passengers")
     reliability = body.get("reliability")
-    if kind == "count":
+    if kind == "serpent":
+        legs_text = _clean_legs(body.get("legs"))
+        if not isinstance(reliability, int) or not 0 <= reliability <= 100:
+            raise HTTPException(status_code=422, detail="fiabilité invalide")
+        passengers = json.loads(legs_text)[0]["onboard"]
+    elif kind == "count":
+        legs_text = None
         if not isinstance(passengers, int) or passengers < 0:
             raise HTTPException(status_code=422, detail="effectif invalide")
         if not isinstance(reliability, int) or not 0 <= reliability <= 100:
             raise HTTPException(status_code=422, detail="fiabilité invalide")
+    else:
+        legs_text = None
     standing = _indicator(body.get("standing"))
     seats_free = _indicator(body.get("seats_free"))
     imbalance = _indicator(body.get("imbalance"))
@@ -361,9 +391,9 @@ def _save_saisie(database: Path, body: dict, kind: str) -> dict:
             """
             INSERT INTO saisie (
                 client_id, origin_stop_id, destination_stop_id, origin_name, destination_name, trip_id,
-                passengers, reliability, pseudo, comment, standing, seats_free, imbalance, snapshot, kind, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                passengers, reliability, pseudo, comment, standing, seats_free, imbalance, snapshot, legs, kind, created_at
+ )
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 client_id,
@@ -372,19 +402,52 @@ def _save_saisie(database: Path, body: dict, kind: str) -> dict:
                 (body.get("origin_name") or "")[:80] or None,
                 (body.get("destination_name") or "")[:80] or None,
                 body.get("trip_id"),
-                passengers if kind == "count" else None,
-                reliability if kind == "count" else None,
+                passengers if kind in {"count", "serpent"} else None,
+                reliability if kind in {"count", "serpent"} else None,
                 (body.get("pseudo") or "")[:40] or None,
                 (body.get("comment") or "")[:280] or None,
                 standing,
                 seats_free,
                 imbalance,
                 snapshot_text,
+                legs_text,
                 kind,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
     return {"client_id": client_id, "kind": kind, "stored": True}
+
+
+def _clean_legs(value: object) -> str:
+    if not isinstance(value, list) or len(value) < 2:
+        raise HTTPException(status_code=422, detail="serpent incomplet")
+    cleaned = []
+    for index, leg in enumerate(value):
+        if not isinstance(leg, dict) or not leg.get("stop_id"):
+            raise HTTPException(status_code=422, detail="arrêt invalide")
+        item = {
+            "stop_id": str(leg["stop_id"])[:80],
+            "stop_name": str(leg.get("stop_name") or "")[:80],
+        }
+        if index == 0:
+            onboard = leg.get("onboard")
+            if not isinstance(onboard, int) or onboard < 0:
+                raise HTTPException(status_code=422, detail="effectif invalide")
+            item["onboard"] = onboard
+        else:
+            boarded = leg.get("boarded")
+            alighted = leg.get("alighted")
+            if not isinstance(boarded, int) or boarded < 0:
+                raise HTTPException(status_code=422, detail="montées invalides")
+            if alighted is not None and (not isinstance(alighted, int) or alighted < 0):
+                raise HTTPException(status_code=422, detail="descentes invalides")
+            item["boarded"] = boarded
+            item["alighted"] = alighted
+            for key in ("standing", "seats_free", "imbalance"):
+                if leg.get(key) is not None:
+                    item[key] = _indicator(leg.get(key))
+        cleaned.append(item)
+    return json.dumps(cleaned, ensure_ascii=False)
 
 
 def _indicator(value: object) -> int | None:
@@ -400,7 +463,7 @@ def _list_saisies(database: Path) -> list[dict]:
         rows = connection.execute(
             """
             SELECT client_id, origin_name, destination_name, trip_id, passengers,
-                   reliability, pseudo, standing, seats_free, imbalance, snapshot, kind, created_at
+                   reliability, pseudo, standing, seats_free, imbalance, snapshot, kind, created_at, legs
             FROM saisie
             ORDER BY created_at
             """
@@ -423,9 +486,26 @@ def _list_saisies(database: Path) -> list[dict]:
                 "snapshot": snapshot,
                 "kind": row[11],
                 "created_at": row[12],
+                "legs": json.loads(row[13]) if row[13] else None,
             }
         )
     return listed
+
+
+def _legs_text(legs: object) -> str:
+    if not isinstance(legs, list):
+        return ""
+    lines = []
+    for index, leg in enumerate(legs):
+        if not isinstance(leg, dict):
+            continue
+        name = escape(str(leg.get("stop_name") or leg.get("stop_id") or ""))
+        if index == 0:
+            lines.append(f"<li>{name} : {leg.get('onboard')} à bord</li>")
+        else:
+            alighted = "non comptées" if leg.get("alighted") is None else leg.get("alighted")
+            lines.append(f"<li>{name} : {leg.get('boarded')} montées, {alighted} descentes</li>")
+    return "<ul>" + "".join(lines) + "</ul>" if lines else ""
 
 
 def _photo_status(snapshot: object, key: str) -> str:
@@ -457,10 +537,12 @@ def _reading_page(rows: list[dict]) -> str:
         origin = escape(row["origin_name"] or "")
         destination = escape(row["destination_name"] or "")
         passengers = "" if row["passengers"] is None else row["passengers"]
+        mode = "serpent" if row["kind"] == "serpent" else "unique"
         cards.append(
             "<article class='card'>"
             f"<strong>{origin} → {destination}</strong>"
-            f"<p>{passengers} voyageurs · {who}</p>"
+            f"<p>{passengers} voyageurs · {who} · {mode}</p>"
+            f"{_legs_text(row.get('legs'))}"
             f"<p class='status'>précédent {_photo_label(row['snapshot'], 'precedent')} · "
             f"même type {_photo_label(row['snapshot'], 'precedent_meme_type')} · "
             f"choisi {_photo_label(row['snapshot'], 'courant')} · "
@@ -512,6 +594,8 @@ def _export_csv(rows: list[dict]) -> str:
             "precedent",
             "courant",
             "suivant",
+            "kind",
+            "legs",
         ]
     )
     for row in rows:
@@ -529,6 +613,8 @@ def _export_csv(rows: list[dict]) -> str:
                 _photo_status(row["snapshot"], "precedent"),
                 _photo_status(row["snapshot"], "courant"),
                 _photo_status(row["snapshot"], "suivant"),
+                row["kind"] or "",
+                json.dumps(row["legs"], ensure_ascii=False) if row.get("legs") else "",
             ]
         )
     return buffer.getvalue()

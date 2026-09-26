@@ -49,6 +49,22 @@ PAGE = """<!doctype html>
     <div id="trains" class="choices"></div>
     <button class="ghost" id="missing" type="button">Mon train n'est pas dans la liste</button>
   </section>
+  <section id="mode-step" class="hidden">
+    <div class="chip"><span id="mode-chip"></span><button class="ghost" id="change-mode" type="button">Changer</button></div>
+    <div class="choices">
+      <button id="mode-unique" type="button">Un seul compte</button>
+      <button id="mode-snake" type="button">Serpent de charge</button>
+    </div>
+    <p class="hint">Le serpent : un compte portes fermées, puis montées et descentes à chaque arrêt, jusqu'à ta descente.</p>
+  </section>
+  <section id="snake-step" class="hidden">
+    <div class="chip"><span id="snake-chip"></span><button class="ghost" id="snake-back" type="button">Retour</button></div>
+    <p id="snake-title"></p>
+    <div id="snake-fields"></div>
+    <p id="snake-load" class="status"></p>
+    <p><button id="snake-next" type="button">Suivant</button></p>
+    <p id="snake-error" class="bad"></p>
+  </section>
   <section id="form-step" class="hidden">
     <div class="chip"><span id="train-chip"></span><button class="ghost" id="change-train" type="button">Changer</button></div>
     <label for="passengers">Voyageurs dans le train</label>
@@ -163,9 +179,8 @@ async function loadTrains() {
     button.onclick = () => {
       state.trip = train;
       state.photo = snapshot(train);
-      $("train-chip").textContent = formatTrain(train);
-      show("form-step");
-      $("passengers").focus();
+      $("mode-chip").textContent = formatTrain(train);
+      show("mode-step");
     };
     $("trains").appendChild(button);
   }
@@ -175,6 +190,168 @@ $("destination-q").addEventListener("input", () => search($("destination-q").val
 $("change-origin").onclick = () => show("origin-step");
 $("change-od").onclick = () => show("destination-step");
 $("change-train").onclick = () => show("train-step");
+$("change-mode").onclick = () => show("train-step");
+$("mode-unique").onclick = () => {
+  $("train-chip").textContent = formatTrain(state.trip);
+  show("form-step");
+  $("passengers").focus();
+};
+$("mode-snake").onclick = startSnake;
+$("snake-back").onclick = () => show("mode-step");
+function field(id, label, placeholder) {
+  const wrap = document.createElement("label");
+  wrap.htmlFor = id;
+  wrap.textContent = label;
+  const input = document.createElement("input");
+  input.id = id;
+  input.type = "number";
+  input.inputMode = "numeric";
+  input.min = "0";
+  input.step = "1";
+  input.placeholder = placeholder || "0";
+  return [wrap, input];
+}
+async function startSnake() {
+  $("snake-error").textContent = "";
+  show("snake-step");
+  $("snake-title").textContent = "Chargement des arrêts…";
+  $("snake-fields").replaceChildren();
+  const url = "/api/trip-stops?trip=" + encodeURIComponent(state.trip.trip_id)
+    + "&from=" + encodeURIComponent(state.origin.stop_id)
+    + "&to=" + encodeURIComponent(state.destination.stop_id);
+  try {
+    const response = await fetch(url);
+    state.stops = await response.json();
+  } catch (error) {
+    state.stops = [];
+  }
+  if (!state.stops || state.stops.length < 2) {
+    $("snake-title").textContent = "Les arrêts de ce train ne sont pas chargés.";
+    $("snake-next").textContent = "Faire un seul compte";
+    $("snake-next").onclick = () => $("mode-unique").click();
+    return;
+  }
+  state.snakeIndex = 0;
+  state.legs = [];
+  renderSnake();
+}
+function renderSnake() {
+  const stop = state.stops[state.snakeIndex];
+  const last = state.snakeIndex === state.stops.length - 1;
+  $("snake-chip").textContent = (state.snakeIndex + 1) + " / " + state.stops.length;
+  $("snake-title").textContent = state.snakeIndex === 0
+    ? "Portes fermées à " + stop.name
+    : "À " + stop.name;
+  $("snake-fields").replaceChildren();
+  if (state.snakeIndex === 0) {
+    $("snake-fields").append(...field("snake-onboard", "Voyageurs à bord", "0"));
+  } else {
+    $("snake-fields").append(...field("snake-boarded", "Montées", "0"));
+    $("snake-fields").append(...field("snake-alighted", "Descentes", last ? "si tu les comptes" : "0"));
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Indicateurs de cette interstation";
+    details.append(summary, ...field("snake-standing", "Part debout", ""), ...field("snake-seats", "Places assises restantes", ""), ...field("snake-imbalance", "Écart de charge", ""));
+    $("snake-fields").append(details);
+  }
+  if (last) {
+    $("snake-fields").append(...field("snake-reliability", "Fiabilité, de 0 à 100", "80"));
+    $("snake-reliability").value = "80";
+  }
+  $("snake-load").textContent = aboardText();
+  $("snake-next").textContent = last ? "Enregistrer le serpent" : "Suivant";
+  $("snake-next").onclick = last ? saveSnake : nextSnake;
+  $("snake-error").textContent = "";
+}
+function readInt(id, required) {
+  const value = $(id).value;
+  if (value === "") return required ? NaN : null;
+  return Number(value);
+}
+function nextSnake() {
+  const leg = currentLeg();
+  if (!leg) {
+    $("snake-error").textContent = "Il manque un nombre.";
+    return;
+  }
+  state.legs.push(leg);
+  state.snakeIndex += 1;
+  renderSnake();
+}
+function currentLeg() {
+  const stop = state.stops[state.snakeIndex];
+  if (state.snakeIndex === 0) {
+    const onboard = readInt("snake-onboard", true);
+    if (!Number.isInteger(onboard) || onboard < 0) return null;
+    return { stop_id: stop.stop_id, stop_name: stop.name, onboard };
+  }
+  const boarded = readInt("snake-boarded", true);
+  const alighted = readInt("snake-alighted", state.snakeIndex !== state.stops.length - 1);
+  if (!Number.isInteger(boarded) || boarded < 0) return null;
+  if (alighted !== null && (!Number.isInteger(alighted) || alighted < 0)) return null;
+  const leg = { stop_id: stop.stop_id, stop_name: stop.name, boarded, alighted };
+  for (const [id, key] of [["snake-standing", "standing"], ["snake-seats", "seats_free"], ["snake-imbalance", "imbalance"]]) {
+    const value = readInt(id, false);
+    if (value !== null) leg[key] = value;
+  }
+  return leg;
+}
+function aboardText() {
+  if (!state.legs.length) return "";
+  let total = state.legs[0].onboard;
+  for (const leg of state.legs.slice(1)) {
+    if (leg.alighted === null) return "À bord : compte incomplet";
+    total += leg.boarded - leg.alighted;
+  }
+  return "À bord avant cet arrêt : " + total;
+}
+async function saveSnake() {
+  const leg = currentLeg();
+  if (!leg) {
+    $("snake-error").textContent = "Il manque un nombre.";
+    return;
+  }
+  const reliability = readInt("snake-reliability", true);
+  if (!Number.isInteger(reliability) || reliability < 0 || reliability > 100) {
+    $("snake-error").textContent = "La fiabilité va de 0 à 100.";
+    return;
+  }
+  const body = {
+    client_id: clientId(),
+    kind: "serpent",
+    origin_stop_id: state.origin.stop_id,
+    destination_stop_id: state.destination.stop_id,
+    origin_name: state.origin.name,
+    destination_name: state.destination.name,
+    trip_id: state.trip.trip_id,
+    passengers: state.legs[0].onboard,
+    reliability,
+    snapshot: state.photo,
+    legs: state.legs.concat([leg])
+  };
+  try {
+    const response = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (response.ok) {
+      localStorage.removeItem("comptagefer-client");
+      show("done-step");
+      return;
+    }
+    if (response.status < 500) {
+      $("snake-error").textContent = "Le serpent n'a pas été gardé.";
+      return;
+    }
+  } catch (error) {
+    writeQueue(remember(readQueue(), body));
+    $("snake-error").textContent = "Pas de réseau. Le serpent est gardé sur ce téléphone.";
+    return;
+  }
+  writeQueue(remember(readQueue(), body));
+  $("snake-error").textContent = "Pas de réseau. Le serpent est gardé sur ce téléphone.";
+}
 $("near").onclick = () => {
   navigator.geolocation.getCurrentPosition(async (position) => {
     const url = "/api/stops/nearest?lat=" + position.coords.latitude + "&lon=" + position.coords.longitude;
