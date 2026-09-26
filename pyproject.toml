@@ -11,6 +11,16 @@ dependencies = [
   "tzdata>=2024.1",
 ]
 
+[project.optional-dependencies]
+# Dépendances de test uniquement : elles ne vont pas dans l'image, qui n'a
+# besoin que du serveur. httpx2 est requis par starlette.testclient sur un
+# environnement propre — sans lui, pytest ne collecte même pas les tests.
+test = [
+  "pytest>=8.0",
+  "httpx2>=2.0",
+  "pytest-playwright>=0.6",
+]
+
 [tool.setuptools]
 packages = ["comptagefer"]
 
