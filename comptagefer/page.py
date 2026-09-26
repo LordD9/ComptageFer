@@ -73,12 +73,13 @@ PAGE = """<!doctype html>
     <label for="passengers">Voyageurs dans le train</label>
     <div class="counter" id="counter">
       <button type="button" id="minus">−1</button>
-      <span id="count-display">0</span>
+      <span id="count-display" aria-live="polite">0</span>
       <button type="button" id="plus1">+1</button>
       <button type="button" id="plus5">+5</button>
       <button type="button" id="plus10">+10</button>
     </div>
-    <input id="passengers" type="number" inputmode="numeric" min="0" step="1" placeholder="0" class="hidden">
+    <p class="hint">Ou écris le nombre exact.</p>
+    <input id="passengers" type="number" inputmode="numeric" min="0" step="1" placeholder="0">
     <label for="reliability">Fiabilité du compte, de 0 à 100</label>
     <input id="reliability" type="number" inputmode="numeric" min="0" max="100" step="1" value="80">
     <details>
@@ -202,32 +203,33 @@ $("change-od").onclick = () => show("destination-step");
 $("change-train").onclick = () => show("train-step");
 $("change-mode").onclick = () => show("train-step");
 $("mode-unique").onclick = () => {
-  $("#train-chip").textContent = formatTrain(state.trip);
+  $("train-chip").textContent = formatTrain(state.trip);
   state.passengers = 0;
-  $("#count-display").textContent = "0";
-  $("#passengers").value = 0;
+  $("count-display").textContent = "0";
+  $("passengers").value = 0;
   show("form-step");
-  $("#passengers").focus();
+  $("passengers").focus();
 };
 
 function updateCount(delta) {
   state.passengers = Math.max(0, (state.passengers || 0) + delta);
-  $("#count-display").textContent = state.passengers;
-  $("#passengers").value = state.passengers;
+  $("count-display").textContent = state.passengers;
+  $("passengers").value = state.passengers;
 }
 
-$("#plus1").onclick = () => updateCount(1);
-$("#plus5").onclick = () => updateCount(5);
-$("#plus10").onclick = () => updateCount(10);
-$("#minus").onclick = () => updateCount(-1);
+$("plus1").onclick = () => updateCount(1);
+$("plus5").onclick = () => updateCount(5);
+$("plus10").onclick = () => updateCount(10);
+$("minus").onclick = () => updateCount(-1);
 
-$("#passengers").addEventListener("input", (e) => {
+$("passengers").addEventListener("input", (e) => {
   const v = parseInt(e.target.value, 10);
   state.passengers = isNaN(v) || v < 0 ? 0 : v;
-  $("#count-display").textContent = state.passengers;
+  $("count-display").textContent = state.passengers;
 });
 
-$("#snake-back").onclick = () => show("mode-step");
+$("mode-snake").onclick = startSnake;
+$("snake-back").onclick = () => show("mode-step");
 function field(id, label, placeholder) {
   const wrap = document.createElement("label");
   wrap.htmlFor = id;
@@ -421,10 +423,11 @@ function countPayload() {
     origin_name: state.origin.name,
     destination_name: state.destination.name,
     trip_id: state.trip.trip_id,
-    passengers: state.passengers != null ? state.passengers : Number($("#passengers").value),
-    reliability: Number($("#reliability").value),
-    pseudo: $("#pseudo").value,
-    comment: $("#comment").value,
+    // state.passengers est l'unique source : le compteur et le champ l'écrivent tous les deux.
+    passengers: state.passengers,
+    reliability: Number($("reliability").value),
+    pseudo: $("pseudo").value,
+    comment: $("comment").value,
     standing: optionalNumber("standing"),
     seats_free: optionalNumber("seats"),
     imbalance: optionalNumber("imbalance"),
