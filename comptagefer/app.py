@@ -12,6 +12,7 @@ import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from html import escape
+from urllib.parse import quote
 from io import BytesIO, StringIO
 from pathlib import Path
 
@@ -20,7 +21,13 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from comptagefer.carte import counted_features, map_page as carte_page
 from comptagefer.offer import nearest_stops, search_stops, trips_serving
-from comptagefer.timetable import listed_trips, stops_between
+from comptagefer.timetable import (
+    find_line,
+    line_stops,
+    listed_trips,
+    search_lines,
+    stops_between,
+)
 from comptagefer.page import PAGE
 from comptagefer.rt import (
     ALERTS_URL,
@@ -67,6 +74,9 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(saisie)")}
         if "legs" not in columns:
             connection.execute("ALTER TABLE saisie ADD COLUMN legs TEXT")
+
+    timetable = data_dir / "timetable.db"
+    stops_database = data_dir / "stops.db"
 
     app = FastAPI(title="ComptageFer")
 
@@ -119,7 +129,6 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
         from_: str = Query(alias="from"),
         to: str = Query(...),
     ) -> list[dict]:
-        timetable = data_dir / "timetable.db"
         if not timetable.exists():
             return []
         return stops_between(
@@ -145,6 +154,45 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
             counted_features(data_dir / "stops.db", rows),
             len([row for row in rows if row["kind"] in {"count", "serpent"}]),
         )
+
+    @app.get("/api/lignes", response_class=PlainTextResponse)
+    def api_lignes(q: str = Query("", max_length=80)) -> PlainTextResponse:
+        """Les lignes dont le nom court ou le nom long contient la recherche.
+
+        La clé est le `route_id`, jamais le nom court : le GTFS national
+        attribue le même « C13 » à six lignes différentes, donc une URL
+        construite sur le nom court ouvrirait une page au hasard.
+        """
+        return PlainTextResponse(
+            json.dumps(search_lines(timetable, q), ensure_ascii=False),
+            media_type="application/json",
+        )
+
+    @app.get("/ligne", response_class=HTMLResponse)
+    def ligne(ligne_id: str = Query("", alias="ligne", max_length=120)) -> str:
+        """Les comptages d'une ligne, ou une invitation à en faire un.
+
+        Une ligne sans comptage n'est pas une page vide : la liste des arrêts
+        est déjà là, et c'est exactement ce qu'il faut pour partir compter.
+        """
+        identifiant = ligne_id.strip()
+        if not identifiant:
+            return _plain_reading_page("Quelle ligne ?", _link("/rechercher", "Rechercher une ligne"))
+        trouvee = find_line(timetable, identifiant)
+        if trouvee is None:
+            return _plain_reading_page(
+                "Cette ligne n'est pas dans le GTFS national.",
+                _link("/rechercher", "Rechercher une ligne"),
+            )
+        return _line_page(
+            trouvee,
+            _saisies_de_ligne(database, timetable, identifiant),
+            line_stops(timetable, identifiant, data_dir / "stops.db"),
+        )
+
+    @app.get("/rechercher", response_class=HTMLResponse)
+    def rechercher(q: str = Query("", max_length=80)) -> str:
+        return _search_page(q, stops_database, timetable)
 
     @app.get("/methode", response_class=HTMLResponse)
     def methode() -> str:
@@ -251,7 +299,7 @@ def ensure_referential(data_dir: Path) -> None:
     if stops.exists():
         with open_stops(stops) as connection:
             need_stops = connection.execute("SELECT COUNT(*) FROM stop").fetchone()[0] == 0
-    need_times = not timetable.exists()
+    need_times = not timetable.exists() or not _timetable_has_lignes(timetable)
     if not need_stops and not need_times:
         return
     payload = _fetch(STOPS_URL, timeout=180)
@@ -259,7 +307,9 @@ def ensure_referential(data_dir: Path) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     try:
         with zipfile.ZipFile(BytesIO(payload)) as archive:
-            for name in ("stops.txt", "trips.txt", "stop_times.txt", "calendar_dates.txt"):
+            for name in ("stops.txt", "trips.txt", "stop_times.txt", "calendar_dates.txt", "routes.txt"):
+                if name not in archive.namelist():
+                    continue
                 with archive.open(name) as raw, (folder / name).open("wb") as target:
                     shutil.copyfileobj(raw, target)
         if need_stops:
@@ -271,10 +321,28 @@ def ensure_referential(data_dir: Path) -> None:
                 folder / "trips.txt",
                 folder / "stop_times.txt",
                 folder / "calendar_dates.txt",
+                folder / "routes.txt",
             )
             importing.replace(timetable)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+
+
+def _timetable_has_lignes(timetable: Path) -> bool:
+    """Une base importée avant les pages ligne n'a pas ces deux tables.
+
+    On la réimporte au prochain démarrage plutôt que de laisser une recherche
+    de ligne muette : mieux vaut un import de cinq minutes qu'une page qui
+    répond « aucune ligne » alors que la feed en contient 725.
+    """
+    if not timetable.exists():
+        return False
+    try:
+        from comptagefer.timetable import _has_lines
+
+        return _has_lines(timetable)
+    except sqlite3.DatabaseError:
+        return False
 
 
 def ensure_stop_names(database: Path) -> None:
@@ -546,7 +614,252 @@ def _photo_label(snapshot: object, key: str) -> str:
     return f"{kind} {etat}{minutes}".strip()
 
 
-def _reading_page(rows: list[dict]) -> str:
+def _saisies_de_ligne(database: Path, timetable: Path, route_id: str) -> list[dict]:
+    """Les comptages rattachés à une ligne.
+
+    Le rattachement passe par le trip : c'est le seul lien écrit quand le
+    comptage a été fait, et il dit la ligne exacte, ce qu'une paire
+    origine-destination ne dit pas — deux lignes se partagent souvent le même
+    corridor. Un comptage sans trip_id, et un « train signalé », n'ont pas de
+    ligne : on ne les invente pas, on ne les affiche pas ici.
+    """
+    from comptagefer.timetable import _has_lines
+
+    if not timetable.exists() or not _has_lines(timetable):
+        return []
+    with sqlite3.connect(timetable) as connection:
+        trips = {row[0] for row in connection.execute(
+            "SELECT trip_id FROM trip_ligne WHERE route_id = ?", (route_id,)
+        )}
+    if not trips:
+        return []
+    marques = ",".join("?" for _ in trips)
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
+                   trip_id, passengers, reliability, pseudo, standing, seats_free, imbalance,
+                   snapshot, kind, created_at, legs
+            FROM saisie
+            WHERE trip_id IN ({marques}) AND kind IN ('count', 'serpent')
+            ORDER BY created_at
+            """,
+            tuple(trips),
+        ).fetchall()
+    return _saisie_dicts(rows)
+
+
+def _saisie_dicts(rows: list) -> list[dict]:
+    listed = []
+    for row in rows:
+        listed.append(
+            {
+                "client_id": row[0],
+                "origin_stop_id": row[1],
+                "destination_stop_id": row[2],
+                "origin_name": row[3],
+                "destination_name": row[4],
+                "trip_id": row[5],
+                "passengers": row[6],
+                "reliability": row[7],
+                "pseudo": row[8],
+                "standing": row[9],
+                "seats_free": row[10],
+                "imbalance": row[11],
+                "snapshot": json.loads(row[12]) if row[12] else None,
+                "kind": row[13],
+                "created_at": row[14],
+                "legs": json.loads(row[15]) if row[15] else None,
+            }
+        )
+    return listed
+
+
+def _line_page(ligne: dict, rows: list[dict], arrets: list[dict]) -> str:
+    """La page d'une ligne : ses arrêts, ses comptages, ou une invitation."""
+    titre = escape(ligne["titre"])
+    mode = {"train": "train", "car": "car", "tramway": "tramway"}.get(ligne.get("mode") or "", "")
+    sous_titre = f"{escape(ligne['nom_court'])}" + (f" — {escape(ligne['nom_long'])}" if ligne["nom_long"] else "")
+
+    if arrets:
+        liste_arrets = "<ol class='stops'>" + "".join(
+            f"<li>{escape(arret['name'])}</li>" for arret in arrets
+        ) + "</ol>"
+    else:
+        liste_arrets = "<p>Les arrêts de cette ligne ne sont pas dans l'horaire importé.</p>"
+
+    if rows:
+        corps = _reading_cards(rows)
+    else:
+        # Pas de carte blanche : l'invitation à compter est la page, et la
+        # liste des arrêts est déjà ce qu'il faut pour savoir où monter. Le
+        # lien est un bouton visible : un lien en fin de paragraphe, dans une
+        # page faite pour être lue dans un train, passe inaperçu.
+        corps = (
+            "<div class='card'>"
+            "<p><strong>Aucun comptage sur cette ligne pour l'instant.</strong></p>"
+            "<p>Les lignes se comptent dans le train, sur un trajet. "
+            "Une ligne sans comptage n'est pas une ligne vide : elle est "
+            "simplement encore muette.</p>"
+            "<p><a class='bouton' href='/'>Compter un train</a></p>"
+            "</div>"
+        )
+
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{titre} — ComptageFer</title>
+<style>
+  body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
+  main {{ max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
+  .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
+  a {{ color: #1c1915; }}
+  .mode {{ font-size: 0.85rem; color: #5c554b; text-transform: uppercase; letter-spacing: 0.04em; }}
+  ol.stops {{ padding-left: 1.2rem; }}
+  ol.stops li {{ margin: 0.25rem 0; }}
+  .status {{ font-size: 0.85rem; color: #5c554b; }}
+  a.bouton {{ display: inline-block; background: #1c1915; color: #fff; text-decoration: none;
+              padding: 0.7rem 1.1rem; border-radius: 0.6rem; font-weight: 600; }}
+</style>
+</head>
+<body>
+<main>
+  <h1>{titre}</h1>
+  {f"<p class='mode'>{mode}</p>" if mode else ""}
+  <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
+  <p><a href="/rechercher">Rechercher</a> · <a href="/carte">Carte</a> · <a href="/comptages">Tous les comptages</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
+  <h2>Arrêts</h2>
+  {liste_arrets}
+  <h2>Comptages</h2>
+  {corps}
+</main>
+</body>
+</html>
+"""
+
+
+def _link(href: str, text: str) -> str:
+    return f'<a href="{href}">{escape(text)}</a>'
+
+
+def _plain_reading_page(titre: str, corps: str) -> str:
+    """Une page de lecture sans liste : ni ligne inconnue, ni paramètre oublié.
+
+    Elle garde les mentions et la navigation, sinon on pourrait atterrir sur une
+    page qui ne dit ni ce que sont ces chiffres, ni comment revenir.
+    """
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escape(titre)} — ComptageFer</title>
+<style>
+  body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
+  main {{ max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
+  .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
+  a {{ color: #1c1915; }}
+</style>
+</head>
+<body>
+<main>
+  <h1>{escape(titre)}</h1>
+  <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
+  <p>{_link("/rechercher", "Rechercher")} · {_link("/carte", "Carte")} · {_link("/comptages", "Comptages")} · {_link("/", "Compter")} · {_link("/methode", "Méthode")}</p>
+  <div class="card"><p>{corps}</p></div>
+</main>
+</body>
+</html>
+"""
+
+
+def _search_page(query: str, stops_database: Path, timetable: Path) -> str:
+    """Un seul champ pour une gare ou une ligne.
+
+    Le cas d'usage est « Lyon » sans savoir si c'est une gare ou un nom de
+    ligne : deux champs feraient choisir avant de savoir quoi chercher.
+    """
+    from comptagefer.timetable import _has_lines
+
+    requete = query.strip()
+    gares = search_stops(stops_database, requete) if requete else []
+    lignes = search_lines(timetable, requete) if requete and _lignes_disponibles(timetable) else []
+
+    if not requete:
+        corps = (
+            "<div class='card'><p>Écris un nom de gare ou de ligne. "
+            "« Lyon » trouve les deux : la gare, et les lignes qui la traversent.</p></div>"
+        )
+    else:
+        morceaux = []
+        if gares:
+            morceaux.append(
+                "<h2>Gares</h2><ul class='stops'>"
+                + "".join(f"<li>{escape(gare['name'])}</li>" for gare in gares)
+                + "</ul>"
+            )
+        if lignes:
+            morceaux.append(
+                "<h2>Lignes</h2><ul class='stops'>"
+                + "".join(
+                    f"<li><a href=\"/ligne?ligne={quote(found['route_id'])}\">{escape(found['titre'])}</a></li>"
+                    for found in lignes
+                )
+                + "</ul>"
+            )
+        if not morceaux:
+            corps_morceaux = (
+                "<div class='card'><p>Rien pour cette recherche.</p>"
+                "<p>Les gares viennent du GTFS national. Les lignes aussi, "
+                "mais seulement si l'import a été refait depuis la dernière mise à jour.</p></div>"
+            )
+        else:
+            corps_morceaux = "".join(morceaux)
+        corps = corps_morceaux
+
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rechercher — ComptageFer</title>
+<style>
+  body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
+  main {{ max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
+  .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
+  a {{ color: #1c1915; }}
+  input {{ width: 100%; box-sizing: border-box; font: inherit; padding: 0.7rem; border-radius: 0.6rem;
+           border: 1px solid #b9b2a6; background: #fff; }}
+  ul.stops {{ list-style: none; padding: 0; }}
+  ul.stops li {{ background: #fff; border-radius: 0.6rem; padding: 0.6rem 0.8rem; margin: 0.3rem 0; }}
+</style>
+</head>
+<body>
+<main>
+  <h1>Rechercher</h1>
+  <form action="/rechercher" method="get">
+    <label for="q">Gare ou ligne</label>
+    <input id="q" type="search" name="q" enterkeyhint="search" autocomplete="off"
+           value="{escape(requete)}" placeholder="Lyon, C13, Bourg-en-Bresse">
+    <button type="submit">Chercher</button>
+  </form>
+  {corps}
+  <p><a href="/comptages">Comptages</a> · <a href="/carte">Carte</a> · <a href="/rechercher">Rechercher</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
+</main>
+</body>
+</html>
+"""
+
+
+def _lignes_disponibles(timetable: Path) -> bool:
+    from comptagefer.timetable import _has_lines
+
+    return timetable.exists() and _has_lines(timetable)
+
+
+def _reading_cards(rows: list[dict]) -> str:
     cards = []
     for row in rows:
         who = escape(row["pseudo"]) if row["pseudo"] else "anonyme"
@@ -566,7 +879,11 @@ def _reading_page(rows: list[dict]) -> str:
             f"même type {_photo_label(row['snapshot'], 'suivant_meme_type')}</p>"
             "</article>"
         )
-    body = "\n".join(cards) or "<p>Aucun comptage pour l'instant.</p>"
+    return "\n".join(cards) or "<p>Aucun comptage pour l'instant.</p>"
+
+
+def _reading_page(rows: list[dict]) -> str:
+    body = _reading_cards(rows)
     return f"""<!doctype html>
 <html lang="fr">
 <head>
@@ -584,7 +901,7 @@ def _reading_page(rows: list[dict]) -> str:
 <main>
   <h1>Comptages</h1>
   <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
-  <p><a href="/carte">Voir la carte</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
+  <p><a href="/rechercher">Rechercher</a> · <a href="/carte">Voir la carte</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
   {body}
 </main>
 </body>
@@ -758,7 +1075,7 @@ qui les affiche de la seconde.</p>
 <p>Cette page décrit ce que l'outil fait aujourd'hui. Elle sera mise à jour
 chaque fois qu'une règle change — et en particulier le jour où une méthode
 d'estimation annuelle sera décidée.</p>
-<p><a href="/comptages">Voir les comptages</a> · <a href="/carte">Carte</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a></p>
+<p><a href="/comptages">Voir les comptages</a> · <a href="/rechercher">Rechercher</a> · <a href="/carte">Carte</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a></p>
 </footer>
 
 </main>

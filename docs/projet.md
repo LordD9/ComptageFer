@@ -319,7 +319,7 @@ Le second mode, pas avant que le premier survive à un tunnel.
 - reconstruction : effectif suivant = effectif + montées − descentes
 - indicateurs de charge optionnels
 
-Vérification : une session de trois arrêts donne un profil cohérent avec cette égalité. **Livrée**, sauf un point : *reprendre une saisie de serpent en quittant la page et en revenant plus tard* n'est pas fait. Le `legs` part en JSON avec le reste de la file, donc le tunnel est couvert, mais pas la fermeture d'onglet. À faire quand quelqu'un le signale.
+Vérification : une session de trois arrêts donne un profil cohérent avec cette égalité. **Livrée**, y compris *reprendre une saisie de serpent en quittant la page et en revenant plus tard*. La file hors ligne ne le couvrait pas : elle ne transporte que ce qui doit partir vers le serveur, pas une saisie en cours. Le serpent est donc écrit dans le `localStorage` à chaque « Suivant », et proposé au chargement, avec un bouton pour l'abandonner. Un serpent vide ne propose rien, et un serpent parti n'est plus proposé.
 
 ### Phase 6 — Lecture, carte, export
 
@@ -335,8 +335,14 @@ La carte sert à voir les résultats, pas à saisir.
   - fond de plan : tuiles raster OpenStreetMap, aucune clé d'API. La politique d'usage d'OSM est le
     vrai plafond ; un fournisseur de tuiles se change en une constante
   - Leaflet vient d'un CDN : sans réseau, la page le dit et garde la liste des tracés
-- recherche par nom — **reste**, l'API `/api/stops?q=` est là, pas l'écran
-- page ligne : liste brute, ou invitation à contribuer s'il n'y a rien — **reste**
+- recherche par nom — **fait**, c'est `/rechercher`, un seul champ pour une gare ou une ligne
+- page ligne : liste brute, ou invitation à contribuer s'il n'y a rien — **fait**, c'est `/ligne`
+
+Deux faits de la source ont décidé la forme de la page ligne, et il vaut mieux les écrire ici qu'un jour dans un ticket :
+
+- **Les noms de ligne ne sont pas uniques.** Le GTFS national compte 725 lignes pour 423 noms courts : `C13` désigne six lignes différentes, `INCONNU` cinquante-trois. Une URL construite sur le nom court ouvrirait donc une page au hasard. Tout ce qui identifie une ligne passe par le `route_id`, et le titre affiché porte toujours le nom long, parce que « C13 » ne veut rien dire pour quelqu'un qui ne connaît pas la numérotation SNCF.
+- Le réimport se fait une fois : une base installée avant les pages ligne est détectée au démarrage suivant et réimportée, parce qu'une recherche de ligne muette serait pire qu'une attente. Le `routes.txt` ajoute environ 20 Mo à `timetable.db`, qui pèse déjà 200 Mo.
+- **Le rattachement d'un comptage à une ligne passe par le `trip_id`**, le seul lien écrit au moment du comptage. Une paire origine-destination ne suffirait pas : deux lignes se partagent souvent le même corridor. Un « train signalé », lui, n'a pas de trip et n'apparaît sur aucune page ligne — on ne lui invente pas de ligne.
 
 ### Phase 7 — Qualité minimale
 

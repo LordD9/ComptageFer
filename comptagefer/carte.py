@@ -156,7 +156,7 @@ def map_page(features: list[dict], total: int) -> str:
 <main>
   <h1>Carte</h1>
   <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
-  <p><a href="/comptages">Voir la liste</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
+  <p><a href="/comptages">Voir la liste</a> · <a href="/rechercher">Rechercher</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
   {_NOTE}
   {_corps(features)}
   <p id="carte-pied" class="pied">{_pied(total, len(features))}</p>
