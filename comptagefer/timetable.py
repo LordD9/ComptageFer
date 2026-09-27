@@ -35,7 +35,40 @@ def etat_of(status: str | None, delay_seconds: int | None) -> str:
     return "à l'heure"
 
 
-def import_timetable(database: Path, trips_file: Path, times_file: Path, dates_file: Path) -> int:
+def _opened(path: Path):
+    """Lecture du GTFS en utf-8-sig : le national n'a pas de BOM aujourd'hui,
+    mais une feed qui en aurait un ferait échouer la première colonne, et on
+    ne veut pas que ça décide de l'apparition des pages ligne."""
+    return Path(path).open(newline="", encoding="utf-8-sig")
+
+
+def _court(row: dict) -> str:
+    """Le nom court, sauf quand c'est un placeholder.
+
+    53 lignes du GTFS national s'appellent « INCONNU » : c'est une valeur de
+    la source, pas une ligne sans nom. On garde quand même la chaîne, pour ne
+    pas inventer un identifiant, mais la recherche l'ignorera.
+    """
+    return (row.get("route_short_name") or "").strip() or (row.get("route_long_name") or "").strip()
+
+
+def _long(row: dict) -> str | None:
+    value = (row.get("route_long_name") or "").strip()
+    return value or None
+
+
+def _mode(row: dict) -> str | None:
+    """GTFS : 0 tramway, 2 rail, 3 bus. On ne garde que ce qui nous parle."""
+    return {"0": "tramway", "2": "train", "3": "car"}.get((row.get("route_type") or "").strip())
+
+
+def import_timetable(
+    database: Path,
+    trips_file: Path,
+    times_file: Path,
+    dates_file: Path,
+    routes_file: Path | None = None,
+) -> int:
     database.parent.mkdir(parents=True, exist_ok=True)
     stored = 0
     with sqlite3.connect(database) as connection:
@@ -48,6 +81,29 @@ def import_timetable(database: Path, trips_file: Path, times_file: Path, dates_f
             )
             """
         )
+        # Les lignes vivent à part, et le rattachement des trips aussi, plutôt
+        # qu'une colonne ajoutée dans circulation : une base installée avant
+        # cette PR garde ainsi un schéma valide, et n'est réimportée qu'au
+        # prochain ensure_referential, qui détecte la table manquante.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ligne (
+                route_id TEXT PRIMARY KEY,
+                nom_court TEXT NOT NULL,
+                nom_long TEXT,
+                mode TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trip_ligne (
+                trip_id TEXT PRIMARY KEY,
+                route_id TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS trip_ligne_ligne ON trip_ligne(route_id)")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS passage (
@@ -80,6 +136,26 @@ def import_timetable(database: Path, trips_file: Path, times_file: Path, dates_f
             )
             stored = connection.execute("SELECT COUNT(*) FROM circulation").fetchone()[0]
         passages = []
+        if routes_file is not None and Path(routes_file).exists():
+            connection.executemany(
+                """
+                INSERT OR REPLACE INTO ligne (route_id, nom_court, nom_long, mode)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    (row["route_id"], _court(row), _long(row), _mode(row))
+                    for row in csv.DictReader(_opened(routes_file))
+                    if row.get("route_id")
+                ),
+            )
+            connection.executemany(
+                "INSERT OR REPLACE INTO trip_ligne (trip_id, route_id) VALUES (?, ?)",
+                (
+                    (row["trip_id"], row["route_id"])
+                    for row in csv.DictReader(_opened(trips_file))
+                    if row.get("trip_id") and row.get("route_id")
+                ),
+            )
         with times_file.open(newline="") as handle:
             for row in csv.DictReader(handle):
                 departure = row.get("departure_time") or row.get("arrival_time")
@@ -181,6 +257,125 @@ def _pairs(database, origin_stop_id, destination_stop_id, local, window, stops_d
         if start <= departure <= end:
             found.append({"trip_id": trip_id, "kind": kind, "departure": departure})
     return found
+
+
+def search_lines(database: Path, query: str, limit: int = 12) -> list[dict]:
+    """Les lignes dont le nom court ou le nom long contient la recherche.
+
+    « Lyon » trouve donc C13 et aussi « Saint-Étienne - Roanne » si elle passe
+    par Lyon, parce que le nom long est le deuxième nom qu'un voyageur connaît.
+    """
+    needle = query.strip()
+    if len(needle) < 2:
+        return []
+    escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    motif = f"%{escaped}%"
+    if not Path(database).exists() or not _has_lines(database):
+        return []
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            """
+            SELECT route_id, nom_court, nom_long, mode FROM ligne
+            WHERE nom_court LIKE ? ESCAPE '\\' OR (nom_long IS NOT NULL AND nom_long LIKE ? ESCAPE '\\')
+            ORDER BY
+                CASE WHEN lower(nom_court) = lower(?) THEN 0
+                     WHEN lower(nom_court) LIKE lower(?) || '%' ESCAPE '\\' THEN 1
+                     ELSE 2 END,
+                nom_court
+            LIMIT ?
+            """,
+            (motif, motif, needle, escaped + "%", limit),
+        ).fetchall()
+    return [
+        {
+            "route_id": route_id,
+            "nom_court": nom_court,
+            "nom_long": nom_long,
+            "mode": mode,
+            "titre": _titre(nom_court, nom_long),
+        }
+        for route_id, nom_court, nom_long, mode in rows
+    ]
+
+
+def line_counts(database: Path, route_id: str) -> int:
+    """Combien de trips de cette ligne sont dans l'horaire.
+
+    Une page ligne sans ça afficherait « aucun comptage » en confondant ligne
+    absente de l'horaire et ligne jamais comptée. C'est le même chiffre que la
+    page doit afficher en face de la liste.
+    """
+    if not Path(database).exists() or not _has_lines(database):
+        return 0
+    with sqlite3.connect(database) as connection:
+        return connection.execute(
+            "SELECT COUNT(*) FROM trip_ligne WHERE route_id = ?", (route_id,)
+        ).fetchone()[0]
+
+
+def find_line(database: Path, route_id: str) -> dict | None:
+    if not Path(database).exists() or not _has_lines(database):
+        return None
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT route_id, nom_court, nom_long, mode FROM ligne WHERE route_id = ?", (route_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "route_id": row[0],
+        "nom_court": row[1],
+        "nom_long": row[2],
+        "mode": row[3],
+        "titre": _titre(row[1], row[2]),
+    }
+
+
+def line_stops(database: Path, route_id: str, stops_database: Path | None) -> list[dict]:
+    """Les arrêts de la ligne, dans l'ordre d'un de ses trips.
+
+    On prend le premier trip comme ordre de référence : l'ordre des arrêts est
+    le même sur toute la ligne, et le GTFS national ne donne pas de séquence
+    globale. Les arrêts sont ramenés à leur gare, sinon la page afficherait
+    « Lyon Part-Dieu voie A » deux fois.
+    """
+    if not Path(database).exists() or not _has_lines(database):
+        return []
+    with sqlite3.connect(database) as connection:
+        trip_id = connection.execute(
+            "SELECT trip_id FROM trip_ligne WHERE route_id = ? ORDER BY trip_id LIMIT 1",
+            (route_id,),
+        ).fetchone()
+        if trip_id is None:
+            return []
+        rows = connection.execute(
+            "SELECT stop_id FROM passage WHERE trip_id = ? ORDER BY depart_sec",
+            (trip_id[0],),
+        ).fetchall()
+    names = _station_names(stops_database)
+    found = []
+    seen = set()
+    for (stop_id,) in rows:
+        name, key = names.get(stop_id, (stop_id, stop_id))
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append({"stop_id": key, "name": name})
+    return found
+
+
+def _has_lines(database: Path) -> bool:
+    with sqlite3.connect(database) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    return {"ligne", "trip_ligne"} <= tables
+
+
+def _titre(nom_court: str, nom_long: str | None) -> str:
+    """Ce qu'on lit en titre. Le nom court seul ne dit rien à quelqu'un qui
+    ne connaît pas la numérotation SNCF : « C13 » veut dire Lyon - Bourg."""
+    if nom_long and nom_long != nom_court:
+        return f"{nom_court} · {nom_long}"
+    return nom_court or "Ligne sans nom"
 
 
 def stops_between(
