@@ -512,6 +512,123 @@ def test_the_load_snake_is_reachable(page, site):
     assert "Lyon" in page.text_content("#snake-title")
 
 
+# --- la carte ---------------------------------------------------------------
+#
+# Leaflet et les tuiles viennent d'un tiers. La suite ne doit pas dépendre du
+# réseau du CI : on sert une fausse bibliothèque qui enregistre ce que la page
+# lui demande de dessiner, et on coupe les tuiles. Ce qui est testé, c'est la
+# page — qu'elle appelle Leaflet avec les bons points, dans le bon ordre, et
+# qu'elle survive à l'absence de Leaflet.
+
+FAKE_LEAFLET = """
+window.L = {};
+const dessines = { segments: [], points: [], vues: [] };
+window.dessines = dessines;
+function latLng(lat, lon) { return { lat: lat, lon: lon }; }
+latLng.extend = function (autre) { return { extend: function () { return autre; } }; };
+window.L.map = function (id) {
+  dessines.vues.push(id);
+  return {
+    setView: function () {},
+    fitBounds: function (bornes) { dessines.bornes = bornes; },
+    invalidateSize: function () {},
+    addTo: function () { return null; },
+  };
+};
+window.L.latLng = latLng;
+window.L.latLngBounds = function (un, deux) { return { extend: function () { return un; } }; };
+window.L.layerGroup = function () { return { addTo: function () { return null; } }; };
+window.L.tileLayer = function (url) { return { url: url, addTo: function () { return null; } }; };
+window.L.polyline = function (points, options) {
+  dessines.segments.push({ points: points, options: options });
+  return { addTo: function () { return null; } };
+};
+window.L.circleMarker = function (point, options) {
+  dessines.points.push({ point: point, options: options });
+  return { bindPopup: function () { return this; }, addTo: function () { return null; } };
+};
+"""
+
+
+def _carte_sans_leaflet(page, site: str) -> None:
+    """Ouvre /carte avec Leaflet coupé : c'est le cas du réseau mort."""
+    page.route("**/leaflet.js", lambda route: route.abort())
+    page.goto(site + "/carte")
+
+
+def test_the_map_page_loads_without_a_script_error(page, site):
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.route("**/*.png", lambda route: route.abort())
+    page.goto(site + "/carte")
+    page.wait_for_selector("body")
+    assert _console_errors(page) == [], f"erreur JS sur la carte : {_console_errors(page)}"
+
+
+def test_a_count_is_drawn_as_a_segment_between_its_two_stops(page, site):
+    """Le segment doit suivre les coordonnées réelles des gares, pas un ordre
+    de saisie : Lyon Part-Dieu est au nord de Valence, pas l'inverse."""
+    _reach_form(page, site)
+    page.click("#plus10")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_function("() => window.dessines && window.dessines.segments.length === 1")
+
+    dessines = page.evaluate("() => window.dessines")
+    assert len(dessines["segments"]) == 1
+    points = dessines["segments"][0]["points"]
+    assert points[0][0] > points[-1][0], "le tracé doit commencer à Lyon, au nord"
+    assert 45.7 < points[0][0] < 45.8
+    assert 44.9 < points[-1][0] < 45.0
+    assert 2 == len(dessines["points"]), "un disque par arrêt compté"
+
+
+def test_the_snake_draws_every_stop_it_recorded(page, site):
+    """Un serpent a un parcours : le dessiner comme un couple
+    origine-destination effacerait l'arrêt intermédiaire qui fait le compte."""
+    _reach_snake(page, site)
+    page.fill("#snake-onboard", "40")
+    page.click("#snake-next")
+    # Les descentes sont obligatoires hors dernier arrêt : c'est ce qui permet
+    # de garder le nombre portes fermées au lieu d'inventer un compte à chaque
+    # arrêt, donc le test les saisit comme un utilisateur.
+    page.fill("#snake-boarded", "3")
+    page.fill("#snake-alighted", "1")
+    page.click("#snake-next")
+    page.fill("#snake-boarded", "0")
+    page.click("#snake-next")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_function("() => window.dessines && window.dessines.segments.length === 1")
+
+    dessines = page.evaluate("() => window.dessines")
+    assert len(dessines["segments"][0]["points"]) == 3, "Lyon, Vienne, Valence"
+    assert 3 == len(dessines["points"])
+
+
+def test_the_map_page_explains_itself_when_leaflet_is_missing(page, site):
+    """Pas de bibliothèque, pas de cadre vide : la liste des tracés reste là."""
+    _carte_sans_leaflet(page, site)
+    page.wait_for_selector("body")
+    assert _console_errors(page) == [], f"erreur JS sans Leaflet : {_console_errors(page)}"
+    assert "carte n'a pas pu se charger" in page.text_content("body")
+    assert "ne suit pas la voie réelle" in page.text_content("body")
+
+
+def test_the_map_page_has_no_horizontal_overflow(page, site):
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector("body")
+    debord = page.evaluate(
+        "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
+    )
+    assert debord <= 0, f"la page déborde de {debord}px"
+
+
 def test_the_snake_walks_the_stops_of_the_chosen_trip(page, site):
     _reach_snake(page, site)
 
