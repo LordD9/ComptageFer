@@ -36,5 +36,23 @@ python -m playwright install --with-deps chromium
 pytest -q
 ```
 
-Le workflow `Tests` fait la même chose sur chaque PR, sur amd64. Le job
-`Publish image` reste chargé de construire l'image pour amd64 et arm64.
+Le workflow `Tests` fait la même chose sur chaque PR, sur amd64.
+
+Les tests de la file hors ligne sont en JavaScript, donc pytest ne les voit
+pas. Ils se lancent à part :
+
+```bash
+node --test tests/offline.test.js
+```
+
+## Les workflows
+
+| Workflow | Ce qu'il vérifie |
+| --- | --- |
+| `Tests` | pytest et un vrai Chromium, sur amd64 |
+| `Docker test` | démarre l'image construite et lui parle : `/`, `/comptages`, `/methode`, `/offline.js` doivent répondre 200. Les tests JS de la file hors ligne. |
+| `Publish image` | construit l'image pour amd64 et arm64, et ne pousse que sur `main` |
+
+`Publish image` construit aussi sur les PR, mais sans pousser — c'est
+`Docker test` qui prouve que l'image sert, pas seulement qu'elle se construit.
+
