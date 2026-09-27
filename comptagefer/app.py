@@ -137,6 +137,10 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
     def comptages() -> str:
         return _reading_page(_list_saisies(database))
 
+    @app.get("/methode", response_class=HTMLResponse)
+    def methode() -> str:
+        return _method_page()
+
     @app.get("/api/export.csv")
     def export_csv() -> PlainTextResponse:
         return PlainTextResponse(
@@ -568,8 +572,183 @@ def _reading_page(rows: list[dict]) -> str:
 <main>
   <h1>Comptages</h1>
   <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
-  <p><a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a></p>
+  <p><a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
   {body}
+</main>
+</body>
+</html>
+"""
+
+
+def _method_page() -> str:
+    """La méthode, en clair, à côté des chiffres.
+
+    Cette page est celle que le plan rend obligatoire avant toute
+    estimation. Tant qu'elle n'existe pas, on ne publie que du brut, et
+    c'est délibéré : un effectif saisi par un voyageur n'est pas une
+    fréquentation, et un échantillon de passionnés n'est pas un sondage.
+    """
+    return """<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Méthode — ComptageFer</title>
+<style>
+  body { margin: 0; font: 18px/1.5 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }
+  main { max-width: 34rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
+  h1 { margin-bottom: 0.2rem; }
+  h2 { margin-top: 2rem; font-size: 1.15rem; }
+  .lead { font-weight: 600; }
+  ul { padding-left: 1.2rem; }
+  li { margin: 0.35rem 0; }
+  a { color: #1c1915; }
+  .note { background: #fff; border-radius: 0.8rem; padding: 0.8rem 1rem; margin: 1rem 0; }
+  footer { margin-top: 2.5rem; font-size: 0.85rem; color: #5c554b; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Méthode</h1>
+<p class="lead">Ce que ces chiffres sont, et ce qu'ils ne sont pas.</p>
+
+<div class="note">
+<p><strong>Ce n'est pas une fréquentation officielle.</strong> Les données officielles
+de fréquentation des trains régionaux ne sont pas publiques, ou le sont sous des
+conditions étroites. Ce que vous voyez ici vient de gens qui ont compté, dans
+leur train, à leur main.</p>
+</div>
+
+<h2>Qui compte, et pourquoi c'est important</h2>
+
+<p>Les contributeurs sont des passionnés, des associations d'usagers, des
+voyageurs, des agents. Ce n'est pas un tirage aléatoire, et ce n'en sera pas un.
+Une ligne très commentée sera mieux documentée qu'une ligne découverte par
+hasard. Ce biais est connu et assumé : il veut dire que la couverture est
+meilleure là où l'intérêt existe, pas partout de la même façon.</p>
+
+<p>Un comptage n'en vaut pas un autre non plus. Chaque saisie porte un
+pourcentage de fiabilité déclaré par la personne qui comptait, et ce chiffre
+est stocké tel quel. Il est opinionnel, c'est le sien.</p>
+
+<h2>Ce qu'un comptage est</h2>
+
+<ul>
+  <li>Un effectif observé, entre un arrêt et le suivant, à un moment donné.</li>
+  <li>Une photographie. Le même train deux heures plus tard n'est pas le même
+      train deux heures plus tard.</li>
+  <li>Un relevé fait à vue, sans appareil de mesure. Les indications de part de
+      gens debout, de places assises restantes et d'écart de charge entre la
+      partie la plus chargée et la moins chargée sont des estimations visuelles.
+      Elles ne sont pas déduites les unes des autres.</li>
+</ul>
+
+<h2>Ce qu'un comptage n'est pas</h2>
+
+<ul>
+  <li>Une moyenne, ni un taux de remplissage calculé.</li>
+  <li>Un chiffre annuel. <strong>Ce site ne publie aucune estimation annuelle, et
+      il n'en publiera pas tant qu'une méthode écrite ne sera pas décidée
+      publiquement</strong>, avec le nombre de comptages sous-jacents affiché à
+      côté du chiffre. Pas de chiffre sans dénominateur.</li>
+  <li>Un échantillon représentatif. Rien ici ne prétend l'être.</li>
+</ul>
+
+<h2>Le serpent de charge</h2>
+
+<p>Le mode serpent demande un effectif portes fermées à la montée, puis les
+montées et les descentes arrêt par arrêt. L'effectif suivant se calcule&nbsp;:
+<b>effectif + montées − descentes</b>.</p>
+
+<p>Le nombre affiché dans la liste des comptages est l'effectif portes
+fermées, c'est-à-dire le nombre réellement compté. Le total reconstruit en fin
+de parcours n'est pas stocké comme un fait : c'est une somme, et une somme
+n'est pas une observation. Il est dans le profil détaillé, où l'on voit le
+parcours des arrêts. La descente de la personne qui compte est facultative, et
+elle n'est jamais mise à zéro par défaut&nbsp;: une absence n'est pas un zéro.</p>
+
+<h2>Un effectif qui sort de l'ordre de grandeur</h2>
+
+<p>Au-delà de 1 200 personnes, l'application affiche un avertissement. Ce n'est
+pas un refus&nbsp;: le comptage s'enregistre si vous voulez l'envoyer.</p>
+
+<p>Ce seuil n'est pas une capacité. <strong>Aucune source disponible ne donne
+la capacité du matériel</strong>&nbsp;: le GTFS national ne contient aucun fichier
+de matériel, et le flux temps réel ne publie pas cette information. On ne peut
+donc pas vous dire « ce train a 240 places, c'est trop&nbsp;». L'avertissement
+signale seulement que le chiffre sort de l'ordre de grandeur de tout matériel
+ferroviaire français, ce qui arrive surtout quand on tape un zéro de trop. Il
+reste signalable&nbsp;: dans un train de six voitures de deux niveaux, ce qui
+n'existe pas dans le TER français mais existe ailleurs, un effectif élevé peut
+être juste.</p>
+
+<p>Le seuil ne bloque jamais. Un comptage que vous confirmez est un comptement
+que nous gardons.</p>
+
+<h2>Le contexte autour du comptage</h2>
+
+<p>Au moment où vous choisissez votre train, l'outil photographie l'état du
+train choisi, du précédent et du suivant&nbsp;: retard, suppression, source de
+l'information. Cette photo est jointe au comptage et n'est jamais recalculée
+ensuite. Un envoi tardif, après un passage en tunnel, ne relit pas le flux
+temps réel&nbsp;: l'état aurait changé, ou le train serait sorti de la fenêtre
+de suivi.</p>
+
+<p>Une suppression est conservée comme un fait. Elle n'est pas transformée en
+report de voyageurs. Interpréter une suppression demanderait une méthode que
+nous n'avons pas encore.</p>
+
+<h2>Où viennent les données</h2>
+
+<ul>
+  <li><strong>L'offre des trains</strong> vient du GTFS national « Réseau SNCF
+      TGV, Intercités et TER » (données ouvertes SNCF). Il donne des horaires
+      théoriques, pas la réalité du jour.</li>
+  <li><strong>L'état des trains</strong> vient des flux GTFS-RT Trip Updates et
+      Service Alerts, rafraîchis toutes les 2 minutes et conservés 6 heures. Si
+      Trip Updates est vide, SIRI ET Lite est tenté une fois. L'état affiché
+      est celui connu à cet instant&nbsp;: « programmé » veut dire
+      « l'horaire existe, le retard n'est pas encore connu&nbsp;», pas
+      « à l'heure&nbsp;».</li>
+  <li><strong>Les comptages</strong> viennent des gens. C'est la seule source qui
+      ne soit ni un horaire théorique ni un flux automatique.</li>
+</ul>
+
+<p>Si un train qui a circulé n'apparaît pas, ce n'est pas une ligne à corriger à
+la main. Le signaler crée une trace pour voir les trous de l'offre, et rien
+d'autre.</p>
+
+<h2>Vos données</h2>
+
+<p>Pas de compte, pas de mot de passe, aucun moyen de vous rattacher à une
+saisie. Le pseudo est facultatif, et un pseudo n'est ni une identité ni un
+droit&nbsp;: il signe un comptage, rien de plus.</p>
+
+<p>La géolocalisation peut proposer la gare la plus proche, et elle n'est
+jamais enregistrée. Aucune coordonnée GPS n'est stockée, ni envoyée au serveur.
+L'application fonctionne hors ligne dans un train&nbsp;: si l'envoi échoue, la
+saisie reste sur votre téléphone et part au retour du réseau, une seule fois,
+sans créer de doublon.</p>
+
+<p>Un administrateur peut masquer une saisie. Il n'y a pas de compte
+administrateur&nbsp;: l'administration est un jeton que détient la personne qui
+lance le conteneur.</p>
+
+<h2>Licences</h2>
+
+<p>Les comptages partagés sont sous <strong>Licence Ouverte 2.0</strong>. Le code
+de l'application est sous <strong>GPL-3.0</strong>. Les deux ne se mélangent
+pas&nbsp;: les chiffres que vous exportez relèvent de la première, le logiciel
+qui les affiche de la seconde.</p>
+
+<footer>
+<p>Cette page décrit ce que l'outil fait aujourd'hui. Elle sera mise à jour
+chaque fois qu'une règle change — et en particulier le jour où une méthode
+d'estimation annuelle sera décidée.</p>
+<p><a href="/comptages">Voir les comptages</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a></p>
+</footer>
+
 </main>
 </body>
 </html>

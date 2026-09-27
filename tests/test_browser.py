@@ -307,6 +307,106 @@ def test_counter_is_reset_for_each_train(page, site):
 # --- l'envoi réel -----------------------------------------------------------
 
 
+def test_the_method_page_is_readable_and_honest(page, site):
+    """/methode est la page qui dit ce que les chiffres ne sont pas. Le plan
+    la rend obligatoire avant toute estimation, donc elle doit exister, se
+    lire, et dire les trois choses : pas une fréquentation officielle, pas
+    de chiffre annuel sans méthode, quelle licence."""
+    response = page.goto(site + "/methode")
+    assert response.status == 200, f"/methode répond {response.status}"
+    text = page.text_content("body")
+
+    assert page.title() == "Méthode — ComptageFer"
+    for attendu in (
+        "Ce n'est pas une fréquentation officielle",
+        "Pas de chiffre sans dénominateur",
+        "Licence Ouverte 2.0",
+        "GPL-3.0",
+        "Aucune coordonnée GPS n'est stockée",
+        "Pas de compte",
+    ):
+        assert attendu in text, f"la méthode ne dit pas : {attendu!r}"
+
+    # Les réserves doivent être visibles, pas cachées dans un attribut.
+    assert page.is_visible("main")
+    assert page.locator("h2").count() >= 6, "la méthode doit être structurée en sections"
+
+
+def test_the_reading_page_links_to_the_method(page, site):
+    """Le lien doit exister sur la page où se lisent les chiffres, sinon la
+    méthode reste une page que personne ne visite."""
+    page.goto(site + "/comptages")
+    link = page.locator('a[href="/methode"]')
+    assert link.count() == 1, "la page des comptages doit renvoyer vers la méthode"
+    assert link.is_visible()
+    link.click()
+    page.wait_for_selector("h1:has-text('Méthode')")
+
+
+def test_an_implausible_count_is_flagged_but_still_saved(page, site):
+    """Le seuil de plausibilité signale, il ne bloque pas.
+
+    Le plan dit « effectif au-dessus d'un plafond : signalé, pas bloqué ».
+    Il n'y a pas de plafond par type de train parce qu'aucune source ne
+    donne la capacité du matériel : ni le GTFS national, ni GTFS-RT.
+    """
+    _reach_form(page, site)
+    page.fill("#passengers", "1400")
+    page.dispatch_event("#passengers", "input")
+
+    warning = page.locator("#plausibilite")
+    assert warning.is_visible(), "un effectif de 1400 doit déclencher l'avertissement"
+    texte = warning.text_content()
+    assert "1400" in texte
+    assert "erreur de frappe" in texte
+    # Surtout : pas de blocage. Le message invite explicitement à envoyer,
+    # et l'envoi passe.
+    assert "quand même" in texte
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    rows = _sessions(site)
+    assert [r["passengers"] for r in rows] == [1400], "la saisie doit être enregistrée"
+
+
+def test_the_warning_appears_with_the_buttons_too(page, site):
+    """Le compteur +10 doit déclencher l'avertissement, pas seulement la
+    saisie directe : c'est le chemin le plus utilisé."""
+    _reach_form(page, site)
+    for _ in range(4):
+        page.click("#plus10")
+    assert page.text_content("#count-display") == "40"
+    assert page.locator("#plausibilite").is_hidden(), "40 personnes, aucun avertissement"
+
+    page.fill("#passengers", "1500")
+    page.dispatch_event("#passengers", "input")
+    assert page.locator("#plausibilite").is_visible()
+
+    # Repasser sous le seuil doit masquer l'avertissement.
+    page.fill("#passengers", "30")
+    page.dispatch_event("#passengers", "input")
+    assert page.locator("#plausibilite").is_hidden()
+
+
+def test_the_warning_does_not_survive_a_new_train(page, site):
+    """Changer de train remet le compteur à zéro : l'avertissement doit
+    disparaître aussi, sinon il traîne sur l'écran suivant."""
+    _reach_form(page, site)
+    page.fill("#passengers", "1400")
+    page.dispatch_event("#passengers", "input")
+    assert page.locator("#plausibilite").is_visible()
+
+    page.click("#change-train")
+    page.wait_for_selector("#train-step:not(.hidden)")
+    page.click("#trains .train >> nth=0")
+    page.wait_for_selector("#mode-step:not(.hidden)")
+    page.click("#mode-unique")
+    page.wait_for_selector("#form-step:not(.hidden)")
+
+    assert page.text_content("#count-display") == "0"
+    assert page.locator("#plausibilite").is_hidden(), "l'avertissement doit partir"
+
+
 def test_a_count_reaches_the_database(page, site):
     _reach_form(page, site)
     page.click("#plus10")
