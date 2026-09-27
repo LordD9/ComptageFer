@@ -10,12 +10,20 @@ permissions:
   contents: read
   packages: write
 
+# Deux pushes rapproches sur main ne doivent pas se marcher dessus : le
+# second annule le premier, encore en cours. Sans ca, chaque merge empile
+# un runner de build qui tourne pour rien.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   IMAGE: ghcr.io/lordd9/comptagefer
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +38,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      # Le build est retente en cas d'echec.
+      #
+      # Le 27 septembre 2026, ce workflow a echoue sur
+      #   failed to fetch oauth token: Post "https://auth.docker.io/token":
+      #   write: connection reset by peer
+      # alors que le build et les tests du meme commit passaient au meme
+      # moment : c'etait Docker Hub qui coupait la connexion, pas le depot.
+      # Le build pose une question par architecture, donc quelques secondes
+      # de coupure suffisent a faire tomber le job.
+      #
+      # build-push-action ne retente pas la resolution des metadonnees de
+      # l'image de base. D'ou le continue-on-error suivi d'une seconde
+      # tentative : la premiere absorbs les transitoires, la seconde est la
+      # tentative reelle, et son echec reste un echec.
+      - name: Construire et publier
+        id: build
+        continue-on-error: true
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -42,3 +67,45 @@ jobs:
             org.opencontainers.image.source=https://github.com/LordD9/ComptageFer
           cache-from: type=gha,scope=main
           cache-to: ${{ github.event_name == 'pull_request' && 'type=gha,scope=pr,mode=max,ignore-error=true' || 'type=gha,scope=main,mode=max,ignore-error=true' }}
+
+      - name: Reessayer apres un echec reseau
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "::notice::premiere tentative en echec, nouvelle tentative dans 30s"
+          echo "Si l'echec vient de Docker Hub ou de ghcr.io, c'est leur reseau."
+          sleep 30
+
+      - name: Construire et publier (seconde tentative)
+        if: steps.build.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/LordD9/ComptageFer
+          cache-from: type=gha,scope=main
+          cache-to: ${{ github.event_name == 'pull_request' && 'type=gha,scope=pr,mode=max,ignore-error=true' || 'type=gha,scope=main,mode=max,ignore-error=true' }}
+
+      # Le digest de l'image publiee, pour citer un sha precis plutot que
+      # :latest, dont le contenu bouge a chaque push.
+      - name: Verifier que l'image est bien poussee
+        if: github.event_name != 'pull_request'
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "$IMAGE:${{ github.sha }}" --format '{{ .Manifest.Digest }}' 2>/dev/null || true)
+          if [ -z "$digest" ]; then
+            echo "::error::l'image $IMAGE:${{ github.sha }} n'apparait pas dans le registre"
+            exit 1
+          fi
+          echo "publiee : $IMAGE:${{ github.sha }} -> $digest"
+          {
+            echo "### Image publiee"
+            echo ""
+            echo '```'
+            echo "$IMAGE:${{ github.sha }}@$digest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
