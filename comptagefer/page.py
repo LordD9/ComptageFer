@@ -80,6 +80,7 @@ PAGE = """<!doctype html>
     </div>
     <p class="hint">Ou écris le nombre exact.</p>
     <input id="passengers" type="number" inputmode="numeric" min="0" step="1" placeholder="0">
+    <p id="plausibilite" class="status" role="status" hidden></p>
     <label for="reliability">Fiabilité du compte, de 0 à 100</label>
     <input id="reliability" type="number" inputmode="numeric" min="0" max="100" step="1" value="80">
     <details>
@@ -211,14 +212,37 @@ $("mode-unique").onclick = () => {
   state.passengers = 0;
   $("count-display").textContent = "0";
   $("passengers").value = 0;
+  signalerPlausibilite(0);
   show("form-step");
   $("passengers").focus();
 };
+
+// Un seuil de plausibilité, pas une capacité. Le GTFS national n'a aucun
+// fichier de matériel et le flux temps réel ne donne pas de capacité : on
+// ne peut donc pas dire « ce train a 240 places, c'est trop ». Ce seuil sert
+// seulement à attraper une erreur de frappe ou un double envoi. Il est
+// volontairement au-dessus de tout matériel français réel, et il ne bloque
+// jamais : le plan dit « signalé, pas bloqué ».
+const SEUIL_PLAUSIBILITE = 1200;
+
+function signalerPlausibilite(valeur) {
+  const message = $("plausibilite");
+  if (valeur > SEUIL_PLAUSIBILITE) {
+    message.textContent =
+      valeur + " personnes, c'est au-delà de ce que contient un train français. " +
+      "C'est peut-être une erreur de frappe — vérifie, mais tu peux envoyer quand même.";
+    message.hidden = false;
+  } else {
+    message.hidden = true;
+    message.textContent = "";
+  }
+}
 
 function updateCount(delta) {
   state.passengers = Math.max(0, (state.passengers || 0) + delta);
   $("count-display").textContent = state.passengers;
   $("passengers").value = state.passengers;
+  signalerPlausibilite(state.passengers);
 }
 
 $("plus1").onclick = () => updateCount(1);
@@ -230,6 +254,7 @@ $("passengers").addEventListener("input", (e) => {
   const v = parseInt(e.target.value, 10);
   state.passengers = isNaN(v) || v < 0 ? 0 : v;
   $("count-display").textContent = state.passengers;
+  signalerPlausibilite(state.passengers);
 });
 
 $("mode-snake").onclick = startSnake;

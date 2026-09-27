@@ -343,6 +343,70 @@ def test_the_reading_page_links_to_the_method(page, site):
     page.wait_for_selector("h1:has-text('Méthode')")
 
 
+def test_an_implausible_count_is_flagged_but_still_saved(page, site):
+    """Le seuil de plausibilité signale, il ne bloque pas.
+
+    Le plan dit « effectif au-dessus d'un plafond : signalé, pas bloqué ».
+    Il n'y a pas de plafond par type de train parce qu'aucune source ne
+    donne la capacité du matériel : ni le GTFS national, ni GTFS-RT.
+    """
+    _reach_form(page, site)
+    page.fill("#passengers", "1400")
+    page.dispatch_event("#passengers", "input")
+
+    warning = page.locator("#plausibilite")
+    assert warning.is_visible(), "un effectif de 1400 doit déclencher l'avertissement"
+    texte = warning.text_content()
+    assert "1400" in texte
+    assert "erreur de frappe" in texte
+    # Surtout : pas de blocage. Le message invite explicitement à envoyer,
+    # et l'envoi passe.
+    assert "quand même" in texte
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    rows = _sessions(site)
+    assert [r["passengers"] for r in rows] == [1400], "la saisie doit être enregistrée"
+
+
+def test_the_warning_appears_with_the_buttons_too(page, site):
+    """Le compteur +10 doit déclencher l'avertissement, pas seulement la
+    saisie directe : c'est le chemin le plus utilisé."""
+    _reach_form(page, site)
+    for _ in range(4):
+        page.click("#plus10")
+    assert page.text_content("#count-display") == "40"
+    assert page.locator("#plausibilite").is_hidden(), "40 personnes, aucun avertissement"
+
+    page.fill("#passengers", "1500")
+    page.dispatch_event("#passengers", "input")
+    assert page.locator("#plausibilite").is_visible()
+
+    # Repasser sous le seuil doit masquer l'avertissement.
+    page.fill("#passengers", "30")
+    page.dispatch_event("#passengers", "input")
+    assert page.locator("#plausibilite").is_hidden()
+
+
+def test_the_warning_does_not_survive_a_new_train(page, site):
+    """Changer de train remet le compteur à zéro : l'avertissement doit
+    disparaître aussi, sinon il traîne sur l'écran suivant."""
+    _reach_form(page, site)
+    page.fill("#passengers", "1400")
+    page.dispatch_event("#passengers", "input")
+    assert page.locator("#plausibilite").is_visible()
+
+    page.click("#change-train")
+    page.wait_for_selector("#train-step:not(.hidden)")
+    page.click("#trains .train >> nth=0")
+    page.wait_for_selector("#mode-step:not(.hidden)")
+    page.click("#mode-unique")
+    page.wait_for_selector("#form-step:not(.hidden)")
+
+    assert page.text_content("#count-display") == "0"
+    assert page.locator("#plausibilite").is_hidden(), "l'avertissement doit partir"
+
+
 def test_a_count_reaches_the_database(page, site):
     _reach_form(page, site)
     page.click("#plus10")

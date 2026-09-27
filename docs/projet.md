@@ -337,7 +337,9 @@ La carte sert à voir les résultats, pas à saisir.
 - `ADMIN_TOKEN`, lu depuis l'environnement du conteneur, comparaison en temps constant, valeur absente du dépôt — **fait**
 - refus : effectif négatif, fiabilité hors 0–100 — **fait**
 - page « méthode » : ce que les chiffres sont, ce qu'ils ne sont pas, et la licence des exports — **fait**, c'est `/methode`
-- effectif au-dessus d'un plafond : signalé, pas bloqué — **reste**
+- effectif au-dessus d'un seuil : signalé, pas bloqué — **fait**, seuil unique à 1 200
+
+Le seuil est unique et non calibré par type de train, parce qu'aucune source ne donne la capacité du matériel : le GTFS national n'a aucun fichier de matériel, et le flux GTFS-RT ne publie pas cette information. Le seuil attrape donc une erreur de frappe, pas un train trop plein. C'est écrit dans la page méthode. Un plafond par type de train resterait à faire si une source de capacité apparaît un jour, et il faudra alors mesurer plutôt que deviner.
 
 Un test navigateur accompany ces phases depuis la PR 15 : le formulaire est du JavaScript écrit à la main dans une chaîne Python, et sans Chromium la suite passe au vert sur une page morte. Le workflow `Tests` le joue sur chaque PR.
 

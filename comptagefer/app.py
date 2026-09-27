@@ -668,6 +668,24 @@ n'est pas une observation. Il est dans le profil détaillé, où l'on voit le
 parcours des arrêts. La descente de la personne qui compte est facultative, et
 elle n'est jamais mise à zéro par défaut&nbsp;: une absence n'est pas un zéro.</p>
 
+<h2>Un effectif qui sort de l'ordre de grandeur</h2>
+
+<p>Au-delà de 1 200 personnes, l'application affiche un avertissement. Ce n'est
+pas un refus&nbsp;: le comptage s'enregistre si vous voulez l'envoyer.</p>
+
+<p>Ce seuil n'est pas une capacité. <strong>Aucune source disponible ne donne
+la capacité du matériel</strong>&nbsp;: le GTFS national ne contient aucun fichier
+de matériel, et le flux temps réel ne publie pas cette information. On ne peut
+donc pas vous dire « ce train a 240 places, c'est trop&nbsp;». L'avertissement
+signale seulement que le chiffre sort de l'ordre de grandeur de tout matériel
+ferroviaire français, ce qui arrive surtout quand on tape un zéro de trop. Il
+reste signalable&nbsp;: dans un train de six voitures de deux niveaux, ce qui
+n'existe pas dans le TER français mais existe ailleurs, un effectif élevé peut
+être juste.</p>
+
+<p>Le seuil ne bloque jamais. Un comptage que vous confirmez est un comptement
+que nous gardons.</p>
+
 <h2>Le contexte autour du comptage</h2>
 
 <p>Au moment où vous choisissez votre train, l'outil photographie l'état du
