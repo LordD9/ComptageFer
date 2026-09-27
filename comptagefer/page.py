@@ -33,7 +33,7 @@ PAGE = """<!doctype html>
 <body>
 <main>
   <h1>ComptageFer</h1>
-  <p class="hint">Choisis ton train, puis compte. Le reste vient du flux. <a href="/comptages">Voir les comptages</a> · <a href="/carte">Carte</a></p>
+  <p class="hint">Choisis ton train, puis compte. Le reste vient du flux. <a href="/comptages">Voir les comptages</a> · <a href="/carte">Carte</a> · <a href="/rechercher">Rechercher une ligne</a></p>
   <section id="origin-step">
     <label for="origin-q">Origine</label>
     <input id="origin-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Gare de départ">
@@ -63,6 +63,8 @@ PAGE = """<!doctype html>
   <section id="snake-step" class="hidden">
     <div class="chip"><span id="snake-chip"></span><button class="ghost" id="snake-back" type="button">Retour</button></div>
     <p id="snake-title"></p>
+    <p id="snake-resume" class="status"></p>
+    <p id="snake-drop-wrap" class="hidden"><button class="ghost" id="snake-drop" type="button">Abandonner la reprise</button></p>
     <div id="snake-fields"></div>
     <p id="snake-load" class="status"></p>
     <p><button id="snake-next" type="button">Suivant</button></p>
@@ -259,6 +261,12 @@ $("passengers").addEventListener("input", (e) => {
 
 $("mode-snake").onclick = startSnake;
 $("snake-back").onclick = () => show("mode-step");
+$("snake-drop").onclick = () => {
+  clearSnake();
+  $("snake-resume").textContent = "";
+  $("snake-drop-wrap").classList.add("hidden");
+  show("mode-step");
+};
 function field(id, label, placeholder) {
   const wrap = document.createElement("label");
   wrap.htmlFor = id;
@@ -272,6 +280,62 @@ function field(id, label, placeholder) {
   input.placeholder = placeholder || "0";
   return [wrap, input];
 }
+// Reprise après fermeture d'onglet. La file hors ligne ne suffisait pas : elle
+// ne transporte que ce qui doit partir vers le serveur, pas un serpent à
+// moitié saisi qu'on était en train de remplir.
+const CLE_SERPENT = "comptagefer-serpent";
+
+function writeSnake() {
+  // Rien à reprendre tant qu'aucun arrêt n'est filled : un serpent vide
+  // proposerait « reprendre » pour rien.
+  if (!state.snakeIndex && !state.legs.length) {
+    localStorage.removeItem(CLE_SERPENT);
+    return;
+  }
+  try {
+    localStorage.setItem(CLE_SERPENT, JSON.stringify({
+      origin: state.origin,
+      destination: state.destination,
+      trip: state.trip,
+      stops: state.stops,
+      snakeIndex: state.snakeIndex,
+      legs: state.legs,
+    }));
+  } catch (error) {
+    // Un navigateur en quota plein, ou en navigation privée : la saisie
+    // continue, elle ne sera simplement pas reprenable.
+  }
+}
+
+function clearSnake() {
+  localStorage.removeItem(CLE_SERPENT);
+}
+
+function offerSnake() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(CLE_SERPENT) || "null");
+  } catch (error) {
+    return false;
+  }
+  if (!saved || !saved.stops || saved.stops.length < 2) {
+    clearSnake();
+    return false;
+  }
+  state.origin = saved.origin;
+  state.destination = saved.destination;
+  state.trip = saved.trip;
+  state.stops = saved.stops;
+  state.snakeIndex = saved.snakeIndex || 0;
+  state.legs = Array.isArray(saved.legs) ? saved.legs : [];
+  show("snake-step");
+  renderSnake();
+  $("snake-resume").textContent = "Reprise sur ce téléphone : arrêt " + (state.snakeIndex + 1)
+    + " sur " + state.stops.length + ".";
+  $("snake-drop-wrap").classList.remove("hidden");
+  return true;
+}
+
 async function startSnake() {
   $("snake-error").textContent = "";
   show("snake-step");
@@ -294,6 +358,7 @@ async function startSnake() {
   }
   state.snakeIndex = 0;
   state.legs = [];
+  clearSnake();
   renderSnake();
 }
 function renderSnake() {
@@ -337,6 +402,7 @@ function nextSnake() {
   }
   state.legs.push(leg);
   state.snakeIndex += 1;
+  writeSnake();
   renderSnake();
 }
 function currentLeg() {
@@ -398,6 +464,9 @@ async function saveSnake() {
     });
     if (response.ok) {
       localStorage.removeItem("comptagefer-client");
+      // Le serpent est parti : le proposer à la reprise serait proposer de
+      // compter deux fois le même trajet.
+      clearSnake();
       show("done-step");
       return;
     }
@@ -407,10 +476,15 @@ async function saveSnake() {
     }
   } catch (error) {
     writeQueue(remember(readQueue(), body));
+    // Le payload est dans la file, il partira au retour du réseau. Le serpent
+    // n'est donc plus une saisie en cours : le garder en reprise proposerait de
+    // compter deux fois le même trajet.
+    clearSnake();
     $("snake-error").textContent = "Pas de réseau. Le serpent est gardé sur ce téléphone.";
     return;
   }
   writeQueue(remember(readQueue(), body));
+  clearSnake();
   $("snake-error").textContent = "Pas de réseau. Le serpent est gardé sur ce téléphone.";
 }
 $("near").onclick = () => {
@@ -491,6 +565,9 @@ async function flushQueue() {
 }
 window.addEventListener("online", flushQueue);
 flushQueue();
+// Un serpent à moitié saisi survit à la fermeture de l'onglet : on le propose
+// au chargement, plutôt que de laisser repartir de zéro au premier arrêt.
+offerSnake();
 $("send").onclick = async () => {
   $("error").textContent = "";
   let body;

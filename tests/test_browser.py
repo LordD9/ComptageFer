@@ -629,6 +629,93 @@ def test_the_map_page_has_no_horizontal_overflow(page, site):
     assert debord <= 0, f"la page déborde de {debord}px"
 
 
+# --- la reprise du serpent après fermeture d'onglet -------------------------
+
+
+def test_a_snake_survives_closing_the_tab(page, site):
+    """C'est le point que la file hors ligne ne couvrait pas : elle ne transporte
+    que ce qui doit partir vers le serveur, pas une saisie en cours."""
+    _reach_snake(page, site)
+    page.fill("#snake-onboard", "40")
+    page.click("#snake-next")
+    page.fill("#snake-boarded", "3")
+    page.fill("#snake-alighted", "1")
+    page.click("#snake-next")
+
+    # On simule la fermeture : ce qui compte, c'est ce que le navigateur a
+    # gardé, pas le JavaScript qui tourne encore.
+    page.reload()
+
+    assert page.is_visible("#snake-step:not(.hidden)"), "la reprise doit s'ouvrir d'elle-même"
+    assert "Valence" in page.text_content("#snake-title"), "on doit repartir au bon arrêt"
+    assert "Reprise" in page.text_content("#snake-resume")
+
+
+def test_a_resumed_snake_keeps_the_counts_already_given(page, site):
+    """Reprendre au bon arrêt mais perdre les montées déjà comptées refait le
+    travail du voyageur et fausse le profil."""
+    _reach_snake(page, site)
+    page.fill("#snake-onboard", "40")
+    page.click("#snake-next")
+    page.fill("#snake-boarded", "3")
+    page.fill("#snake-alighted", "1")
+    page.click("#snake-next")
+    page.fill("#snake-boarded", "0")
+    page.click("#snake-next")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    rows = _sessions(site)
+    assert rows[0]["passengers"] == 40, "le total doit rester celui des portes fermées"
+    assert rows[0]["legs"][1]["boarded"] == 3
+    assert rows[0]["legs"][1]["alighted"] == 1
+
+
+def test_a_finished_snake_is_not_offered_again(page, site):
+    """Reproposer un serpent déjà envoyé ferait compter le même trajet deux fois."""
+    _reach_snake(page, site)
+    page.fill("#snake-onboard", "40")
+    page.click("#snake-next")
+    page.fill("#snake-boarded", "3")
+    page.fill("#snake-alighted", "1")
+    page.click("#snake-next")
+    page.fill("#snake-boarded", "0")
+    page.click("#snake-next")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    page.reload()
+    assert not page.is_visible("#snake-step:not(.hidden)")
+    assert page.is_visible("#origin-step:not(.hidden)")
+
+
+def test_a_snake_can_be_dropped(page, site):
+    """Sans ça, un serpent à moitié fait bloque le téléphone : on ne peut plus
+    repartir de zéro sans effacer le stockage à la main."""
+    _reach_snake(page, site)
+    page.fill("#snake-onboard", "40")
+    page.click("#snake-next")
+    page.reload()
+
+    assert page.is_visible("#snake-drop")
+    page.click("#snake-drop")
+    page.reload()
+
+    assert not page.is_visible("#snake-step:not(.hidden)")
+    assert page.is_visible("#origin-step:not(.hidden)")
+
+
+def test_the_drop_button_is_hidden_when_there_is_nothing_to_drop(page, site):
+    _reach_snake(page, site)
+    assert not page.is_visible("#snake-drop"), "on n'offre pas de jeter un serpent qu'on n'a pas"
+
+
+def test_an_empty_snake_is_not_stored(page, site):
+    """Un serpent vide proposerait « reprendre » pour rien."""
+    _reach_snake(page, site)
+    page.reload()
+    assert not page.is_visible("#snake-step:not(.hidden)")
+    assert not page.is_visible("#snake-drop")
+
+
 def test_the_snake_walks_the_stops_of_the_chosen_trip(page, site):
     _reach_snake(page, site)
 
