@@ -1,0 +1,91 @@
+name: Docker test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Construit l'image et la demarre vraiment, puis lui parle.
+  # C'est le seul test qui prouve que l'image construite sert, pas
+  # seulement qu'elle se construit. Publish image construit sur PR
+  # mais ne pousse pas ; ici on exerce le conteneur.
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Construire l'image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: comptagefer:test
+          cache-from: type=gha,scope=main
+          cache-to: type=gha,scope=main,mode=max,ignore-error=true
+
+      - name: Demarrer le conteneur
+        run: |
+          docker run -d --name comptagefer-test -p 8000:8000 \
+            -e COMPTAGEFER_DATA=/data \
+            -v "$RUNNER_TEMP/data:/data" \
+            comptagefer:test
+
+      - name: Attendre que l'application reponde
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health > /dev/null; then
+              echo "l'application repond apres ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "l'application ne repond pas"
+          docker logs comptagefer-test
+          exit 1
+
+      - name: Verifier que les pages repondent
+        run: |
+          set -e
+          for chemin in / /comptages /methode /offline.js; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000$chemin")
+            echo "$chemin -> $code"
+            test "$code" = "200" || { echo "echec sur $chemin"; exit 1; }
+          done
+
+      - name: Journal si echec
+        if: failure()
+        run: docker logs comptagefer-test || true
+
+      - name: Arreter le conteneur
+        if: always()
+        run: docker rm -f comptagefer-test || true
+
+  # Les tests de file hors ligne vivent dans du JavaScript, donc
+  # pytest ne les voit pas. Ils passaient mais n'etaient jamais
+  # executes par personne.
+  offline-js:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Tests de la file hors ligne
+        run: node --test tests/offline.test.js
