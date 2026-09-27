@@ -6,7 +6,20 @@ services:
       - "8000:8000"
     environment:
       COMPTAGEFER_DATA: /data
+      # Jeton d'administration. Sans valeur, /admin refuse toute connexion.
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # Publication du CSV sur data.gouv.fr. Les deux premières variables
+      # activent la fonctionnalité ; sans elles, l'application démarre quand
+      # même et le dit sur /api/publish. Les valeurs vivent dans .env, jamais
+      # dans ce fichier.
+      DATAGOUV_API_KEY: ${DATAGOUV_API_KEY:-}
+      DATAGOUV_DATASET_ID: ${DATAGOUV_DATASET_ID:-}
+      # Optionnel : la ressource à remplacer chaque nuit. Sans elle, la
+      # première publication crée la ressource et son identifiant est
+      # mémorisé dans ./data/publish.json.
+      DATAGOUV_RESOURCE_ID: ${DATAGOUV_RESOURCE_ID:-}
+      # Heure de publication, heure de Paris. 0 = minuit.
+      DATAGOUV_PUBLISH_HOUR: ${DATAGOUV_PUBLISH_HOUR:-0}
     volumes:
       - ./data:/data
     restart: unless-stopped

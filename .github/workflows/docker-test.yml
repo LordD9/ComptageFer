@@ -66,6 +66,16 @@ jobs:
             test "$code" = "200" || { echo "echec sur $chemin"; exit 1; }
           done
 
+      - name: Verifier que la publication est inactive sans identifiants
+        run: |
+          # Le conteneur de test n'a pas de cle data.gouv. Il doit le dire
+          # plutot que de pretendre avoir publie, et ne doit rien laisser
+          # dans le volume de donnees.
+          etat=$(curl -sS http://127.0.0.1:8000/api/publish)
+          echo "$etat"
+          echo "$etat" | grep -q '"enabled": false' || { echo "publication active sans cle"; exit 1; }
+          test ! -f "$RUNNER_TEMP/data/publish.json" || { echo "etat ecrit sans publication"; exit 1; }
+
       - name: Journal si echec
         if: failure()
         run: docker logs comptagefer-test || true
