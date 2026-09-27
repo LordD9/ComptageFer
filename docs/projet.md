@@ -336,7 +336,7 @@ La carte sert à voir les résultats, pas à saisir.
 
 - `ADMIN_TOKEN`, lu depuis l'environnement du conteneur, comparaison en temps constant, valeur absente du dépôt — **fait**
 - refus : effectif négatif, fiabilité hors 0–100 — **fait**
-- page « méthode » : ce que les chiffres sont, ce qu'ils ne sont pas, et la licence des exports — **reste**
+- page « méthode » : ce que les chiffres sont, ce qu'ils ne sont pas, et la licence des exports — **fait**, c'est `/methode`
 - effectif au-dessus d'un plafond : signalé, pas bloqué — **reste**
 
 Un test navigateur accompany ces phases depuis la PR 15 : le formulaire est du JavaScript écrit à la main dans une chaîne Python, et sans Chromium la suite passe au vert sur une page morte. Le workflow `Tests` le joue sur chaque PR.

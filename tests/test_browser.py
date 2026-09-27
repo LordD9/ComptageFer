@@ -307,6 +307,42 @@ def test_counter_is_reset_for_each_train(page, site):
 # --- l'envoi réel -----------------------------------------------------------
 
 
+def test_the_method_page_is_readable_and_honest(page, site):
+    """/methode est la page qui dit ce que les chiffres ne sont pas. Le plan
+    la rend obligatoire avant toute estimation, donc elle doit exister, se
+    lire, et dire les trois choses : pas une fréquentation officielle, pas
+    de chiffre annuel sans méthode, quelle licence."""
+    response = page.goto(site + "/methode")
+    assert response.status == 200, f"/methode répond {response.status}"
+    text = page.text_content("body")
+
+    assert page.title() == "Méthode — ComptageFer"
+    for attendu in (
+        "Ce n'est pas une fréquentation officielle",
+        "Pas de chiffre sans dénominateur",
+        "Licence Ouverte 2.0",
+        "GPL-3.0",
+        "Aucune coordonnée GPS n'est stockée",
+        "Pas de compte",
+    ):
+        assert attendu in text, f"la méthode ne dit pas : {attendu!r}"
+
+    # Les réserves doivent être visibles, pas cachées dans un attribut.
+    assert page.is_visible("main")
+    assert page.locator("h2").count() >= 6, "la méthode doit être structurée en sections"
+
+
+def test_the_reading_page_links_to_the_method(page, site):
+    """Le lien doit exister sur la page où se lisent les chiffres, sinon la
+    méthode reste une page que personne ne visite."""
+    page.goto(site + "/comptages")
+    link = page.locator('a[href="/methode"]')
+    assert link.count() == 1, "la page des comptages doit renvoyer vers la méthode"
+    assert link.is_visible()
+    link.click()
+    page.wait_for_selector("h1:has-text('Méthode')")
+
+
 def test_a_count_reaches_the_database(page, site):
     _reach_form(page, site)
     page.click("#plus10")
