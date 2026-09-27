@@ -328,7 +328,13 @@ La carte sert à voir les résultats, pas à saisir.
 - liste des comptages, pseudo affiché s'il a été donné — **fait**
 - `GET /api/export.csv`, licence indiquée : Licence Ouverte 2.0 — **fait**
 - mention visible : ce n'est pas une fréquentation officielle — **fait**
-- carte Leaflet : arrêts comptés, segments droits entre les arrêts d'une saisie — **reste**
+- carte Leaflet : arrêts comptés, segments droits entre les arrêts d'une saisie — **fait**, c'est `/carte`
+  - un serpent est dessiné arrêt par arrêt, pas comme un couple origine-destination
+  - un arrêt enfant sans position prend celle de sa gare
+  - moins de deux arrêts plaçables, la saisie n'est pas dessinée et la page le dit
+  - fond de plan : tuiles raster OpenStreetMap, aucune clé d'API. La politique d'usage d'OSM est le
+    vrai plafond ; un fournisseur de tuiles se change en une constante
+  - Leaflet vient d'un CDN : sans réseau, la page le dit et garde la liste des tracés
 - recherche par nom — **reste**, l'API `/api/stops?q=` est là, pas l'écran
 - page ligne : liste brute, ou invitation à contribuer s'il n'y a rien — **reste**
 

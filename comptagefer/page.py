@@ -33,7 +33,7 @@ PAGE = """<!doctype html>
 <body>
 <main>
   <h1>ComptageFer</h1>
-  <p class="hint">Choisis ton train, puis compte. Le reste vient du flux. <a href="/comptages">Voir les comptages</a></p>
+  <p class="hint">Choisis ton train, puis compte. Le reste vient du flux. <a href="/comptages">Voir les comptages</a> · <a href="/carte">Carte</a></p>
   <section id="origin-step">
     <label for="origin-q">Origine</label>
     <input id="origin-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Gare de départ">

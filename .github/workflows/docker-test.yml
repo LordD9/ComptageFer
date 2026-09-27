@@ -60,7 +60,7 @@ jobs:
       - name: Verifier que les pages repondent
         run: |
           set -e
-          for chemin in / /comptages /methode /offline.js; do
+          for chemin in / /comptages /carte /methode /offline.js; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000$chemin")
             echo "$chemin -> $code"
             test "$code" = "200" || { echo "echec sur $chemin"; exit 1; }

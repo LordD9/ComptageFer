@@ -18,6 +18,7 @@ from pathlib import Path
 from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
+from comptagefer.carte import counted_features, map_page as carte_page
 from comptagefer.offer import nearest_stops, search_stops, trips_serving
 from comptagefer.timetable import listed_trips, stops_between
 from comptagefer.page import PAGE
@@ -136,6 +137,14 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
     @app.get("/comptages", response_class=HTMLResponse)
     def comptages() -> str:
         return _reading_page(_list_saisies(database))
+
+    @app.get("/carte", response_class=HTMLResponse)
+    def carte() -> str:
+        rows = _list_saisies(database)
+        return carte_page(
+            counted_features(data_dir / "stops.db", rows),
+            len([row for row in rows if row["kind"] in {"count", "serpent"}]),
+        )
 
     @app.get("/methode", response_class=HTMLResponse)
     def methode() -> str:
@@ -466,31 +475,34 @@ def _list_saisies(database: Path) -> list[dict]:
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
             """
-            SELECT client_id, origin_name, destination_name, trip_id, passengers,
-                   reliability, pseudo, standing, seats_free, imbalance, snapshot, kind, created_at, legs
+            SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
+                   trip_id, passengers, reliability, pseudo, standing, seats_free, imbalance,
+                   snapshot, kind, created_at, legs
             FROM saisie
             ORDER BY created_at
             """
         ).fetchall()
     listed = []
     for row in rows:
-        snapshot = json.loads(row[10]) if row[10] else None
+        snapshot = json.loads(row[12]) if row[12] else None
         listed.append(
             {
                 "client_id": row[0],
-                "origin_name": row[1],
-                "destination_name": row[2],
-                "trip_id": row[3],
-                "passengers": row[4],
-                "reliability": row[5],
-                "pseudo": row[6],
-                "standing": row[7],
-                "seats_free": row[8],
-                "imbalance": row[9],
+                "origin_stop_id": row[1],
+                "destination_stop_id": row[2],
+                "origin_name": row[3],
+                "destination_name": row[4],
+                "trip_id": row[5],
+                "passengers": row[6],
+                "reliability": row[7],
+                "pseudo": row[8],
+                "standing": row[9],
+                "seats_free": row[10],
+                "imbalance": row[11],
                 "snapshot": snapshot,
-                "kind": row[11],
-                "created_at": row[12],
-                "legs": json.loads(row[13]) if row[13] else None,
+                "kind": row[13],
+                "created_at": row[14],
+                "legs": json.loads(row[15]) if row[15] else None,
             }
         )
     return listed
@@ -572,7 +584,7 @@ def _reading_page(rows: list[dict]) -> str:
 <main>
   <h1>Comptages</h1>
   <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
-  <p><a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
+  <p><a href="/carte">Voir la carte</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
   {body}
 </main>
 </body>
@@ -746,7 +758,7 @@ qui les affiche de la seconde.</p>
 <p>Cette page décrit ce que l'outil fait aujourd'hui. Elle sera mise à jour
 chaque fois qu'une règle change — et en particulier le jour où une méthode
 d'estimation annuelle sera décidée.</p>
-<p><a href="/comptages">Voir les comptages</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a></p>
+<p><a href="/comptages">Voir les comptages</a> · <a href="/carte">Carte</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a></p>
 </footer>
 
 </main>
