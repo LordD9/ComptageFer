@@ -1,4 +1,3 @@
-import csv
 import hashlib
 import hmac
 import json
@@ -13,7 +12,7 @@ import zipfile
 from datetime import datetime, timezone
 from html import escape
 from urllib.parse import quote
-from io import BytesIO, StringIO
+from io import BytesIO
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
@@ -29,6 +28,11 @@ from comptagefer.timetable import (
     stops_between,
 )
 from comptagefer.page import PAGE
+from comptagefer.publish import (
+    Publication,
+    config_from_env,
+    render_csv,
+)
 from comptagefer.rt import (
     ALERTS_URL,
     SIRI_URL,
@@ -40,12 +44,22 @@ from comptagefer.rt import (
 STOPS_URL = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip"
 
 
-def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
+def create_app(
+    data_dir: Path,
+    admin_token: str | None = None,
+    publication: Publication | None = None,
+) -> FastAPI:
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     database = data_dir / "app.db"
     if admin_token is None:
         admin_token = os.environ.get("ADMIN_TOKEN", "")
+    if publication is None:
+        publication = Publication(
+            config_from_env(),
+            data_dir / "publish.json",
+            lambda: render_csv(_list_saisies(database)),
+        )
     admin_sessions: set[str] = set()
     with sqlite3.connect(database) as connection:
         connection.execute(
@@ -79,6 +93,9 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
     stops_database = data_dir / "stops.db"
 
     app = FastAPI(title="ComptageFer")
+    # Exposée pour que l'exploitation puisse lire l'état sans passer par la
+    # route, et pour qu'un test injecte un opener sans dupliquer le câblage.
+    app.state.publication = publication
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -205,6 +222,26 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
             media_type="text/csv; charset=utf-8",
         )
 
+    @app.get("/api/publish", response_class=PlainTextResponse)
+    def publish_status() -> PlainTextResponse:
+        """L'état de la publication automatique, sans le secret.
+
+        L'hébergeur doit pouvoir voir si c'est actif, quand ça a tourné, et
+        ce qui a échoué, sans ouvrir un shell dans le conteneur. La clé API
+        n'y est pas, et elle n'y sera pas.
+        """
+        return PlainTextResponse(
+            json.dumps(publication.status(), ensure_ascii=False),
+            media_type="application/json",
+        )
+
+    @app.post("/admin/publier", response_class=HTMLResponse)
+    def admin_publish(request: Request) -> str:
+        """Publier tout de suite, pour vérifier la clé sans attendre minuit."""
+        if not admin_open(request):
+            raise HTTPException(status_code=401, detail="connexion requise")
+        return _admin_list(_list_saisies(database), publication.publish_now())
+
     @app.post("/api/sessions")
     def sessions(body: dict) -> dict:
         kind = "serpent" if body.get("kind") == "serpent" else "count"
@@ -252,7 +289,16 @@ def create_app(data_dir: Path, admin_token: str | None = None) -> FastAPI:
 
 def create_production_app() -> FastAPI:
     data_dir = Path(os.environ.get("COMPTAGEFER_DATA", "data"))
-    app = create_app(data_dir)
+    database = data_dir / "app.db"
+    publication = Publication(
+        config_from_env(),
+        data_dir / "publish.json",
+        # L'appelable est évalué à chaque publication, pas au démarrage : un
+        # CSV capturé une fois en mémoire republicuerait le fichier de la
+        # veille pour toujours.
+        lambda: render_csv(_list_saisies(database)),
+    )
+    app = create_app(data_dir, publication=publication)
     thread = threading.Thread(
         target=_poll_forever,
         args=(data_dir / "rt.db",),
@@ -260,6 +306,7 @@ def create_production_app() -> FastAPI:
         daemon=True,
     )
     thread.start()
+    publication.start()
     return app
 
 
@@ -396,7 +443,7 @@ def _admin_login() -> str:
 """
 
 
-def _admin_list(rows: list[dict]) -> str:
+def _admin_list(rows: list[dict], publication: dict | None = None) -> str:
     cards = []
     for row in rows:
         who = escape(row["pseudo"]) if row["pseudo"] else "anonyme"
@@ -429,8 +476,30 @@ def _admin_list(rows: list[dict]) -> str:
   <h1>Admin</h1>
   <p>Supprimer retire le comptage de la liste et du CSV.</p>
   {body}
+  {"" if publication is None else _publication_panel(publication)}
 </main></body></html>
 """
+
+
+def _publication_panel(publication: dict) -> str:
+    """Le résultat d'une publication à la demande, et le bouton pour la refaire.
+
+    Publier sans attendre minuit est le seul moyen de savoir si la clé est
+    bonne sans attendre le lendemain, donc le bouton reste sur la page.
+    """
+    if publication.get("ok"):
+        if publication.get("skipped"):
+            message = "Rien à publier : aucun comptage dans la base."
+        else:
+            message = f"CSV publié, {publication.get('bytes', 0)} octets."
+    else:
+        message = f"Publication échouée : {publication.get('error') or 'raison inconnue'}"
+    return (
+        f"<p>{escape(message)}</p>"
+        "<form method='post' action='/admin/publier'>"
+        "<button type='submit'>Publier maintenant sur data.gouv</button>"
+        "</form>"
+    )
 
 
 def _save_saisie(database: Path, body: dict, kind: str) -> dict:
@@ -1085,44 +1154,10 @@ d'estimation annuelle sera décidée.</p>
 
 
 def _export_csv(rows: list[dict]) -> str:
-    buffer = StringIO()
-    buffer.write("# Licence Ouverte 2.0\n")
-    writer = csv.writer(buffer)
-    writer.writerow(
-        [
-            "created_at",
-            "origin",
-            "destination",
-            "passengers",
-            "reliability",
-            "pseudo",
-            "standing",
-            "seats_free",
-            "imbalance",
-            "precedent",
-            "courant",
-            "suivant",
-            "kind",
-            "legs",
-        ]
-    )
-    for row in rows:
-        writer.writerow(
-            [
-                row["created_at"],
-                row["origin_name"] or "",
-                row["destination_name"] or "",
-                row["passengers"] if row["passengers"] is not None else "",
-                row["reliability"] if row["reliability"] is not None else "",
-                row["pseudo"] or "",
-                row["standing"] if row["standing"] is not None else "",
-                row["seats_free"] if row["seats_free"] is not None else "",
-                row["imbalance"] if row["imbalance"] is not None else "",
-                _photo_status(row["snapshot"], "precedent"),
-                _photo_status(row["snapshot"], "courant"),
-                _photo_status(row["snapshot"], "suivant"),
-                row["kind"] or "",
-                json.dumps(row["legs"], ensure_ascii=False) if row.get("legs") else "",
-            ]
-        )
-    return buffer.getvalue()
+    """Le CSV des comptages.
+
+    Délégué à `comptagefer.publish`, qui rend aussi le fichier publié sur
+    data.gouv : une seule fonction pour le téléchargement et l'export
+    automatique, sinon les deux divergent sans qu'on le voie.
+    """
+    return render_csv(rows)

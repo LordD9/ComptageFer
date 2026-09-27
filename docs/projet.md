@@ -2,7 +2,7 @@
 
 Outil collaboratif pour compter la fréquentation des TER en France, puis rendre ces comptages publics, lisibles et réutilisables.
 
-**Statut :** phases 0 à 5 livrées, septembre 2026. Phases 6 et 7 commencées. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
+**Statut :** phases 0 à 5 livrées, septembre 2026. Phases 6, 7 et 8 commencées. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
 
 **Source du besoin :** cahier des charges « ComptagesFer » (présentation de trois diapositives).
 
@@ -343,6 +343,48 @@ Deux faits de la source ont décidé la forme de la page ligne, et il vaut mieux
 - **Les noms de ligne ne sont pas uniques.** Le GTFS national compte 725 lignes pour 423 noms courts : `C13` désigne six lignes différentes, `INCONNU` cinquante-trois. Une URL construite sur le nom court ouvrirait donc une page au hasard. Tout ce qui identifie une ligne passe par le `route_id`, et le titre affiché porte toujours le nom long, parce que « C13 » ne veut rien dire pour quelqu'un qui ne connaît pas la numérotation SNCF.
 - Le réimport se fait une fois : une base installée avant les pages ligne est détectée au démarrage suivant et réimportée, parce qu'une recherche de ligne muette serait pire qu'une attente. Le `routes.txt` ajoute environ 20 Mo à `timetable.db`, qui pèse déjà 200 Mo.
 - **Le rattachement d'un comptage à une ligne passe par le `trip_id`**, le seul lien écrit au moment du comptage. Une paire origine-destination ne suffirait pas : deux lignes se partagent souvent le même corridor. Un « train signalé », lui, n'a pas de trip et n'apparaît sur aucune page ligne — on ne lui invente pas de ligne.
+
+### Phase 8 — Publication automatique
+
+Les comptages publiés à la main ne le sont plus tous les jours. L'export part
+tout seul, chaque nuit, sans que l'hébergeur ait une tâche cron à maintenir.
+
+- export du CSV vers data.gouv.fr chaque nuit à minuit, heure de Paris — **fait**
+- publication à la demande depuis `/admin`, pour vérifier la clé sans attendre
+  minuit — **fait**, c'est `/admin/publier`
+- état de la dernière tentative lisible sans entrer dans le conteneur, sans la
+  clé — **fait**, c'est `GET /api/publish`
+- aucun envoi si le CSV n'a que son en-tête : une base vide ne remplace pas la
+  ressource du jour — **fait**
+
+Trois faits ont décidé la forme, et ils valent mieux ici qu'un jour dans un
+ticket :
+
+- **La publication est un fil du processus, pas un service du compose.** Le
+  plan interdit un second mode d'installation ; un service `cron`, une base et
+  une file pour envoyer un fichier par jour seraient trois choses de plus à
+  surveiller. Un `threading.Thread` avec un événement d'arrêt suffit, et il
+  meurt avec le serveur, donc un redémarrage du conteneur ne laisse pas de
+  publication orpheline.
+- **La première publication crée une ressource, les suivantes la remplacent.**
+  L'identifiant est mémorisé dans `data/publish.json`. Sans cela, un export par
+  nuit laisserait un jeu de données de 365 ressources, et le lecteur n'aurait
+  plus à savoir laquelle est la bonne. `DATAGOUV_RESOURCE_ID` permet de
+  reprendre une ressource créée à la main, mais n'est pas nécessaire.
+- **L'application ne crée pas le jeu de données.** Elle ne sait pas choisir un
+  titre, une organisation, une licence, et le faire à sa place produirait un
+  jeu de données mal décrit, qu'il serait plus dur de corriger qu'à créer. La
+  clé et l'identifiant du jeu viennent donc du `.env`, et sans eux la
+  publication est inactive : c'est un déploiement normal, pas une erreur.
+
+Le CSV publié et celui de `/api/export.csv` sortent de la même fonction, dans
+`comptagefer.publish`. Une publication qui dupliquerait la requête SQL
+divergerait de ce que l'utilisateur télécharge, et personne ne le verrait avant
+des mois.
+
+Ce que la publication automatique ne fait pas, et qui reste à faire : la
+checksum de la ressource, la page de catalogue, et l'historique — data.gouv.fr
+garde les versions, mais rien ici ne les expose.
 
 ### Phase 7 — Qualité minimale
 
