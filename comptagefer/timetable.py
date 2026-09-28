@@ -298,21 +298,6 @@ def search_lines(database: Path, query: str, limit: int = 12) -> list[dict]:
     ]
 
 
-def line_counts(database: Path, route_id: str) -> int:
-    """Combien de trips de cette ligne sont dans l'horaire.
-
-    Une page ligne sans ça afficherait « aucun comptage » en confondant ligne
-    absente de l'horaire et ligne jamais comptée. C'est le même chiffre que la
-    page doit afficher en face de la liste.
-    """
-    if not Path(database).exists() or not _has_lines(database):
-        return 0
-    with sqlite3.connect(database) as connection:
-        return connection.execute(
-            "SELECT COUNT(*) FROM trip_ligne WHERE route_id = ?", (route_id,)
-        ).fetchone()[0]
-
-
 def find_line(database: Path, route_id: str) -> dict | None:
     if not Path(database).exists() or not _has_lines(database):
         return None

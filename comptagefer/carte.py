@@ -62,7 +62,10 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
         kind = row.get("kind") or "count"
         features.append(
             {
-                "client_id": row["client_id"],
+                # client_id est échappé comme les autres : il vient du client et
+                # atterrit dans le même <script> que le reste. Un `</script>`
+                # dedans fermait la balise, et la suite était exécutée.
+                "client_id": escape(str(row["client_id"])),
                 "kind": kind,
                 "kind_fr": KIND_FR.get(kind, kind),
                 "couleur": COULEURS.get(kind, "#5c554b"),
