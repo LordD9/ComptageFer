@@ -3,6 +3,8 @@
 Outil collaboratif de comptage de la fréquentation des TER en France.
 
 Le besoin, l'architecture et le plan de développement sont dans [docs/projet.md](docs/projet.md).
+Pour proposer un changement : [CONTRIBUTING.md](CONTRIBUTING.md). Pour ce qu'un
+changement doit respecter : [docs/regles.md](docs/regles.md).
 
 Licence du code : GPL-3.0. Les comptages publiés sont en Licence Ouverte 2.0.
 
