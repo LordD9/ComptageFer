@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -11,9 +12,9 @@ import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from html import escape
-from urllib.parse import quote
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -43,6 +44,72 @@ from comptagefer.rt import (
 
 STOPS_URL = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip"
 
+# Une session d'administration tient une heure de travail, pas plus. Le
+# dictionnaire qui les porte est en mémoire : sans expiration il ne redescend
+# jamais, et une session volée resterait valable jusqu'au redémarrage.
+SESSION_SECONDS = 3600
+
+
+def _prune_sessions(sessions: dict[str, float]) -> None:
+    """Oublie les sessions d'administrateur dépassées.
+
+    Appelé à chaque connexion, donc le dictionnaire reste à la taille des
+    sessions réellement ouvertes plutôt que de celle de toutes les sessions
+    jamais ouvertes.
+    """
+    limite = time.time() - SESSION_SECONDS
+    for jeton in [j for j, ouverte in sessions.items() if ouverte < limite]:
+        sessions.pop(jeton, None)
+
+
+def _clef_par_genre(connection: sqlite3.Connection) -> None:
+    """Passe la clé primaire de `saisie` de `client_id` à `(client_id, kind)`.
+
+    Un même navigateur peut signaler un train manquant et compter un train
+    réel : les deux lignes sont légitimes et le jeton les identifie toutes les
+    deux. Avec `client_id` seul en clé, la seconde ne pouvait pas s'écrire.
+
+    SQLite ne sait pas changer une clé primaire : on recrée la table et on
+    recopie. Les bases existantes ne peuvent pas contenir deux lignes de même
+    `client_id` — l'ancien code rejetait le doublon avant d'écrire — donc la
+    recopie ne peut pas buter sur une collision.
+    """
+    colonnes = {row[1]: row for row in connection.execute("PRAGMA table_info(saisie)")}
+    if "kind" not in colonnes or "legs" not in colonnes:
+        return
+    if colonnes["client_id"][5] == 0:
+        return  # déjà composite : rien à faire
+    noms = ", ".join(sorted(colonnes))
+    connection.execute("ALTER TABLE saisie RENAME TO saisie_ancienne_clef")
+    connection.execute(
+        """
+        CREATE TABLE saisie (
+            client_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            origin_stop_id TEXT NOT NULL,
+            destination_stop_id TEXT NOT NULL,
+            origin_name TEXT,
+            destination_name TEXT,
+            trip_id TEXT,
+            passengers INTEGER,
+            reliability INTEGER,
+            pseudo TEXT,
+            comment TEXT,
+            standing INTEGER,
+            seats_free INTEGER,
+            imbalance INTEGER,
+            snapshot TEXT,
+            created_at TEXT NOT NULL,
+            legs TEXT,
+            PRIMARY KEY (client_id, kind)
+        )
+        """
+    )
+    connection.execute(
+        f"INSERT OR IGNORE INTO saisie ({noms}) SELECT {noms} FROM saisie_ancienne_clef"
+    )
+    connection.execute("DROP TABLE saisie_ancienne_clef")
+
 
 def create_app(
     data_dir: Path,
@@ -60,7 +127,7 @@ def create_app(
             data_dir / "publish.json",
             lambda: render_csv(_list_saisies(database)),
         )
-    admin_sessions: set[str] = set()
+    admin_sessions: dict[str, float] = {}
     with sqlite3.connect(database) as connection:
         connection.execute(
             """
@@ -88,6 +155,7 @@ def create_app(
         columns = {row[1] for row in connection.execute("PRAGMA table_info(saisie)")}
         if "legs" not in columns:
             connection.execute("ALTER TABLE saisie ADD COLUMN legs TEXT")
+        _clef_par_genre(connection)
 
     timetable = data_dir / "timetable.db"
     stops_database = data_dir / "stops.db"
@@ -126,7 +194,14 @@ def create_app(
 
     @app.get("/api/trips")
     def trips(from_: str = Query(alias="from"), to: str = Query(), at: str = Query()) -> list[dict]:
-        parsed = datetime.fromisoformat(at.replace("Z", "+00:00"))
+        try:
+            parsed = datetime.fromisoformat(at.replace("Z", "+00:00"))
+        except ValueError as ex:
+            # Un paramètre client malformé est une 422, pas une 500 : personne
+            # n'a besoin de la traceback pour comprendre « pas-une-date ».
+            raise HTTPException(
+                status_code=422, detail="`at` n'est pas une date ISO 8601"
+            ) from ex
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         if (data_dir / "timetable.db").exists():
@@ -167,10 +242,12 @@ def create_app(
     @app.get("/carte", response_class=HTMLResponse)
     def carte() -> str:
         rows = _list_saisies(database)
-        return carte_page(
-            counted_features(data_dir / "stops.db", rows),
-            len([row for row in rows if row["kind"] in {"count", "serpent"}]),
-        )
+        # `total` est le nombre de relevés collectés, `placos` le nombre de
+        # traits dessinés : l'écart entre les deux est l'information utile, il
+        # ne faut donc pas les confondre. Mais le décompte ignorait les trains
+        # signalés, qui sont eux dessinés — la page pouvait alors annoncer
+        # « 0 comptage au total, 1 sur la carte ».
+        return carte_page(counted_features(data_dir / "stops.db", rows), len(rows))
 
     @app.get("/api/lignes", response_class=PlainTextResponse)
     def api_lignes(q: str = Query("", max_length=80)) -> PlainTextResponse:
@@ -253,7 +330,15 @@ def create_app(
 
     def admin_open(request: Request) -> bool:
         cookie = request.cookies.get("comptagefer_admin", "")
-        return bool(cookie) and cookie in admin_sessions
+        if not cookie:
+            return False
+        opened = admin_sessions.get(cookie)
+        if opened is None:
+            return False
+        if time.time() - opened > SESSION_SECONDS:
+            admin_sessions.pop(cookie, None)
+            return False
+        return True
 
     @app.get("/admin", response_class=HTMLResponse)
     def admin(request: Request) -> str:
@@ -266,12 +351,14 @@ def create_app(
         if not _admin_token_matches(token, admin_token):
             raise HTTPException(status_code=401, detail="jeton refusé")
         cookie = secrets.token_urlsafe(32)
-        admin_sessions.add(cookie)
+        admin_sessions[cookie] = time.time()
+        _prune_sessions(admin_sessions)
         response.set_cookie(
             "comptagefer_admin",
             cookie,
             httponly=True,
             samesite="lax",
+            max_age=SESSION_SECONDS,
             path="/",
         )
         return _admin_list(_list_saisies(database))
@@ -316,23 +403,26 @@ def _fetch(url: str, timeout: int = 60) -> bytes:
 
 
 def _poll_forever(database: Path) -> None:
+    log = logging.getLogger("comptagefer.rt")
     try:
         ensure_referential(database.parent)
     except Exception:
-        import logging
-        logging.getLogger("comptagefer.rt").exception("import des noms de gares échoué")
+        log.exception("import des noms de gares échoué")
+    # SIRI ne sert qu'une fois, en filet d'un flux GTFS-RT vide. Sans cet état,
+    # la boucle le retéléchargeait toutes les 120 secondes.
+    siri_tente = False
     while True:
         try:
-            poll_once(
+            siri_tente = poll_once(
                 database,
                 fetch_trips=lambda: _fetch(TU_URL),
                 fetch_siri=lambda: _fetch(SIRI_URL, timeout=120),
                 fetch_alerts=lambda: _fetch(ALERTS_URL),
                 now=datetime.now(timezone.utc),
+                siri_tente=siri_tente,
             )
         except Exception:
-            import logging
-            logging.getLogger("comptagefer.rt").exception("poll GTFS-RT échoué")
+            log.exception("poll GTFS-RT échoué")
         time.sleep(120)
 
 
@@ -390,23 +480,6 @@ def _timetable_has_lignes(timetable: Path) -> bool:
         return _has_lines(timetable)
     except sqlite3.DatabaseError:
         return False
-
-
-def ensure_stop_names(database: Path) -> None:
-    from comptagefer.offer import import_stop_names, open_stops
-
-    with open_stops(database) as connection:
-        if connection.execute("SELECT COUNT(*) FROM stop").fetchone()[0]:
-            return
-    payload = _fetch(STOPS_URL, timeout=120)
-    with zipfile.ZipFile(BytesIO(payload)) as archive:
-        text = archive.read("stops.txt")
-    temporary = database.with_suffix(".txt")
-    temporary.write_bytes(text)
-    try:
-        import_stop_names(database, temporary)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _admin_token_matches(provided: str, expected: str) -> bool:
@@ -539,7 +612,11 @@ def _save_saisie(database: Path, body: dict, kind: str) -> dict:
             "SELECT client_id, kind FROM saisie WHERE client_id = ?",
             (client_id,),
         ).fetchone()
-        if existing:
+        # Le doublon ne vaut que s'il est du même genre. Un « train signalé »
+        # consomme le jeton du navigateur, et le comptage réel qui suit
+        # arrive avec le même : le rejeter ici perdait le comptage sans rien
+        # dire, pendant que l'écran affichait « c'est noté ».
+        if existing and existing[1] == kind:
             return {"client_id": existing[0], "kind": existing[1], "stored": False}
         connection.execute(
             """
@@ -756,7 +833,6 @@ def _line_page(ligne: dict, rows: list[dict], arrets: list[dict]) -> str:
     """La page d'une ligne : ses arrêts, ses comptages, ou une invitation."""
     titre = escape(ligne["titre"])
     mode = {"train": "train", "car": "car", "tramway": "tramway"}.get(ligne.get("mode") or "", "")
-    sous_titre = f"{escape(ligne['nom_court'])}" + (f" — {escape(ligne['nom_long'])}" if ligne["nom_long"] else "")
 
     if arrets:
         liste_arrets = "<ol class='stops'>" + "".join(
@@ -858,8 +934,6 @@ def _search_page(query: str, stops_database: Path, timetable: Path) -> str:
     Le cas d'usage est « Lyon » sans savoir si c'est une gare ou un nom de
     ligne : deux champs feraient choisir avant de savoir quoi chercher.
     """
-    from comptagefer.timetable import _has_lines
-
     requete = query.strip()
     gares = search_stops(stops_database, requete) if requete else []
     lignes = search_lines(timetable, requete) if requete and _lignes_disponibles(timetable) else []

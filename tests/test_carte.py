@@ -189,3 +189,23 @@ def test_a_stop_name_cannot_inject_html_into_the_page(tmp_path):
     page = client.get("/carte")
     assert "<img src=x" not in page.text
     assert "&lt;img src=x" in page.text
+
+
+def test_a_client_id_cannot_break_out_of_the_page_script(tmp_path):
+    """Le `client_id` était le seul champ non échappé, et il atterrit dans le
+    même `<script>` que le reste. Un `</script>` dedans fermait la balise et la
+    suite était exécutée par le navigateur. C'est le seul champ qui venait du
+    client sans passer par `escape()`."""
+    _stops_db(tmp_path)
+    client = TestClient(create_app(tmp_path))
+    client.post(
+        "/api/sessions",
+        json=_count(client_id="</script><script>alert('injecté')</script>"),
+    )
+
+    page = client.get("/carte")
+    assert "</script><script>alert" not in page.text
+    assert "&lt;/script&gt;&lt;script&gt;alert" in page.text
+    # Le nombre de balises fermantes ne doit pas avoir augmenté non plus : c'est
+    # la fermeture de balise qui rend l'injection exécutable, pas le texte.
+    assert page.text.count("</script>") == page.text.count("<script")
