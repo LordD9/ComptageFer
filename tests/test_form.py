@@ -4,8 +4,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from comptagefer.app import create_app
 from comptagefer import carte as carte_module
+from comptagefer.app import create_app
 from comptagefer.page import PAGE
 
 # Le tutoiement revient par une seule phrase, et les tests fonctionnels ne le
