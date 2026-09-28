@@ -99,7 +99,7 @@ PAGE = """<!doctype html>
       <input id="imbalance" type="number" inputmode="numeric" min="0" max="100" placeholder="0 à 100">
       <label for="pseudo">Pseudo (facultatif)</label>
       <input id="pseudo" type="text" maxlength="40" autocomplete="nickname">
-      <label for="comment">Commentaire</label>
+      <label for="comment">Commentaire, publié dans le CSV</label>
       <input id="comment" type="text" maxlength="280">
     </details>
     <p><button id="send" type="button">Enregistrer le comptage</button></p>
@@ -407,7 +407,7 @@ function renderSnake() {
     pseudoInput.autocomplete = "nickname";
     const comment = document.createElement("label");
     comment.htmlFor = "snake-comment";
-    comment.textContent = "Commentaire";
+    comment.textContent = "Commentaire, publié dans le CSV";
     const commentInput = document.createElement("input");
     commentInput.id = "snake-comment";
     commentInput.type = "text";

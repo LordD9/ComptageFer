@@ -79,6 +79,7 @@ def test_le_csv_garde_sa_licence_et_ses_entetes():
                 "passengers": 40,
                 "reliability": 70,
                 "pseudo": "railfan",
+                "comment": "car de substitution",
                 "standing": None,
                 "seats_free": None,
                 "imbalance": None,
@@ -94,6 +95,39 @@ def test_le_csv_garde_sa_licence_et_ses_entetes():
     assert lignes[1].startswith("created_at,origin,destination")
     assert "Lyon Part Dieu" in lignes[2]
     assert lignes[2].count("CANCELED") == 1
+
+
+def test_le_commentaire_parvient_jusqu_au_csv(tmp_path: Path):
+    """Le commentaire est la partie libre du comptage : c'est lui qui explique
+    une charge atypique. S'il reste dans la base, il n'est publié nulle part et
+    la promesse de /methode est vide pour le lecteur du jeu de données.
+
+    Le test passe par le vrai POST puis par le vrai export : une fixture
+    écrite à la main prouverait que render_csv sait lire une clé, pas que la
+    chaîne complète la garde.
+    """
+    client = TestClient(create_app(tmp_path))
+    client.post("/api/sessions", json={**_compte(), "comment": "car de substitution"})
+
+    telecharge = client.get("/api/export.csv").text
+    lignes = telecharge.strip().splitlines()
+    entetes = lignes[1].split(",")
+
+    assert "comment" in entetes, f"colonnes : {entetes}"
+    colonne = entetes.index("comment")
+    # L'ordre des lignes suit created_at, et deux posts peuvent partager la même
+    # seconde : on cherche la ligne du bon jeton plutôt que d'indexer.
+    lignes_par_jeton = {
+        ligne.split(",")[0]: ligne.split(",")[colonne]
+        for ligne in lignes[2:]
+    }
+    assert "car de substitution" in lignes_par_jeton.values(), lignes_par_jeton
+    # Le commentaire absent ne devient pas la chaîne « None ».
+    client.post("/api/sessions", json={**_compte(), "client_id": "jeton2"})
+    apres = client.get("/api/export.csv").text.strip().splitlines()
+    valeurs = [l.split(",")[colonne] for l in apres[2:]]
+    assert len(valeurs) == 2, f"deux comptages attendus : {apres}"
+    assert "" in valeurs, f"commentaire vide rendu : {valeurs}"
 
 
 def test_le_csv_telecharge_est_celui_du_depot(tmp_path: Path):

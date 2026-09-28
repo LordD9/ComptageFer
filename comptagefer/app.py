@@ -1196,6 +1196,13 @@ d'autre.</p>
 saisie. Le pseudo est facultatif, et un pseudo n'est ni une identité ni un
 droit&nbsp;: il signe un comptage, rien de plus.</p>
 
+<p>Le commentaire, lui, est public&nbsp;: il part dans le CSV et dans le jeu de
+données de data.gouv.fr, avec le pseudo. C'est ce qui le rend utile — un tiers
+peut comprendre pourquoi un train était chargé — mais c'est du texte libre, donc
+une donnée personnelle dès qu'un nom, un numéro ou une entreprise y apparaît.
+Mieux vaut écrire « car de substitution » que « M. Dupont, directeur de la
+Société X, à bord du 8 h 12 ».</p>
+
 <p>La géolocalisation peut proposer la gare la plus proche, et elle n'est
 jamais enregistrée. Aucune coordonnée GPS n'est stockée, ni envoyée au serveur.
 L'application fonctionne hors ligne dans un train&nbsp;: si l'envoi échoue, la
