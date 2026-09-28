@@ -239,8 +239,8 @@ function signalerPlausibilite(valeur) {
   const message = $("plausibilite");
   if (valeur > SEUIL_PLAUSIBILITE) {
     message.textContent =
-      valeur + " personnes, c'est au-delà de ce que contient un train français. " +
-      "C'est peut-être une erreur de frappe — vérifiez, mais vous pouvez envoyer quand même.";
+      valeur + " personnes, c'est peut-être une erreur de frappe. " +
+      "Vérifiez, mais vous pouvez envoyer quand même.";
     message.hidden = false;
   } else {
     message.hidden = true;

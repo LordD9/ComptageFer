@@ -1018,7 +1018,7 @@ def _method_page() -> str:
 <main>
 
 <h1>Méthode</h1>
-<p class="lead">Ce que ces chiffres sont, et ce qu'ils ne sont pas.</p>
+<p class="mode">Ce que l'outil fait, et comment lire un comptage.</p>
 
 <p>Bienvenue sur ComptagesFer. Ce site permet de contribuer à la connaissance
 des flux ferroviaires (+ certains cars TER) en France. C'est précieux pour ouvrir
@@ -1091,24 +1091,6 @@ supprimé, train très en retard qui expliquerait une forte charge, mise en plac
 d'un car de substitution qui expliquerait à l'inverse une charge plus faible,
 etc.</p>
 
-<h3>Ce que ces chiffres ne sont pas</h3>
-
-<p>Un comptage n'est ni une moyenne, ni un taux de remplissage calculé, ni un
-échantillon représentatif. C'est une photographie&nbsp;: l'effectif observé
-entre deux arrêts, à un moment donné, avec un pourcentage de fiabilité que la
-personne qui a compté déclare elle-même. <strong>Ce site ne publie aucune
-estimation annuelle, et il n'en publiera pas tant qu'une méthode écrite ne sera
-pas décidée publiquement</strong>, avec le nombre de comptages sous-jacents
-affiché à côté du chiffre. Pas de chiffre sans dénominateur.</p>
-
-<p>Au-delà de 1 200 personnes, l'application affiche un avertissement qui ne
-bloque jamais. <strong>Ce seuil n'est pas une capacité&nbsp;:</strong> aucune
-source disponible ne donne la capacité du matériel, le GTFS national n'a aucun
-fichier de matériel et le flux temps réel ne publie pas cette information. Le
-seuil signale seulement que le chiffre sort de l'ordre de grandeur de tout
-matériel ferroviaire français, ce qui arrive surtout quand on tape un zéro de
-trop.</p>
-
 <h2>D'où viennent les données</h2>
 
 <ul>
@@ -1161,8 +1143,7 @@ qui les affiche de la seconde.</p>
 
 <footer>
 <p>Cette page décrit ce que l'outil fait aujourd'hui. Elle sera mise à jour
-chaque fois qu'une règle change — et en particulier le jour où une méthode
-d'estimation annuelle sera décidée.</p>
+chaque fois qu'une règle change.</p>
 <p><a href="/comptages">Voir les comptages</a> · <a href="/rechercher">Rechercher</a> · <a href="/carte">Carte</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a></p>
 </footer>
 
