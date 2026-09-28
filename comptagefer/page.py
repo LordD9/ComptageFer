@@ -3,7 +3,7 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ComptageFer</title>
+<title>ComptagesFer</title>
 <style>
   :root { color-scheme: light; }
   body { margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }
@@ -32,18 +32,20 @@ PAGE = """<!doctype html>
 </head>
 <body>
 <main>
-  <h1>ComptageFer</h1>
-  <p class="hint">Choisis ton train, puis compte. Le reste vient du flux. <a href="/comptages">Voir les comptages</a> · <a href="/carte">Carte</a> · <a href="/rechercher">Rechercher une ligne</a></p>
+  <h1>ComptagesFer</h1>
+  <p class="hint">Choisissez votre train, puis comptez. Le reste vient du flux. <a href="/comptages">Voir les comptages</a> · <a href="/carte">Carte</a> · <a href="/rechercher">Rechercher une ligne</a></p>
   <section id="origin-step">
+    <p class="hint">Indiquer les gares <strong>du trajet compté</strong>, et non pas celles de la ligne. En comptage unique&nbsp;: les deux gares encadrantes. En serpent de charge&nbsp;: la gare de début et la gare de fin, même si la ligne est plus longue.</p>
     <label for="origin-q">Origine</label>
-    <input id="origin-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Gare de départ">
+    <input id="origin-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Gare de départ du comptage">
     <div id="origin-list" class="choices"></div>
     <button class="ghost" id="near" type="button">Gare la plus proche</button>
+    <p class="hint">Comptage en gare sans monter dans le train&nbsp;: indiquer la première gare desservie après le départ (gare d'origine) ou la dernière gare desservie avant l'arrivée (gare terminus), pour rattacher le compte à une interstation précise.</p>
   </section>
   <section id="destination-step" class="hidden">
     <div class="chip"><span id="origin-chip"></span><button class="ghost" id="change-origin" type="button">Changer</button></div>
     <label for="destination-q">Destination</label>
-    <input id="destination-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Gare d'arrivée">
+    <input id="destination-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Gare d'arrivée du comptage">
     <div id="destination-list" class="choices"></div>
   </section>
   <section id="train-step" class="hidden">
@@ -55,10 +57,11 @@ PAGE = """<!doctype html>
   <section id="mode-step" class="hidden">
     <div class="chip"><span id="mode-chip"></span><button class="ghost" id="change-mode" type="button">Changer</button></div>
     <div class="choices">
-      <button id="mode-unique" type="button">Un seul compte</button>
+      <button id="mode-unique" type="button">Comptage unique</button>
       <button id="mode-snake" type="button">Serpent de charge</button>
     </div>
-    <p class="hint">Le serpent : un compte portes fermées, puis montées et descentes à chaque arrêt, jusqu'à ta descente.</p>
+    <p class="hint">Le serpent : un compte portes fermées, puis montées et descentes à chaque arrêt, jusqu'à votre descente.</p>
+    <p class="hint">Rappel&nbsp;: les gares choisies plus haut sont celles du <strong>comptage</strong>. En serpent, de la première gare où vous comptez à la dernière, même si la ligne ou votre voyage vont plus loin.</p>
   </section>
   <section id="snake-step" class="hidden">
     <div class="chip"><span id="snake-chip"></span><button class="ghost" id="snake-back" type="button">Retour</button></div>
@@ -72,6 +75,7 @@ PAGE = """<!doctype html>
   </section>
   <section id="form-step" class="hidden">
     <div class="chip"><span id="train-chip"></span><button class="ghost" id="change-train" type="button">Changer</button></div>
+    <p class="hint">Ce compte vaut pour l'interstation entre <span id="od-rappel"></span>. En gare, sans monter dans le train&nbsp;: prendre la dernière gare desservie avant l'arrivée (terminus) ou la première après le départ (origine).</p>
     <label for="passengers">Voyageurs dans le train</label>
     <div class="counter" id="counter">
       <button type="button" id="minus">−1</button>
@@ -80,20 +84,20 @@ PAGE = """<!doctype html>
       <button type="button" id="plus5">+5</button>
       <button type="button" id="plus10">+10</button>
     </div>
-    <p class="hint">Ou écris le nombre exact.</p>
+    <p class="hint">Ou écrivez le nombre exact.</p>
     <input id="passengers" type="number" inputmode="numeric" min="0" step="1" placeholder="0">
     <p id="plausibilite" class="status" role="status" hidden></p>
     <label for="reliability">Fiabilité du compte, de 0 à 100</label>
     <input id="reliability" type="number" inputmode="numeric" min="0" max="100" step="1" value="80">
     <details>
-      <summary>Pseudo, commentaire</summary>
-      <label for="standing">Part de gens debout, si tu la vois</label>
+      <summary>Indicateurs, pseudo, commentaire</summary>
+      <label for="standing">Estimation de la part de gens debout</label>
       <input id="standing" type="number" inputmode="numeric" min="0" max="100" placeholder="0 à 100">
       <label for="seats">Part de places assises restantes</label>
       <input id="seats" type="number" inputmode="numeric" min="0" max="100" placeholder="0 à 100">
       <label for="imbalance">Écart de charge entre les voitures</label>
       <input id="imbalance" type="number" inputmode="numeric" min="0" max="100" placeholder="0 à 100">
-      <label for="pseudo">Pseudo, si tu veux</label>
+      <label for="pseudo">Pseudo (facultatif)</label>
       <input id="pseudo" type="text" maxlength="40" autocomplete="nickname">
       <label for="comment">Commentaire</label>
       <input id="comment" type="text" maxlength="280">
@@ -211,6 +215,10 @@ $("change-train").onclick = () => show("train-step");
 $("change-mode").onclick = () => show("train-step");
 $("mode-unique").onclick = () => {
   $("train-chip").textContent = formatTrain(state.trip);
+  // Le rappel d'interstation n'existait pas : rien ne disait à l'écran que les
+  // deux gares choisies plus haut sont celles du comptage, et pas l'OD de la
+  // ligne (issue #25).
+  $("od-rappel").textContent = state.origin.name + " et " + state.destination.name;
   state.passengers = 0;
   $("count-display").textContent = "0";
   $("passengers").value = 0;
@@ -232,7 +240,7 @@ function signalerPlausibilite(valeur) {
   if (valeur > SEUIL_PLAUSIBILITE) {
     message.textContent =
       valeur + " personnes, c'est au-delà de ce que contient un train français. " +
-      "C'est peut-être une erreur de frappe — vérifie, mais tu peux envoyer quand même.";
+      "C'est peut-être une erreur de frappe — vérifiez, mais vous pouvez envoyer quand même.";
     message.hidden = false;
   } else {
     message.hidden = true;
@@ -373,16 +381,39 @@ function renderSnake() {
     $("snake-fields").append(...field("snake-onboard", "Voyageurs à bord", "0"));
   } else {
     $("snake-fields").append(...field("snake-boarded", "Montées", "0"));
-    $("snake-fields").append(...field("snake-alighted", "Descentes", last ? "si tu les comptes" : "0"));
+    $("snake-fields").append(...field("snake-alighted", "Descentes", last ? "si vous les comptez" : "0"));
     const details = document.createElement("details");
     const summary = document.createElement("summary");
     summary.textContent = "Indicateurs de cette interstation";
-    details.append(summary, ...field("snake-standing", "Part debout", ""), ...field("snake-seats", "Places assises restantes", ""), ...field("snake-imbalance", "Écart de charge", ""));
+    details.append(summary, ...field("snake-standing", "Estimation de la part de gens debout", ""), ...field("snake-seats", "Part de places assises restantes", ""), ...field("snake-imbalance", "Écart de charge en % entre les voitures", ""));
     $("snake-fields").append(details);
   }
   if (last) {
     $("snake-fields").append(...field("snake-reliability", "Fiabilité, de 0 à 100", "80"));
     $("snake-reliability").value = "80";
+    // Un commentaire vaut aussi pour un serpent : train supprimé, car de
+    // substitution, retard du précédent. Sans ce repli, le texte de /methode
+    // prometrait un commentaire que l'écran ne permet pas de saisir.
+    const extra = document.createElement("details");
+    const resume = document.createElement("summary");
+    resume.textContent = "Pseudo, commentaire";
+    const pseudo = document.createElement("label");
+    pseudo.htmlFor = "snake-pseudo";
+    pseudo.textContent = "Pseudo (facultatif)";
+    const pseudoInput = document.createElement("input");
+    pseudoInput.id = "snake-pseudo";
+    pseudoInput.type = "text";
+    pseudoInput.maxLength = 40;
+    pseudoInput.autocomplete = "nickname";
+    const comment = document.createElement("label");
+    comment.htmlFor = "snake-comment";
+    comment.textContent = "Commentaire";
+    const commentInput = document.createElement("input");
+    commentInput.id = "snake-comment";
+    commentInput.type = "text";
+    commentInput.maxLength = 280;
+    extra.append(resume, pseudo, pseudoInput, comment, commentInput);
+    $("snake-fields").append(extra);
   }
   $("snake-load").textContent = aboardText();
   $("snake-next").textContent = last ? "Enregistrer le serpent" : "Suivant";
@@ -453,6 +484,8 @@ async function saveSnake() {
     trip_id: state.trip.trip_id,
     passengers: state.legs[0].onboard,
     reliability,
+    pseudo: $("snake-pseudo").value,
+    comment: $("snake-comment").value,
     snapshot: state.photo,
     legs: state.legs.concat([leg])
   };
@@ -574,7 +607,7 @@ $("send").onclick = async () => {
   try {
     body = countPayload();
   } catch (error) {
-    $("error").textContent = "Le compte n'a pas pu partir. Réessaie.";
+    $("error").textContent = "Le compte n'a pas pu partir. Réessayez.";
     return;
   }
   try {
@@ -590,7 +623,7 @@ $("send").onclick = async () => {
       return;
     }
     if (response.status < 500) {
-      $("error").textContent = "Le compte n'a pas été gardé. Vérifie l'effectif et la fiabilité.";
+      $("error").textContent = "Le compte n'a pas été gardé. Vérifiez l'effectif et la fiabilité.";
       return;
     }
   } catch (error) {
