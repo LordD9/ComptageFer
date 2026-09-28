@@ -1028,14 +1028,14 @@ chiffres collectés par des particuliers, sans garantie de fiabilité.</p>
 
 <p>Note&nbsp;: les comptages officiels commandés notamment par les Régions pour
 les TER, et réalisés par des sociétés spécialisées, sont généralement
-confidentiels. Certains peuvent néanmoins être rendus disponibles, par exemple
-dans les comités de ligne, et désormais dans les COREST (comités régionaux des
+confidentiels. Certains peuvent néanmoins être rendus publics, par exemple dans
+les comités de ligne, et désormais dans les COREST (comités régionaux des
 Services de Transport).</p>
 
 <p>Tout un chacun peut contribuer, en réalisant un ou des comptages à
 l'occasion d'un voyage quel qu'il soit&nbsp;: voire pendant l'attente dans une
 grande gare, en comptant le nombre de voyageurs montant dans le train avant son
-départ, ou descendant d'un train qui finit son trajet là. Ce dernier cas est
+départ, ou descendant d'un train qui termine son trajet là. Ce dernier cas est
 intéressant, car c'est souvent à la gare « centrale », origine ou terminus, que
 le train est le plus chargé.</p>
 
@@ -1082,7 +1082,7 @@ remplir les montées et descentes à chaque gare. En cliquant sur
 «&nbsp;indicateurs de cette interstation&nbsp;», vous pouvez compléter à chaque
 gare certaines informations sur l'interstation qu'elle conclut&nbsp;:
 estimation de la part de gens debout, part de places assises restantes, écart
-de charges en&nbsp;% entre les différentes voitures du train. À chaque gare,
+de charge en&nbsp;% entre les différentes voitures du train. À chaque gare,
 vous saurez ainsi quel est l'effectif du train, en soustrayant les voyageurs
 descendus et en ajoutant les voyageurs montés.</p>
 
@@ -1091,84 +1091,23 @@ supprimé, train très en retard qui expliquerait une forte charge, mise en plac
 d'un car de substitution qui expliquerait à l'inverse une charge plus faible,
 etc.</p>
 
-<h2>Qui compte, et pourquoi c'est important</h2>
+<h3>Ce que ces chiffres ne sont pas</h3>
 
-<p>Les contributeurs sont des passionnés, des associations d'usagers, des
-voyageurs, des agents. Ce n'est pas un tirage aléatoire, et ce n'en sera pas un.
-Une ligne très commentée sera mieux documentée qu'une ligne découverte par
-hasard. Ce biais est connu et assumé : il veut dire que la couverture est
-meilleure là où l'intérêt existe, pas partout de la même façon.</p>
+<p>Un comptage n'est ni une moyenne, ni un taux de remplissage calculé, ni un
+échantillon représentatif. C'est une photographie&nbsp;: l'effectif observé
+entre deux arrêts, à un moment donné, avec un pourcentage de fiabilité que la
+personne qui a compté déclare elle-même. <strong>Ce site ne publie aucune
+estimation annuelle, et il n'en publiera pas tant qu'une méthode écrite ne sera
+pas décidée publiquement</strong>, avec le nombre de comptages sous-jacents
+affiché à côté du chiffre. Pas de chiffre sans dénominateur.</p>
 
-<p>Un comptage n'en vaut pas un autre non plus. Chaque saisie porte un
-pourcentage de fiabilité déclaré par la personne qui comptait, et ce chiffre
-est stocké tel quel. Il est opinionnel, c'est le sien.</p>
-
-<h2>Ce qu'un comptage est</h2>
-
-<ul>
-  <li>Un effectif observé, entre un arrêt et le suivant, à un moment donné.</li>
-  <li>Une photographie. Le même train deux heures plus tard n'est pas le même
-      train deux heures plus tard.</li>
-  <li>Un relevé fait à vue, sans appareil de mesure. Les indications de part de
-      gens debout, de places assises restantes et d'écart de charge entre la
-      partie la plus chargée et la moins chargée sont des estimations visuelles.
-      Elles ne sont pas déduites les unes des autres.</li>
-</ul>
-
-<h2>Ce qu'un comptage n'est pas</h2>
-
-<ul>
-  <li>Une moyenne, ni un taux de remplissage calculé.</li>
-  <li>Un chiffre annuel. <strong>Ce site ne publie aucune estimation annuelle, et
-      il n'en publiera pas tant qu'une méthode écrite ne sera pas décidée
-      publiquement</strong>, avec le nombre de comptages sous-jacents affiché à
-      côté du chiffre. Pas de chiffre sans dénominateur.</li>
-  <li>Un échantillon représentatif. Rien ici ne prétend l'être.</li>
-</ul>
-
-<h2>Le serpent de charge</h2>
-
-<p>Le mode serpent demande un effectif portes fermées à la montée, puis les
-montées et les descentes arrêt par arrêt. L'effectif suivant se calcule&nbsp;:
-<b>effectif + montées − descentes</b>.</p>
-
-<p>Le nombre affiché dans la liste des comptages est l'effectif portes
-fermées, c'est-à-dire le nombre réellement compté. Le total reconstruit en fin
-de parcours n'est pas stocké comme un fait : c'est une somme, et une somme
-n'est pas une observation. Il est dans le profil détaillé, où l'on voit le
-parcours des arrêts. La descente de la personne qui compte est facultative, et
-elle n'est jamais mise à zéro par défaut&nbsp;: une absence n'est pas un zéro.</p>
-
-<h2>Un effectif qui sort de l'ordre de grandeur</h2>
-
-<p>Au-delà de 1 200 personnes, l'application affiche un avertissement. Ce n'est
-pas un refus&nbsp;: le comptage s'enregistre si vous voulez l'envoyer.</p>
-
-<p>Ce seuil n'est pas une capacité. <strong>Aucune source disponible ne donne
-la capacité du matériel</strong>&nbsp;: le GTFS national ne contient aucun fichier
-de matériel, et le flux temps réel ne publie pas cette information. On ne peut
-donc pas vous dire « ce train a 240 places, c'est trop&nbsp;». L'avertissement
-signale seulement que le chiffre sort de l'ordre de grandeur de tout matériel
-ferroviaire français, ce qui arrive surtout quand on tape un zéro de trop. Il
-reste signalable&nbsp;: dans un train de six voitures de deux niveaux, ce qui
-n'existe pas dans le TER français mais existe ailleurs, un effectif élevé peut
-être juste.</p>
-
-<p>Le seuil ne bloque jamais. Un comptage que vous confirmez est un comptement
-que nous gardons.</p>
-
-<h2>Le contexte autour du comptage</h2>
-
-<p>Au moment où vous choisissez votre train, l'outil photographie l'état du
-train choisi, du précédent et du suivant&nbsp;: retard, suppression, source de
-l'information. Cette photo est jointe au comptage et n'est jamais recalculée
-ensuite. Un envoi tardif, après un passage en tunnel, ne relit pas le flux
-temps réel&nbsp;: l'état aurait changé, ou le train serait sorti de la fenêtre
-de suivi.</p>
-
-<p>Une suppression est conservée comme un fait. Elle n'est pas transformée en
-report de voyageurs. Interpréter une suppression demanderait une méthode que
-nous n'avons pas encore.</p>
+<p>Au-delà de 1 200 personnes, l'application affiche un avertissement qui ne
+bloque jamais. <strong>Ce seuil n'est pas une capacité&nbsp;:</strong> aucune
+source disponible ne donne la capacité du matériel, le GTFS national n'a aucun
+fichier de matériel et le flux temps réel ne publie pas cette information. Le
+seuil signale seulement que le chiffre sort de l'ordre de grandeur de tout
+matériel ferroviaire français, ce qui arrive surtout quand on tape un zéro de
+trop.</p>
 
 <h2>D'où viennent les données</h2>
 

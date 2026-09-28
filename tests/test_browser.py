@@ -346,8 +346,27 @@ def test_the_method_page_is_readable_and_honest(page, site):
         assert attendu in aplati, f"la méthode ne dit pas : {attendu!r}"
 
     # Les réserves doivent être visibles, pas cachées dans un attribut.
+    # Le compte de h2 a disparu comme garde : la méthode a été raccourcie sur
+    # demande (commentaire sur #23), et un nombre de sections ne dit rien de ce
+    # qui doit rester. Ce sont les titres eux-mêmes qu'on exige, au niveau où
+    # ils se trouvent — « Ce que ces chiffres ne sont pas » est un h3, pour
+    # rester dans « Comment ça marche » plutôt que d'ouvrir une section.
+    # On compare des fragments sans apostrophe : `has-text('D'où…')` n'est pas
+    # un sélecteur CSS valide, Playwright le refuse.
     assert page.is_visible("main")
-    assert page.locator("h2").count() >= 6, "la méthode doit être structurée en sections"
+    titres = page.locator("main h2, main h3").all_text_contents()
+    titres = [" ".join(t.split()) for t in titres]
+    for titre in (
+        "Comment ça marche",
+        "Ce que ces chiffres ne sont pas",
+        "D'où viennent les données",
+        "Vos données",
+        "Licences",
+    ):
+        assert titres.count(titre) == 1, f"section absente ou dupliquée : {titre!r} dans {titres}"
+    # Le garde-fou du seuil a survécu au raccourcissement : sans lui, un
+    # lecteur prend 1 200 pour une capacité.
+    assert "Ce seuil n'est pas une capacité" in aplati
 
 
 def test_the_reading_page_links_to_the_method(page, site):
