@@ -22,10 +22,129 @@ L'application répond sur http://localhost:8000/. Après le train, on choisit un
 
 La fenêtre d'admin est sur http://localhost:8000/admin. Elle s'ouvre avec `ADMIN_TOKEN`. Ce jeton n'est pas dans l'image.
 
-### Les options du compose
+### Le compose, ligne par ligne
 
-Le compose n'a qu'un service, `app`. Tout se règle par variables
-d'environnement, lues dans `.env` au démarrage.
+`compose.yaml` est versionné, et c'est tout le déploiement : un service, un
+volume, pas de base séparée, pas de worker. Le voici tel qu'il est dans le
+dépôt, commentaires compris.
+
+```yaml
+services:
+  app:
+    image: ghcr.io/lordd9/comptagefer:latest
+    pull_policy: always
+    ports:
+      - "8000:8000"
+    environment:
+      COMPTAGEFER_DATA: /data
+      # Jeton d'administration. Sans valeur, /admin refuse toute connexion.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # Publication du CSV sur data.gouv.fr. Les deux premières variables
+      # activent la fonctionnalité ; sans elles, l'application démarre quand
+      # même et le dit sur /api/publish. Les valeurs vivent dans .env, jamais
+      # dans ce fichier.
+      DATAGOUV_API_KEY: ${DATAGOUV_API_KEY:-}
+      DATAGOUV_DATASET_ID: ${DATAGOUV_DATASET_ID:-}
+      # Optionnel : la ressource à remplacer chaque nuit. Sans elle, la
+      # première publication crée la ressource et son identifiant est
+      # mémorisé dans ./data/publish.json.
+      DATAGOUV_RESOURCE_ID: ${DATAGOUV_RESOURCE_ID:-}
+      # Heure de publication, heure de Paris. 0 = minuit.
+      DATAGOUV_PUBLISH_HOUR: ${DATAGOUV_PUBLISH_HOUR:-0}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+```
+
+Chaque mot compte :
+
+- `image` + `pull_policy: always` — Compose ne construit rien, il va chercher
+  l'image publiée. Il n'existe pas de tag `latest` reconstruit sur votre
+  machine, et c'est voulu.
+- `ports` — le port de l'hôte, puis celui du conteneur. `8000:8000` rend le
+  service sur le réseau local ; changez le membre de gauche si le port 8000
+  est déjà pris.
+- `environment` — le seul chemin entre le `.env` et le code.
+  `COMPTAGEFER_DATA` est en dur : c'est le point de montage du volume, il ne
+  vient pas du `.env`. Toutes les autres lignes sont de la substitution
+  `${NOM:-défaut}`.
+- `volumes` — `./data:/data`, le seul volume. Le chemin de gauche est sur
+  l'hôte, celui de droite est le chemin vu du conteneur.
+- `restart: unless-stopped` — le service revient après un reboot, sauf si vous
+  l'avez arrêté vous-même.
+
+### Le `.env`, et comment il alimente le compose
+
+Le `.env` est le fichier que vous écrivez ; `compose.yaml` est le fichier que
+le dépôt fournit. Le premier est votre, le second est le même pour tout le
+monde, c'est pourquoi il ne contient que des noms de variables.
+
+**Qui lit le `.env`.** Docker Compose, et lui seul. Il cherche un fichier
+`.env` dans le répertoire du projet — celui qui contient `compose.yaml` — et le
+lit au moment où vous lancez la commande. Le conteneur ne le reçoit pas, ne le
+voit pas, et l'application ne l'ouvre jamais : elle lit son environnement de
+processus, via `os.environ` (`comptagefer/app.py`, `ADMIN_TOKEN` et
+`COMPTAGEFER_DATA` ; `comptagefer/publish.py`, `config_from_env`, les quatre
+variables data.gouv).
+
+**Ce que veut dire `${ADMIN_TOKEN:-}`.** Compose remplace cette écriture par la
+valeur trouvée, *avant* de créer le conteneur. Le `:-` veut dire « si la
+variable est absente ou vide, mets la valeur qui suit », ici une chaîne vide.
+C'est ce qui rend les variables facultatives : sans `.env`, `ADMIN_TOKEN`
+arrive vide dans le conteneur et `/admin` refuse toute connexion au lieu de
+planter. `${DATAGOUV_PUBLISH_HOUR:-0}` a une valeur de repli, 0, qui est aussi
+le défaut du code.
+
+**La forme du fichier.** `.env` n'est pas un script shell, même si Compose est
+indulgent. La forme à écrire, celle de `.env.example`, reste
+`NOM=valeur` :
+
+```bash
+# .env — copier depuis .env.example
+ADMIN_TOKEN=3f9a1c7e5b204d86af13c0e7b4d9528c6e0a1f37b5d4928
+DATAGOUV_API_KEY=
+DATAGOUV_DATASET_ID=
+```
+
+Compose 2.26 tolère `export NOM=valeur`, `NOM = valeur` et `NOM: valeur` : ne
+comptez pas sur cette souplesse, un `.env` écrit ainsi n'est plus lisible par
+un humain. Ce qu'il ne tolère pas, en revanche, échoue en silence — le
+conteneur démarre, la variable est vide, et `/admin` refuse tout :
+
+- **Une ligne sans `=`.** Elle est ignorée.
+- **Un `#` non échappé dans la valeur.** `ADMIN_TOKEN=abc #def` donne `abc`.
+  `ADMIN_TOKEN="abc #def"` donne bien `abc #def`.
+- **Une variable définie deux fois.** La dernière ligne gagne, sans un mot.
+- **La casse.** `admin_token` n'est pas `ADMIN_TOKEN`.
+- **Un `$` dans la valeur.** `ADMIN_TOKEN=$PATH` est interprété, pas pris au
+  mot ; mettez la valeur entre guillemets simples pour la lire tel quel.
+
+Un jeton admin se tire au hasard, en hexadécimal : ni `#` ni `$` à escalier,
+donc rien à échapper.
+
+```bash
+openssl rand -hex 24
+```
+
+**Qui gagne, si la variable est dans les deux endroits.** L'environnement du
+shell. `ADMIN_TOKEN=xxx docker compose up -d` l'emporte sur le `.env`. Ne faites
+pas cela pour un jeton : il reste dans l'historique du shell. Écrivez-le dans
+le `.env`.
+
+**Modifier le `.env` ne suffit pas.** Les variables sont figées à la création du
+conteneneur. Après une édition, `docker compose up -d` recrée le service et la
+nouvelle valeur arrive ; `docker compose restart` redémarre le même conteneur et
+l'ancienne valeur reste en place, sans aucun avertissement. Vérifié sur le
+conteneur réel : après `restart`, `os.environ["ADMIN_TOKEN"]` est encore
+l'ancien jeton, et le nouveau est refusé à `/admin`. Dans les deux cas
+l'import GTFS et les bases ne sont pas refaits : seul l'environnement change.
+
+**Vérifier sans rien lancer.** `docker compose config` affiche le compose
+résolu, les valeurs développées. C'est le moyen de voir si le `.env` est
+syntaxiquement correct. Attention : le jeton admin y apparaît en clair. Ne
+collez pas cette sortie dans un ticket ou un message.
+
+### Les options, une par une
 
 - `ADMIN_TOKEN` — le jeton qui ouvre `/admin`. Vide, l'admin est fermé et
   rien ne s'y inscrit. Indispensable dès qu'un tiers atteint le conteneur.
