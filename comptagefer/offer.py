@@ -1,7 +1,32 @@
 import csv
+import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# Le GTFS national décrit une même gare par deux zones quand la SNCF y sépare le
+# coach du train. « Grenoble » existe comme aire CTE (101 passages) et comme aire
+# TER/TGV (1115) : la recherche en affiche deux, et celle du coach ne renvoie
+# presque rien vers une vraie gare. Six noms sont dans ce cas, dont
+# « Saint-Hilaire-De-Riez » écrit avec deux capitalisations.
+#
+# On fusionne les aires de même nom (casse et espaces insignifiants) distantes de
+# moins de FUSION_METRES, lien transitif. Au-delà, ce sont deux lieux distincts
+# qui portent le même nom, et les fusionner mentirait sur l'interstation
+# comptée : Lérouville est à 641 m, Pouzauges à 3,6 km.
+FUSION_METRES = 500
+
+
+def _nom_cle(name: str) -> str:
+    return " ".join(name.casefold().split())
+
+
+def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distance à vol d'oiseau, assez fine pour deux quais d'une même gare."""
+    return math.hypot(
+        (lat1 - lat2) * 111_320,
+        (lon1 - lon2) * 111_320 * math.cos(math.radians((lat1 + lat2) / 2)),
+    )
 
 
 def open_stops(database: Path) -> sqlite3.Connection:
@@ -56,6 +81,55 @@ def nearest_stops(database: Path, lat: float, lon: float, limit: int = 5) -> lis
     return [{"stop_id": row[0], "name": row[1]} for row in ranked[:limit]]
 
 
+def _fusionnees(rows: list[dict], limit: int) -> list[dict]:
+    """Une entrée par gare, l'aire de coach et celle de train réunies.
+
+    `rows` sont des aires déjà filtrées par le nom. Dans un même nom normalisé,
+    deux aires distantes de moins de FUSION_METRES sont un seul lieu vu deux fois
+    par le GTFS :
+
+    - le lien est transitif, deux aires chacune à 400 m de l'aire retenue
+      forment un seul groupe ;
+    - l'aire gardée est celle qui a le plus d'enfants StopPoint, donc celle qui
+      dessert le plus de trains ;
+    - les autres ne sont pas perdues : la gare affichée n'est qu'une des deux
+      moitiés, mais `_stop_family` regroupe les deux, donc les offres, le serpent
+      et le temps réel voient les trains des deux aires ;
+    - deux aires du même nom trop éloignées restent deux entrées distinctes,
+      parce qu'une interstation comptée entre deux lieux distincts serait fausse.
+
+    Une aire sans coordonnées n'est jamais fusionnée : sans distance, rien ne
+    dit que c'est le même lieu.
+    """
+    par_nom: dict[str, list[dict]] = {}
+    for row in rows:
+        par_nom.setdefault(_nom_cle(row["name"]), []).append(row)
+
+    found = []
+    for membres in par_nom.values():
+        groupes: list[list[dict]] = []
+        for row in membres:
+            if row["lat"] is None or row["lon"] is None:
+                groupes.append([row])
+                continue
+            for groupe in groupes:
+                if any(
+                    membre["lat"] is not None
+                    and membre["lon"] is not None
+                    and _distance_m(membre["lat"], membre["lon"], row["lat"], row["lon"])
+                    <= FUSION_METRES
+                    for membre in groupe
+                ):
+                    groupe.append(row)
+                    break
+            else:
+                groupes.append([row])
+        for groupe in groupes:
+            principale = max(groupe, key=lambda item: (item["enfants"], item["stop_id"]))
+            found.append({"stop_id": principale["stop_id"], "name": principale["name"]})
+    return found[:limit]
+
+
 def search_stops(database: Path, query: str, limit: int = 8) -> list[dict]:
     needle = query.strip()
     if len(needle) < 2:
@@ -64,23 +138,80 @@ def search_stops(database: Path, query: str, limit: int = 8) -> list[dict]:
     with open_stops(database) as connection:
         rows = connection.execute(
             """
-            SELECT stop_id, name FROM stop
+            SELECT stop_id, name, lat, lon FROM stop
             WHERE is_area = 1 AND name LIKE ? ESCAPE '\\'
             ORDER BY name
             LIMIT ?
             """,
-            (f"%{escaped}%", limit),
+            (f"%{escaped}%", limit * 4),
         ).fetchall()
-    return [{"stop_id": row[0], "name": row[1]} for row in rows]
+        areas = []
+        for stop_id, name, lat, lon in rows:
+            enfants = connection.execute(
+                "SELECT COUNT(*) FROM stop WHERE parent = ?", (stop_id,)
+            ).fetchone()[0]
+            areas.append(
+                {"stop_id": stop_id, "name": name, "lat": lat, "lon": lon, "enfants": enfants}
+            )
+    return _fusionnees(areas, limit)
+
+
+def _proximites(connection, stop_id: str) -> list[str]:
+    """Les aires de gare que `stop_id` décrit, quand le GTFS en donne plusieurs.
+
+    Même gare vue deux fois : une aire de coach et une aire de train, à quelques
+    dizaines de mètres. On ne renvoie que celles dont le nom normalisé est
+    identique ET qui sont à moins de FUSION_METRES de l'aire demandée — sinon
+    deux lieux distincts du même nom (`Lérouville` à 641 m) seraient confondus, et
+    l'interstation comptée entre les deux serait fausse.
+
+    L'aire demandée est toujours dans le résultat, coordonnées absentes ou non :
+    une recherche qui ne trouve aucune sœur rend l'aire seule, pas le vide.
+
+    Seules les aires fusionnent. Un StopPoint demandé seul garde sa famille
+    d'avant, le point et rien d'autre : l'appel qui le fournit désigne déjà un
+    quai précis, on n'y ajoute pas les quais voisins sans qu'on l'ait demandé.
+    """
+    anchor = connection.execute(
+        "SELECT name, lat, lon, is_area FROM stop WHERE stop_id = ?", (stop_id,)
+    ).fetchone()
+    if anchor is None:
+        return [stop_id]
+    name, lat, lon, is_area = anchor
+    if not is_area:
+        return [stop_id]
+    candidates = connection.execute(
+        "SELECT stop_id, name, lat, lon FROM stop WHERE is_area = 1 AND lower(name) = lower(?)",
+        (name,),
+    ).fetchall()
+    key = _nom_cle(name)
+    groupe = [stop_id]
+    if lat is not None and lon is not None:
+        for other_id, other_name, other_lat, other_lon in candidates:
+            if other_id == stop_id or _nom_cle(other_name) != key:
+                continue
+            if other_lat is None or other_lon is None:
+                continue
+            if _distance_m(lat, lon, other_lat, other_lon) <= FUSION_METRES:
+                groupe.append(other_id)
+    return groupe
 
 
 def _stop_family(stops_database: Path | None, stop_id: str) -> list[str]:
+    """Les StopPoint d'une gare, ceux de l'aire de coach comprise.
+
+    C'est le seul endroit où une gare se décompose en points : les offres, le
+    serpent et le temps réel passent tous par là, donc une aire de coach
+    oubliée ici disparaissait de la liste sans qu'aucune page ne le dise.
+    """
     if stops_database is None or not stops_database.exists():
         return [stop_id]
     with open_stops(stops_database) as connection:
+        aires = _proximites(connection, stop_id)
+        marks = ",".join("?" for _ in aires)
         rows = connection.execute(
-            "SELECT stop_id FROM stop WHERE stop_id = ? OR parent = ?",
-            (stop_id, stop_id),
+            f"SELECT stop_id FROM stop WHERE stop_id IN ({marks}) OR parent IN ({marks})",
+            (*aires, *aires),
         ).fetchall()
     found = [row[0] for row in rows]
     return found or [stop_id]
