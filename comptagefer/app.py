@@ -92,7 +92,7 @@ def create_app(
     timetable = data_dir / "timetable.db"
     stops_database = data_dir / "stops.db"
 
-    app = FastAPI(title="ComptageFer")
+    app = FastAPI(title="ComptagesFer")
     # Exposée pour que l'exploitation puisse lire l'état sans passer par la
     # route, et pour qu'un test injecte un opener sans dupliquer le câblage.
     app.state.publication = publication
@@ -451,10 +451,14 @@ def _admin_list(rows: list[dict], publication: dict | None = None) -> str:
         destination = escape(row["destination_name"] or "")
         passengers = "" if row["passengers"] is None else row["passengers"]
         client_id = escape(row["client_id"])
+        # Le commentaire explique une charge atypique (car de substitution,
+        # train supprimé). C'est l/admin qui le lit : sans lui, l'information
+        # est stockée et jamais consultée.
+        note = f"<p>{escape(row['comment'])}</p>" if row.get("comment") else ""
         cards.append(
             "<article class='card'>"
             f"<strong>{origin} → {destination}</strong>"
-            f"<p>{passengers} voyageurs · {who}</p>"
+            f"<p>{passengers} voyageurs · {who}</p>{note}"
             "<form method='post' action='/admin/supprimer'>"
             f"<input type='hidden' name='client_id' value='{client_id}'>"
             "<button type='submit'>Supprimer</button>"
@@ -613,7 +617,7 @@ def _list_saisies(database: Path) -> list[dict]:
         rows = connection.execute(
             """
             SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
-                   trip_id, passengers, reliability, pseudo, standing, seats_free, imbalance,
+                   trip_id, passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
                    snapshot, kind, created_at, legs
             FROM saisie
             ORDER BY created_at
@@ -621,7 +625,7 @@ def _list_saisies(database: Path) -> list[dict]:
         ).fetchall()
     listed = []
     for row in rows:
-        snapshot = json.loads(row[12]) if row[12] else None
+        snapshot = json.loads(row[13]) if row[13] else None
         listed.append(
             {
                 "client_id": row[0],
@@ -633,13 +637,17 @@ def _list_saisies(database: Path) -> list[dict]:
                 "passengers": row[6],
                 "reliability": row[7],
                 "pseudo": row[8],
-                "standing": row[9],
-                "seats_free": row[10],
-                "imbalance": row[11],
+                # Le commentaire est demandé par /methode (« les commentaires
+                # sont précieux ») : sans le relire nulle part, il resterait
+                # inexploitable, et la promesse de la page serait vide.
+                "comment": row[9],
+                "standing": row[10],
+                "seats_free": row[11],
+                "imbalance": row[12],
                 "snapshot": snapshot,
-                "kind": row[13],
-                "created_at": row[14],
-                "legs": json.loads(row[15]) if row[15] else None,
+                "kind": row[14],
+                "created_at": row[15],
+                "legs": json.loads(row[16]) if row[16] else None,
             }
         )
     return listed
@@ -779,7 +787,7 @@ def _line_page(ligne: dict, rows: list[dict], arrets: list[dict]) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{titre} — ComptageFer</title>
+<title>{titre} — ComptagesFer</title>
 <style>
   body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
   main {{ max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
@@ -824,7 +832,7 @@ def _plain_reading_page(titre: str, corps: str) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(titre)} — ComptageFer</title>
+<title>{escape(titre)} — ComptagesFer</title>
 <style>
   body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
   main {{ max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
@@ -858,7 +866,7 @@ def _search_page(query: str, stops_database: Path, timetable: Path) -> str:
 
     if not requete:
         corps = (
-            "<div class='card'><p>Écris un nom de gare ou de ligne. "
+            "<div class='card'><p>Écrivez un nom de gare ou de ligne. "
             "« Lyon » trouve les deux : la gare, et les lignes qui la traversent.</p></div>"
         )
     else:
@@ -893,7 +901,7 @@ def _search_page(query: str, stops_database: Path, timetable: Path) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rechercher — ComptageFer</title>
+<title>Rechercher — ComptagesFer</title>
 <style>
   body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
   main {{ max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
@@ -991,12 +999,13 @@ def _method_page() -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Méthode — ComptageFer</title>
+<title>Méthode — ComptagesFer</title>
 <style>
   body { margin: 0; font: 18px/1.5 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }
   main { max-width: 34rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
   h1 { margin-bottom: 0.2rem; }
   h2 { margin-top: 2rem; font-size: 1.15rem; }
+  h3 { margin-top: 1.4rem; font-size: 1rem; }
   .lead { font-weight: 600; }
   ul { padding-left: 1.2rem; }
   li { margin: 0.35rem 0; }
@@ -1011,12 +1020,76 @@ def _method_page() -> str:
 <h1>Méthode</h1>
 <p class="lead">Ce que ces chiffres sont, et ce qu'ils ne sont pas.</p>
 
+<p>Bienvenue sur ComptagesFer. Ce site permet de contribuer à la connaissance
+des flux ferroviaires (+ certains cars TER) en France. C'est précieux pour ouvrir
+ces données au plus grand nombre. Vous pouvez consulter et exporter les
+comptages réalisés, sans restrictions, mais en gardant en tête qu'il s'agit de
+chiffres collectés par des particuliers, sans garantie de fiabilité.</p>
+
+<p>Note&nbsp;: les comptages officiels commandés notamment par les Régions pour
+les TER, et réalisés par des sociétés spécialisées, sont généralement
+confidentiels. Certains peuvent néanmoins être rendus disponibles, par exemple
+dans les comités de ligne, et désormais dans les COREST (comités régionaux des
+Services de Transport).</p>
+
+<p>Tout un chacun peut contribuer, en réalisant un ou des comptages à
+l'occasion d'un voyage quel qu'il soit&nbsp;: voire pendant l'attente dans une
+grande gare, en comptant le nombre de voyageurs montant dans le train avant son
+départ, ou descendant d'un train qui finit son trajet là. Ce dernier cas est
+intéressant, car c'est souvent à la gare « centrale », origine ou terminus, que
+le train est le plus chargé.</p>
+
 <div class="note">
 <p><strong>Ce n'est pas une fréquentation officielle.</strong> Les données officielles
 de fréquentation des trains régionaux ne sont pas publiques, ou le sont sous des
 conditions étroites. Ce que vous voyez ici vient de gens qui ont compté, dans
 leur train, à leur main.</p>
 </div>
+
+<h2>Comment ça marche</h2>
+
+<p>Cliquez sur «&nbsp;ComptagesFer&nbsp;» ou sur «&nbsp;Compter&nbsp;», puis choisissez
+l'origine et la destination du <strong>trajet compté</strong> — et non pas
+l'origine-destination de la ligne. L'outil doit associer le comptage à
+l'interstation réellement observée. Ensuite, deux cas de figure.</p>
+
+<h3>1) Comptage unique</h3>
+
+<p>L'outil permet d'enregistrer le nombre de voyageurs entre deux gares, de
+préférence deux gares desservies successives, afin d'associer le comptage à une
+«&nbsp;interstation&nbsp;» précise. Indiquez seulement les deux gares encadrantes
+le comptage, et non pas l'OD du trajet effectué. Le champ «&nbsp;fiabilité du
+compte&nbsp;» permet de préciser la qualité du comptage, qui peut être plus
+faible en cas de charge importante et/ou de difficulté à se déplacer dans le
+train. En cliquant sur «&nbsp;indicateurs, pseudo, commentaire&nbsp;», des
+options facultatives apparaissent. Et c'est tout&nbsp;!</p>
+
+<p>Note&nbsp;: c'est cette option «&nbsp;comptage unique&nbsp;» qu'il faut utiliser
+pour compter un train tout en restant dans une gare, c'est-à-dire compter les
+gens qui descendent ou montent sans emprunter le train. Dans ce cas, précisez la
+dernière gare desservie avant l'arrivée (gare terminus) ou la première gare
+desservie après le départ (gare d'origine), afin d'affecter le compte à une
+interstation précise.</p>
+
+<h3>2) Comptage « serpent de charge »</h3>
+
+<p>L'outil permet d'enregistrer toutes les montées et descentes au fil d'un
+trajet donné. Indiquez la gare de début du comptage et la gare de fin, même si
+la ligne est plus longue, et même si le trajet effectué est plus long. Si
+l'origine et la destination sont bien renseignées et le bon train choisi,
+l'outil connaît toutes les gares intermédiaires desservies. Il suffit de
+remplir les montées et descentes à chaque gare. En cliquant sur
+«&nbsp;indicateurs de cette interstation&nbsp;», vous pouvez compléter à chaque
+gare certaines informations sur l'interstation qu'elle conclut&nbsp;:
+estimation de la part de gens debout, part de places assises restantes, écart
+de charges en&nbsp;% entre les différentes voitures du train. À chaque gare,
+vous saurez ainsi quel est l'effectif du train, en soustrayant les voyageurs
+descendus et en ajoutant les voyageurs montés.</p>
+
+<p>Dans les deux cas, les commentaires sont précieux&nbsp;: train précédent
+supprimé, train très en retard qui expliquerait une forte charge, mise en place
+d'un car de substitution qui expliquerait à l'inverse une charge plus faible,
+etc.</p>
 
 <h2>Qui compte, et pourquoi c'est important</h2>
 
@@ -1097,7 +1170,7 @@ de suivi.</p>
 report de voyageurs. Interpréter une suppression demanderait une méthode que
 nous n'avons pas encore.</p>
 
-<h2>Où viennent les données</h2>
+<h2>D'où viennent les données</h2>
 
 <ul>
   <li><strong>L'offre des trains</strong> vient du GTFS national « Réseau SNCF
@@ -1122,6 +1195,13 @@ d'autre.</p>
 <p>Pas de compte, pas de mot de passe, aucun moyen de vous rattacher à une
 saisie. Le pseudo est facultatif, et un pseudo n'est ni une identité ni un
 droit&nbsp;: il signe un comptage, rien de plus.</p>
+
+<p>Le commentaire, lui, est public&nbsp;: il part dans le CSV et dans le jeu de
+données de data.gouv.fr, avec le pseudo. C'est ce qui le rend utile — un tiers
+peut comprendre pourquoi un train était chargé — mais c'est du texte libre, donc
+une donnée personnelle dès qu'un nom, un numéro ou une entreprise y apparaît.
+Mieux vaut écrire « car de substitution » que « M. Dupont, directeur de la
+Société X, à bord du 8 h 12 ».</p>
 
 <p>La géolocalisation peut proposer la gare la plus proche, et elle n'est
 jamais enregistrée. Aucune coordonnée GPS n'est stockée, ni envoyée au serveur.

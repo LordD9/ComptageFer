@@ -1,4 +1,4 @@
-# ComptageFer
+# ComptagesFer
 
 Outil collaboratif de comptage de la fréquentation des TER en France.
 

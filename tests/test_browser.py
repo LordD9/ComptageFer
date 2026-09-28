@@ -316,7 +316,7 @@ def test_the_method_page_is_readable_and_honest(page, site):
     assert response.status == 200, f"/methode répond {response.status}"
     text = page.text_content("body")
 
-    assert page.title() == "Méthode — ComptageFer"
+    assert page.title() == "Méthode — ComptagesFer"
     for attendu in (
         "Ce n'est pas une fréquentation officielle",
         "Pas de chiffre sans dénominateur",
@@ -326,6 +326,24 @@ def test_the_method_page_is_readable_and_honest(page, site):
         "Pas de compte",
     ):
         assert attendu in text, f"la méthode ne dit pas : {attendu!r}"
+
+    # La méthode doit aussi dire comment on compte. On compare au texte rendu
+    # (text_content retire les balises) et aux espaces normalisés. Issues #23
+    # (rédaction) et #25 (OD du trajet compté, pas celui de la ligne).
+    aplati = " ".join(text.split())
+    for attendu in (
+        "Bienvenue sur ComptagesFer",
+        "Comment ça marche",
+        "l'origine et la destination du trajet compté",
+        "et non pas l'origine-destination de la ligne",
+        "les deux gares encadrantes le comptage",
+        "gare de début du comptage et la gare de fin",
+        "gare terminus",
+        "gare d'origine",
+        "indicateurs, pseudo, commentaire",
+        "COREST",
+    ):
+        assert attendu in aplati, f"la méthode ne dit pas : {attendu!r}"
 
     # Les réserves doivent être visibles, pas cachées dans un attribut.
     assert page.is_visible("main")
@@ -744,3 +762,30 @@ def test_the_snake_walks_the_stops_of_the_chosen_trip(page, site):
     ], f"arrêts enregistrés : {rows[0]['legs']}"
     assert rows[0]["legs"][1]["boarded"] == 3
     assert rows[0]["legs"][2]["alighted"] is None, "une descente non comptée reste nulle, pas 0"
+
+
+def test_the_snake_also_takes_a_pseudo_and_a_comment(page, site):
+    """/methode promet un commentaire dans les deux cas. Si le serpent n'en
+    accepte pas, la promesse est fausse pour la moitié des saisies : train
+    précédent supprimé, car de substitution, forte charge inexpliquée."""
+    _reach_snake(page, site)
+    page.fill("#snake-onboard", "40")
+    page.click("#snake-next")
+    page.fill("#snake-boarded", "3")
+    page.fill("#snake-alighted", "1")
+    page.click("#snake-next")
+    assert "Valence" in page.text_content("#snake-title")
+    # Au dernier arrêt, les descentes restent facultatives, pas les montées.
+    page.fill("#snake-boarded", "0")
+
+    # Le commentaire du serpent est dans un <details> replié, comme celui du
+    # comptage unique : on l'ouvre comme un utilisateur.
+    page.click("#snake-fields details >> nth=1 >> summary")
+    page.fill("#snake-pseudo", "testeur")
+    page.fill("#snake-comment", "car de substitution")
+    page.click("#snake-next")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    rows = _sessions(site)
+    assert rows[0]["pseudo"] == "testeur", f"pseudo enregistré : {rows[0]['pseudo']!r}"
+    assert rows[0]["comment"] == "car de substitution"

@@ -1,9 +1,38 @@
 import csv
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from comptagefer.app import create_app
+from comptagefer import carte as carte_module
+from comptagefer.page import PAGE
+
+# Le tutoiement revient par une seule phrase, et les tests fonctionnels ne le
+# voient pas. Issue #24 : on le cherche donc explicitement dans tout ce que
+# l'utilisateur lit, HTML comme JavaScript.
+_TU_TOIEMENT = re.compile(
+    r"\b(ton|ta|tes|toi|tu|choisis|écris|verifie|réessaie|réessaye)\b",
+    re.IGNORECASE,
+)
+
+
+def test_no_page_talks_to_the_visitor_in_the_second_person(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    pages = {
+        "/": client.get("/").text,
+        "/methode": client.get("/methode").text,
+        "/rechercher": client.get("/rechercher").text,
+        "/comptages": client.get("/comptages").text,
+    }
+    for chemin, texte in pages.items():
+        trouves = sorted(set(_TU_TOIEMENT.findall(texte)))
+        assert not trouves, f"{chemin} tutoie encore : {trouves}"
+    # Le nom du projet reste en dur dans la page de carte, hors de la variable.
+    carte = carte_module.map_page([], 0)
+    assert not _TU_TOIEMENT.search(carte), "la carte tutoie"
+    # Le script de la page de comptage est embarqué dans PAGE.
+    assert not _TU_TOIEMENT.search(PAGE), "la page de comptage tutoie"
 
 
 def _stops(data: Path) -> None:
@@ -27,6 +56,23 @@ def test_home_is_a_mobile_form(tmp_path: Path):
     assert 'name="viewport"' in page.text
     assert "Origine" in page.text
     assert "Voyageurs dans le train" in page.text
+
+
+def test_the_form_asks_for_the_od_of_the_counted_trip(tmp_path):
+    """Issue #25 : la fenêtre de saisie doit dire que les gares sont celles du
+    trajet COMPTÉ, pas l'OD de la ligne, et rappeler le cas terminus/origine
+    quand on compte en gare sans monter dans le train."""
+    page = TestClient(create_app(tmp_path)).get("/").text
+    for attendu in (
+        "du trajet compté",
+        "et non pas celles de la ligne",
+        "les deux gares encadrantes",
+        "même si la ligne est plus longue",
+        "gare terminus",
+        "gare d'origine",
+        'id="od-rappel"',
+    ):
+        assert attendu in page, f"la saisie ne dit pas : {attendu!r}"
 
 
 def test_form_keeps_a_failed_count_and_asks_for_the_load_indicators(tmp_path):

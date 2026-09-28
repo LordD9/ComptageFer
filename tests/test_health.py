@@ -23,7 +23,7 @@ def test_home_names_the_project(tmp_path: Path):
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "ComptageFer" in response.text
+    assert "ComptagesFer" in response.text
 
 
 def test_startup_creates_saisie_table(tmp_path: Path):

@@ -139,7 +139,7 @@ def map_page(features: list[dict], total: int) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Carte — ComptageFer</title>
+<title>Carte — ComptagesFer</title>
 <link rel="stylesheet" href="{LEAFLET_CSS}">
 <style>
   body {{ margin: 0; font: 18px/1.4 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}

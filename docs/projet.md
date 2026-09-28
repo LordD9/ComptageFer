@@ -1,4 +1,4 @@
-# ComptageFer
+# ComptagesFer
 
 Outil collaboratif pour compter la fréquentation des TER en France, puis rendre ces comptages publics, lisibles et réutilisables.
 
@@ -219,7 +219,8 @@ Le flux temps réel ne donne pas le nom des gares, et il travaille surtout en St
 - `passengers`, l'effectif. En mode serpent c'est l'effectif portes fermées : c'est le nombre saisi, pas le total reconstruit. La reconstruction reste dans `legs`.
 - `reliability`, entier de 0 à 100
 - `pseudo`, facultatif, texte libre court. Pas un compte, pas un droit.
-- `comment`, `standing`, `seats_free`, `imbalance`, optionnels
+- `comment`, facultatif, texte libre court. C'est la partie qui explique un comptage atypique : train précédent supprimé, car de substitution, forte charge. Il est publié dans le CSV, donc lu par ceux qui réutilisent les données, et affiché dans l'admin.
+- `standing`, `seats_free`, `imbalance`, optionnels
 - `legs`, le profil du serpent, en JSON. La suite ordonnée des arrêts avec l'effectif de départ puis montées et descentes. Effectif suivant = effectif + montées − descentes.
 - `snapshot`, la photo du contexte, en JSON : le train choisi, le précédent, le suivant, leurs états, retards, sources et l'instant de la prise
 - `created_at`, horodatage de réception
@@ -293,8 +294,8 @@ Le parcours téléphone. On choisit un train dans une liste, on ne le décrit pa
 - repli SIRI ET Lite si Trip Updates est vide
 - `GET /api/trips?from=&to=&at=` : circulations du cache temps réel qui desservent les deux arrêts entre `at - 2 h` et `at + 2 h`
 - à la sélection, photo du train choisi, du précédent et du suivant
-- formulaire : interstation, effectif, indicateurs, fiabilité, pseudo facultatif
-- `POST /api/sessions` enregistre le comptage, le pseudo s'il y en a un, et la photo reçue, sans relire le flux
+- formulaire : interstation, effectif, indicateurs, fiabilité, pseudo et commentaire facultatifs
+- `POST /api/sessions` enregistre le comptage, le pseudo et le commentaire s'il y en a, et la photo reçue, sans relire le flux
 - idempotent sur `client_id`
 - signalement d'offre manquante
 
