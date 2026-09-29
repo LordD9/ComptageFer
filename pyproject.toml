@@ -25,7 +25,11 @@ test = [
 packages = ["comptagefer"]
 
 [tool.setuptools.package-data]
-comptagefer = ["*.js"]
+# `reseau.json` est le graphe de voie ferré que la carte lit. Sans cette
+# ligne il n'entre pas dans le paquet, donc pas dans l'image Docker, et la
+# carte retombe en segment droit sur toute installation. `*.js` est le script
+# hors ligne de la saisie.
+comptagefer = ["*.js", "data/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

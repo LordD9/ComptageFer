@@ -652,7 +652,7 @@ def test_the_map_page_explains_itself_when_leaflet_is_missing(page, site):
     page.wait_for_selector("body")
     assert _console_errors(page) == [], f"erreur JS sans Leaflet : {_console_errors(page)}"
     assert "carte n'a pas pu se charger" in page.text_content("body")
-    assert "ne suit pas la voie réelle" in page.text_content("body")
+    assert "suivent la voie ferrée réelle" in page.text_content("body")
 
 
 def test_the_map_page_has_no_horizontal_overflow(page, site):

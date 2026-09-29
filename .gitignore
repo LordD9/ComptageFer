@@ -1,4 +1,9 @@
-data/
+# `data/` ne couvre que la racine, où vivent les bases SQLite et le GTFS
+# téléchargé. Le graphe de voie ferré, lui, est versionné : c'est lui que la
+# carte lit, et le reconstruire exige le GeoJSON SNCF de 12 Mo qui n'est pas
+# dans le dépôt. On annule donc le motif pour ce seul répertoire.
+/data/
+!/comptagefer/data/
 .env
 .venv/
 __pycache__/

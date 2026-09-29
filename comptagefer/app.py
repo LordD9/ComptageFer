@@ -1169,8 +1169,8 @@ etc.</p>
 
 <ul>
   <li><strong>L'offre des trains</strong> vient du GTFS national « Réseau SNCF
-      TGV, Intercités et TER » (données ouvertes SNCF). Il donne des horaires
-      théoriques, pas la réalité du jour.</li>
+      TGV, Intercités et TER » (données ouvertes SNCF, Licence Ouverte 2.0).
+      Il donne des horaires théoriques, pas la réalité du jour.</li>
   <li><strong>L'état des trains</strong> vient des flux GTFS-RT Trip Updates et
       Service Alerts, rafraîchis toutes les 2 minutes et conservés 6 heures. Si
       Trip Updates est vide, SIRI ET Lite est tenté une fois. L'état affiché
@@ -1179,6 +1179,13 @@ etc.</p>
       « à l'heure&nbsp;».</li>
   <li><strong>Les comptages</strong> viennent des gens. C'est la seule source qui
       ne soit ni un horaire théorique ni un flux automatique.</li>
+  <li><strong>Le tracé de la carte</strong> suit la voie ferrée réelle, à partir
+      du réseau ferré national publié par le Cerema (Licence Etalab 2.0).
+      Quand le réseau ne relie pas deux arrêts, le segment reste droit, et le
+      bas de la page dit combien de tracés sont dans ce cas. Une gare dont la
+      voie n'est pas dans ce jeu — faisceau couvert, tunnel — reste donc en
+      segment droit&nbsp;: c'est un trou dans la source, pas dans votre saisie.
+      Un car de substitution n'a pas de voie du tout.</li>
 </ul>
 
 <p>Si un train qui a circulé n'apparaît pas, ce n'est pas une ligne à corriger à

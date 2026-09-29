@@ -1,7 +1,8 @@
 """La carte des comptages.
 
-Elle sert à lire, pas à saisir. Les segments sont droits entre les arrêts
-d'une saisie : la v1 ne suit pas la voie réelle, et la page le dit.
+Elle sert à lire, pas à saisir. Les tracés suivent la voie ferrée réelle
+entre les arrêts d'une saisie, calculée par `reseau.py` ; quand le réseau ne
+sait pas relier deux arrêts, le segment droit reste, et la page le dit.
 
 Le JS vit ici comme dans `page.py` — une chaîne HTML. C'est pour ça que
 `tests/test_browser.py` ouvre `/carte` dans un vrai Chromium : sans lui, une
@@ -49,6 +50,7 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
     échappés ici, une fois, et la page comme le script s'en servent tels quels.
     """
     places = _coordinates(stops_database)
+    reseau = _reseau()
     features = []
     for row in rows:
         arretees = _trace(row)
@@ -56,9 +58,10 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
         for stop_id, _name in arretees:
             place = places.get(stop_id)
             if place is not None:
-                points.append([round(place[0], 5), round(place[1], 5)])
+                points.append([place[1], place[0]])  # [lon, lat] comme le réseau
         if len(points) < 2:
             continue
+        trace, droite = _trace_reseau(points, reseau)
         kind = row.get("kind") or "count"
         features.append(
             {
@@ -74,10 +77,53 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
                 "origine": escape(str(row.get("origin_name") or arretees[0][1])),
                 "destination": escape(str(row.get("destination_name") or arretees[-1][1])),
                 "stops": [escape(str(name or stop_id)) for stop_id, name in arretees],
-                "points": points,
+                # `points` garde la position des arrêts, entiers compris : les
+                # marqueurs de gare doivent tomber sur la gare, pas sur le
+                # point de voie le plus proche.
+                "points": [[round(lat, 5), round(lon, 5)] for lon, lat in points],
+                "trace": [[round(lat, 5), round(lon, 5)] for lon, lat in trace],
+                "droite": droite,
             }
         )
     return features
+
+
+def _reseau():
+    """Le réseau, ou None s'il n'a pas pu être lu.
+
+    Absent, la carte reste en segment droit : c'est une dégradation lisible,
+    pas une panne. Voir `reseau.reseau`.
+    """
+    from comptagefer.reseau import reseau as charger
+
+    return charger()
+
+
+def _trace_reseau(
+    points: list[list[float]], reseau
+) -> tuple[list[list[float]], bool]:
+    """Le tracé le long de la voie, et le dire si c'est resté droit.
+
+    On rend `(trace, droite)`. Un serpent de six arrêts donne cinq segments ;
+    chacun est routé séparément, parce qu'un A* de bout en bout passerait par
+    les bifurcation et ne reviendrait pas sur les voies empruntées.
+
+    `droite` dit si un seul segment a dû rester droit. C'est ce que la page
+    annonce, et elle ne l'annonce que s'il y a eu un segment droit — sinon
+    elle dirait une limite du site alors qu'il n'y en a pas eu.
+    """
+    if reseau is None:
+        return list(points), True
+    trace: list[list[float]] = [points[0]]
+    droite = False
+    for avant, apres in zip(points, points[1:]):
+        chemin = reseau.chemin(avant, apres)
+        if chemin is None:
+            droite = True
+            trace.append(apres)
+        else:
+            trace.extend(chemin[1:])
+    return trace, droite
 
 
 def _trace(row: dict) -> list[tuple[str, str]]:
@@ -162,7 +208,7 @@ def map_page(features: list[dict], total: int) -> str:
   <p><a href="/comptages">Voir la liste</a> · <a href="/rechercher">Rechercher</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
   {_NOTE}
   {_corps(features)}
-  <p id="carte-pied" class="pied">{_pied(total, len(features))}</p>
+  <p id="carte-pied" class="pied">{_pied(total, features)}</p>
 </main>
 <script src="{LEAFLET_JS}"></script>
 <script>
@@ -173,12 +219,26 @@ def map_page(features: list[dict], total: int) -> str:
 """
 
 
-def _pied(total: int, placos: int) -> str:
-    return (
+def _pied(total: int, features: list[dict]) -> str:
+    """Le décompte du bas de page, tracés droits compris.
+
+    Le nombre de tracés et le nombre de segments droits sont deux choses
+    différentes, et les confondre dirait un comptage perdu alors qu'il est
+    dessiné. Un serpent dont un seul des cinq segments est droit reste un
+    seul tracé : on compte donc les tracés, et on précise les segments.
+    """
+    placos = len(features)
+    droits = sum(1 for feature in features if feature.get("droite"))
+    texte = (
         f"{total} comptage{'s' if total > 1 else ''} au total, "
         f"{placos} sur la carte. "
         "Les autres n'ont pas de coordonnées exploitables, ou pas deux arrêts distincts."
     )
+    if droits == 0:
+        return texte + " Tous les tracés suivent la voie ferrée."
+    if droits == 1:
+        return texte + " 1 tracé a un segment que le réseau ne relie pas, et il reste droit."
+    return texte + f" {droits} tracés ont un segment que le réseau ne relie pas, et il reste droit."
 
 
 def _corps(features: list[dict]) -> str:
@@ -201,12 +261,15 @@ def _corps(features: list[dict]) -> str:
     return "<div id='carte'></div>" + liste
 
 
-# La limite du segment droit est écrite même quand la carte est vide : c'est
-# une propriété de la v1, pas un état de la donnée.
+# La limite du segment droit est une propriété du réseau de données, pas un
+# état de la carte : elle est écrite même quand la carte est vide, et aussi
+# quand tous les tracés ont suivi la voie, puisque certains comptages restent
+# droits — un arrêt hors réseau, une ligne fermée.
 _NOTE = (
-    "<p class='note'>Les segments sont droits d'un arrêt compté à l'autre. La carte ne suit "
-    "pas la voie réelle du train, et elle ne montre pas une fréquentation&nbsp;: des relevés "
-    "de contributeurs.</p>"
+    "<p class='note'>Les tracés suivent la voie ferrée réelle quand le réseau national "
+    "la connaît (données Cerema, Licence Etalab 2.0). Quand il ne la relie pas, le segment "
+    "reste droit. Et la carte ne montre pas une fréquentation&nbsp;: des relevés de "
+    "contributeurs.</p>"
 )
 
 # Le script suit <script src=...> : il tourne donc après Leaflet. Une
@@ -230,9 +293,13 @@ function dessine() {
   const groupe = L.layerGroup().addTo(carte);
   let bornes = null;
   for (const feature of FEATURES) {
+    // Le tracé vient du réseau, il a beaucoup plus de points que les arrêts.
+    // Les marqueurs, eux, restent sur les arrêts : le tracé ne doit pas
+    // décaler la gare de 300 m vers la voie.
+    const trace = feature.trace.map((point) => [point[0], point[1]]);
     const points = feature.points.map((point) => [point[0], point[1]]);
-    if (points.length > 1) {
-      L.polyline(points, { color: feature.couleur, weight: 4, opacity: 0.7 }).addTo(groupe);
+    if (trace.length > 1) {
+      L.polyline(trace, { color: feature.couleur, weight: 4, opacity: 0.7 }).addTo(groupe);
     }
     for (let index = 0; index < points.length; index += 1) {
       const nombre = feature.passengers === null

@@ -82,10 +82,23 @@ décompte. Les tests voulaient dire « la page dit combien elle n'a pas pu
 placer » ; ils disaient aussi « la page dit `2 comptages au total` ». La
 deuxième assertion était un accident, la première était l'intention.
 
+**Un test qui compare une coordonnée à l'identique mesure l'arrondi, pas le
+code.** Le tracé réseau passe à quelques dizaines de mètres de la gare, pas
+dessus : trois tests ont affirmé que le tracé ne passait pas par son arrêt du
+milieu, alors qu'il y passait à 28 m. Une comparaison de géométrie se fait
+avec une tolérance explicite, en mètres, et le test le dit.
+
+**Une donnée de test inventée de mémoire n'est pas une donnée de test.** Trois
+gares du jeu de la carte avaient leur longitude inversée, et une quatrième
+était à 280 m de la position réelle : le test échouait pour une raison qui
+n'avait rien à voir avec le code, et le premier réflexe — « le réseau est
+faux » — était le mauvais. Elles viennent maintenant du GeoJSON SNCF, avec un
+commentaire qui dit pourquoi.
+
 ## 4. La base ne travaille pas deux fois pour le même résultat
 
 **Toute colonne filtrée est indexée.** Pas « indexée si le plan le montre » :
-les requêtes de ce projet sont known, et le plan se lit en une ligne de
+les requêtes de ce projet sont connues, et le plan se lit en une ligne de
 `EXPLAIN QUERY PLAN`.
 
 > `stop.parent` n'était pas indexé, alors que la moitié des requêtes le
