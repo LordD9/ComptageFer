@@ -167,6 +167,27 @@ ne migre rien : il ne fait rien sur une base déjà là.
 **Une migration est idempotente.** Elle s'exécute à chaque démarrage, donc elle
 doit pouvoir s'exécuter deux fois. Vérifier l'état avant de migrer, pas après.
 
+**Un schéma ne s'écrit pas deux fois, et s'il doit l'être, il n'est pas
+déduit du dictionnaire.** La table `saisie` est écrite à la création *et*
+reconstruite par `_clef_par_genre`, qui change la clé primaire. Les deux
+écritures avaient une liste de colonnes chacune, et quand `trajet` a été
+ajoutée à l'une, la migration recopiait vers une table qui ne l'avait pas :
+l'application plantait au démarrage sur toute base ayant déjà compté.
+
+Déduire le schéma de l'ancien semble plus sûr, et ça ne l'est pas. `PRAGMA
+table_info` renvoie des lignes indexées par position ; `row[1]` est le nom,
+mais lire le type et la contrainte par position d'une table renommée donne le
+schéma de l'autre. Résultat : `comment` revenait `NOT NULL`, et plus aucun
+comptage sans commentaire ne pouvait s'écrire. Les colonnes sont donc nommées,
+en un seul endroit — `SCHEMA_SAISIE` — et le test de migration vérifie qu'une
+base de l'année dernière s'ouvre sans rien perdre.
+
+**Une migration de colonne s'ajoute aussi à la liste des colonnes recopiées.**
+Le `ALTER TABLE ADD COLUMN` et la liste de la recopie sont deux endroits
+distingués, et rien ne signale que le second a été oublié. Le test qui crée une
+base au *vieux* schéma avant de démarrer l'application est ce qui l'attrape :
+> `tests/test_trajet.py::test_une_base_sans_la_colonne_trajet_s_ouvre_puis_se_migre`
+
 **L'import d'un gros fichier est atomique.** Le timetable est écrit dans
 `.importing` puis `replace`d. Un import interrompu ne doit pas laisser une base
 à moitié écrite que le prochain démarrage croira complète.

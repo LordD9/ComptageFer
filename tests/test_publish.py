@@ -86,6 +86,8 @@ def test_le_csv_garde_sa_licence_et_ses_entetes():
                 "snapshot": {"precedent": None, "courant": {"status": "CANCELED"}},
                 "kind": "count",
                 "legs": None,
+                "trip_id": None,
+                "trajet": None,
             }
         ]
     )

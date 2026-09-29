@@ -400,6 +400,50 @@ def stops_between(
     return found
 
 
+def trip_stops_all(
+    database: Path,
+    trip_id: str,
+    stops_database: Path | None = None,
+) -> list[dict]:
+    """Les arrêts du train entier, dans l'ordre, avec son heure de départ.
+
+    `stops_between` ne rend que le tronçon entre deux gares, parce que c'est ce
+    qu'on affiche à l'écran. Ici on veut le trajet complet : un comptage ne se
+    rattache qu'à un arrêt, mais l'estimation d'une fréquentation a besoin de
+    savoir d'où venait le train et où il va — le reste du trajet, c'est de la
+    charge qu'on ne voit pas.
+
+    L'ordre est celui du GTFS, pas celui des horaires : un train qui repasse
+    par une gare rare peut avoir un `depart_sec` plus petit à son retour. La
+    colonne `seq` est là pour ça, quand la feed la fournit.
+
+    Chaque arrêt porte `avant` : les gares desservies juste avant, dans l'ordre.
+    C'est ce qui permet de rattacher un effectif à ce qui entre et ce qui sort,
+    sans refaire un groupby sur les arrêts plus loin.
+    """
+    if not Path(database).exists() or not trip_id:
+        return []
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(passage)")}
+        order = "COALESCE(seq, depart_sec), depart_sec" if "seq" in columns else "depart_sec"
+        rows = connection.execute(
+            f"SELECT stop_id, depart_sec FROM passage WHERE trip_id = ? ORDER BY {order}",
+            (trip_id,),
+        ).fetchall()
+    names = _station_names(stops_database)
+    found: list[dict] = []
+    seen: str | None = None
+    for stop_id, depart_sec in rows:
+        name, key = names.get(stop_id, (stop_id, stop_id))
+        if key == seen:
+            continue
+        seen = key
+        found.append({"stop_id": stop_id, "name": name, "depart_sec": depart_sec})
+    for index, item in enumerate(found):
+        item["avant"] = [autre["stop_id"] for autre in found[max(0, index - 3) : index]]
+    return found
+
+
 def _station_names(stops_database: Path | None) -> dict[str, tuple[str, str]]:
     if stops_database is None or not Path(stops_database).exists():
         return {}
