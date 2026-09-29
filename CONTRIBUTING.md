@@ -89,6 +89,14 @@ dépendance de production, et il n'est pas contournable par un commentaire.
 
 **La branche porte un préfixe** : `fix/`, `feat/`, `docs/`, `perf/`, `refactor/`.
 
+**Après le merge, la branche se supprime — après avoir vérifié qu'elle y
+était.** Une fusion en *squash* casse l'ascendance : `git merge-base
+--is-ancendant` dit « non » pour une branche dont le contenu est entièrement
+dans `main`, et le diff trois-points affiche des centaines de lignes déjà
+présentes. On compare donc le fichier, pas l'historique, et on supprime par
+`git branch -d` — le `-D` forcerait sur une branche réellement non mergée.
+Voir `docs/regles.md` § 6.
+
 ## Ce qu'on attend d'une review
 
 Une review here n'est pas un examen de style. Quelqu'un va essayer de casser
