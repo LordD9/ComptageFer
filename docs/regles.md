@@ -41,7 +41,7 @@ l'autorise pas.
 
 **Une opération doit soit écrire, soit dire qu'elle n'a pas rien écrit.** Le
 pire des cas est un 200 qui ne fait rien : l'écran dit « c'est noté », le
-contributeur believes, la ligne n'existe pas.
+contributeur le croit, la ligne n'existe pas.
 
 > Le contrôle d'idempotence portait sur `client_id` seul, qui était aussi la
 > clé primaire de `saisie`. Signaler un train manquant consommait le jeton du
@@ -152,7 +152,12 @@ la ligne existante quand le contenu est identique. Cette règle existe pour les
 trips et elle vaut pour tout ce qui est stocké avec un `fetched_at` en clé :
 50 alertes inchangées donnaient 500 lignes après 10 tours.
 
-## 6. Une migration ne perd rien
+## 6. Une migration ne perd rien, une branche morte ne ment pas
+
+Les deux règles de cette section ont le même fond : **vérifier l'état réel avant
+d'agir sur une affirmation**. Une migration ne perd rien, une branche qu'on
+supprime ne disparaît pas — et dans les deux cas, l'outil qui dit l'état peut
+mentir.
 
 **Quand une clé ou un schéma change, la migration se teste sur une base
 existante**, pas seulement sur une base neuve. Un `CREATE TABLE IF NOT EXISTS`
@@ -186,7 +191,29 @@ base de l'année dernière s'ouvre sans rien perdre.
 Le `ALTER TABLE ADD COLUMN` et la liste de la recopie sont deux endroits
 distingués, et rien ne signale que le second a été oublié. Le test qui crée une
 base au *vieux* schéma avant de démarrer l'application est ce qui l'attrape :
-> `tests/test_trajet.py::test_une_base_sans_la_colonne_trajet_s_ouvre_puis_se_migre`
+`tests/test_trajet.py::test_une_base_sans_la_colonne_trajet_s_ouvre_puis_se_migre`
+
+**« Cette branche est mergée » se vérifie sur le contenu, jamais sur
+l'ascendance.** Une fusion en *squash* écrase les commits de la branche en un
+seul commit au parent différent : `git merge-base --is-ancendant` répond alors
+non, et `git diff main...branche` affiche des centaines de lignes qui sont en
+réalité déjà dans `main`. Croire cette sortie, c'est soit garder une branche
+morte, soit supprimer un travail en croyant qu'il est ailleurs.
+
+Ce qui compte, c'est : **le fichier existe-t-il dans `main`, et `main` est-il au
+moins aussi avancé ?** On compare le fichier, pas l'historique.
+
+> En septembre 2026, `docs/contribuer`, `docs/audit-septembre-2026` et
+> `fix/constats-audit-septembre` annonçaient 335 et 602 lignes « non mergées »,
+> alors que `CONTRIBUTING.md`, `docs/audit-2026-09.md` et
+> `tests/test_audit_regressions.py` étaient identiques dans `main`, et que
+> `README.md` y avait cinq lignes de plus. Les PR #29, #30 et #31 avaient été
+> fusionnées en squash. Comparaison fichier par fichier, rien n'était perdu,
+> et les trois branches ont pu être supprimées.
+
+Une branche de travail se supprime par `git branch -d`, pas `-D`. Le `-D` force
+sur une branche non mergée : c'est exactement la commande qui transformerait le
+mensonge de `merge-base` en perte de données.
 
 **L'import d'un gros fichier est atomique.** Le timetable est écrit dans
 `.importing` puis `replace`d. Un import interrompu ne doit pas laisser une base
