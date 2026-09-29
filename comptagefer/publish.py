@@ -69,6 +69,8 @@ def render_csv(rows: list[dict]) -> str:
             "suivant",
             "kind",
             "legs",
+            "trip_id",
+            "trajet",
         ]
     )
     for row in rows:
@@ -89,9 +91,36 @@ def render_csv(rows: list[dict]) -> str:
                 _photo_status(row["snapshot"], "suivant"),
                 row["kind"] or "",
                 json.dumps(row["legs"], ensure_ascii=False) if row.get("legs") else "",
+                row.get("trip_id") or "",
+                _trajet_csv(row.get("trajet")),
             ]
         )
     return buffer.getvalue()
+
+
+def _trajet_csv(trajet: object) -> str:
+    """Le trajet du train, en une colonne lisible par un tableur.
+
+    JSON pour être exact, comme `legs`. C'est moins lisible qu'une liste, mais
+    mettre les arrêts dans des colonnes supposerait que le lecteur sait déjà de
+    combien d'arrêts il s'agit — un train peut en avoir 3 ou 60, et ça varie
+    d'un comptage à l'autre. Le tableur ne peut donc pas avoir de colonnes
+    fixes sans perdre l'information, et l'information est justement ce qu'on
+    veut garder. Le format long est le seul qui tienne.
+    """
+    if not isinstance(trajet, dict):
+        return ""
+    arrets = trajet.get("arrets")
+    if not isinstance(arrets, list) or not arrets:
+        return ""
+    return json.dumps(
+        [
+            [item.get("name") or item.get("stop_id"), item.get("depart_sec")]
+            for item in arrets
+            if isinstance(item, dict)
+        ],
+        ensure_ascii=False,
+    )
 
 
 def _photo_status(snapshot: object, key: str) -> str:

@@ -27,6 +27,7 @@ from comptagefer.timetable import (
     listed_trips,
     search_lines,
     stops_between,
+    trip_stops_all,
 )
 from comptagefer.page import PAGE
 from comptagefer.publish import (
@@ -62,6 +63,33 @@ def _prune_sessions(sessions: dict[str, float]) -> None:
         sessions.pop(jeton, None)
 
 
+# Les colonnes de `saisie`, en un seul endroit, avec leur type et leur
+# contrainte. La création de table et la migration qui reconstruit la table
+# pour la clé composite s'en servent toutes les deux : les dupliquer
+# stockpillerait la réponse, et c'est ainsi que `trajet` s'est perdue — la
+# migration la recopiait sans l'avoir dans sa liste.
+SCHEMA_SAISIE = (
+    ("client_id", "TEXT NOT NULL"),
+    ("kind", "TEXT NOT NULL"),
+    ("origin_stop_id", "TEXT NOT NULL"),
+    ("destination_stop_id", "TEXT NOT NULL"),
+    ("origin_name", "TEXT"),
+    ("destination_name", "TEXT"),
+    ("trip_id", "TEXT"),
+    ("passengers", "INTEGER"),
+    ("reliability", "INTEGER"),
+    ("pseudo", "TEXT"),
+    ("comment", "TEXT"),
+    ("standing", "INTEGER"),
+    ("seats_free", "INTEGER"),
+    ("imbalance", "INTEGER"),
+    ("snapshot", "TEXT"),
+    ("created_at", "TEXT NOT NULL"),
+    ("legs", "TEXT"),
+    ("trajet", "TEXT"),
+)
+
+
 def _clef_par_genre(connection: sqlite3.Connection) -> None:
     """Passe la clé primaire de `saisie` de `client_id` à `(client_id, kind)`.
 
@@ -79,31 +107,11 @@ def _clef_par_genre(connection: sqlite3.Connection) -> None:
         return
     if colonnes["client_id"][5] == 0:
         return  # déjà composite : rien à faire
-    noms = ", ".join(sorted(colonnes))
+    noms = ", ".join(nom for nom, _ in SCHEMA_SAISIE if nom in colonnes)
     connection.execute("ALTER TABLE saisie RENAME TO saisie_ancienne_clef")
     connection.execute(
-        """
-        CREATE TABLE saisie (
-            client_id TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            origin_stop_id TEXT NOT NULL,
-            destination_stop_id TEXT NOT NULL,
-            origin_name TEXT,
-            destination_name TEXT,
-            trip_id TEXT,
-            passengers INTEGER,
-            reliability INTEGER,
-            pseudo TEXT,
-            comment TEXT,
-            standing INTEGER,
-            seats_free INTEGER,
-            imbalance INTEGER,
-            snapshot TEXT,
-            created_at TEXT NOT NULL,
-            legs TEXT,
-            PRIMARY KEY (client_id, kind)
-        )
-        """
+        f"CREATE TABLE saisie ({', '.join(f'{nom} {type_}' for nom, type_ in SCHEMA_SAISIE)}, "
+        "PRIMARY KEY (client_id, kind))"
     )
     connection.execute(
         f"INSERT OR IGNORE INTO saisie ({noms}) SELECT {noms} FROM saisie_ancienne_clef"
@@ -130,31 +138,14 @@ def create_app(
     admin_sessions: dict[str, float] = {}
     with sqlite3.connect(database) as connection:
         connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS saisie (
-                client_id TEXT PRIMARY KEY,
-                origin_stop_id TEXT NOT NULL,
-                destination_stop_id TEXT NOT NULL,
-                origin_name TEXT,
-                destination_name TEXT,
-                trip_id TEXT,
-                passengers INTEGER,
-                reliability INTEGER,
-                pseudo TEXT,
-                comment TEXT,
-                standing INTEGER,
-                seats_free INTEGER,
-                imbalance INTEGER,
-                snapshot TEXT,
-                kind TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                legs TEXT
-            )
-            """
+            f"CREATE TABLE IF NOT EXISTS saisie ("
+            f"{', '.join(f'{nom} {type_}' for nom, type_ in SCHEMA_SAISIE)})"
         )
         columns = {row[1] for row in connection.execute("PRAGMA table_info(saisie)")}
         if "legs" not in columns:
             connection.execute("ALTER TABLE saisie ADD COLUMN legs TEXT")
+        if "trajet" not in columns:
+            connection.execute("ALTER TABLE saisie ADD COLUMN trajet TEXT")
         _clef_par_genre(connection)
 
     timetable = data_dir / "timetable.db"
@@ -322,7 +313,9 @@ def create_app(
     @app.post("/api/sessions")
     def sessions(body: dict) -> dict:
         kind = "serpent" if body.get("kind") == "serpent" else "count"
-        return _save_saisie(database, body, kind=kind)
+        return _save_saisie(
+            database, body, kind=kind, timetable=timetable, stops_database=stops_database
+        )
 
     @app.post("/api/missing")
     def missing(body: dict) -> dict:
@@ -579,7 +572,13 @@ def _publication_panel(publication: dict) -> str:
     )
 
 
-def _save_saisie(database: Path, body: dict, kind: str) -> dict:
+def _save_saisie(
+    database: Path,
+    body: dict,
+    kind: str,
+    timetable: Path | None = None,
+    stops_database: Path | None = None,
+) -> dict:
     client_id = str(body.get("client_id") or "")
     origin = str(body.get("origin_stop_id") or "")
     destination = str(body.get("destination_stop_id") or "")
@@ -607,6 +606,7 @@ def _save_saisie(database: Path, body: dict, kind: str) -> dict:
     snapshot_text = json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None
     if snapshot_text and len(snapshot_text) > 20_000:
         snapshot_text = None
+    trajet_text = _freeze_trajet(timetable, stops_database, body)
     with sqlite3.connect(database) as connection:
         existing = connection.execute(
             "SELECT client_id, kind FROM saisie WHERE client_id = ?",
@@ -622,9 +622,9 @@ def _save_saisie(database: Path, body: dict, kind: str) -> dict:
             """
             INSERT INTO saisie (
                 client_id, origin_stop_id, destination_stop_id, origin_name, destination_name, trip_id,
-                passengers, reliability, pseudo, comment, standing, seats_free, imbalance, snapshot, legs, kind, created_at
- )
- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                passengers, reliability, pseudo, comment, standing, seats_free, imbalance, snapshot, legs, trajet, kind, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 client_id,
@@ -642,11 +642,55 @@ def _save_saisie(database: Path, body: dict, kind: str) -> dict:
                 imbalance,
                 snapshot_text,
                 legs_text,
+                trajet_text,
                 kind,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
     return {"client_id": client_id, "kind": kind, "stored": True}
+
+
+def _freeze_trajet(
+    timetable: Path | None,
+    stops_database: Path | None,
+    body: dict,
+) -> str | None:
+    """Le trajet complet du train, figé au moment du comptage.
+
+    Un comptage ne parle que du tronçon où l'on a compté. Le train, lui, venait
+    d'ailleurs et continue ailleurs, et cette charge-là est exactement ce
+    qu'une estimation de fréquentation cherche plus tard. Alors on le copie
+    dans la saisie au moment où on sait de quel train il s'agit.
+
+    On fige pour deux raisons, et ce n'est pas la même. La première est
+    l'historique : le GTFS est rechargé, une ligne peut changer de gares, et la
+    saisie doit dire ce qu'elle a vu. La deuxième est qu'un `trip_id` du GTFS
+    théorique ne garantit plus l'existence du train le jour du comptage ; sans
+    copie, on ne peut pas distinguer « on l'a compté avant le rechargement » de
+    « on l'a compté après ».
+
+    Un « train signalé » n'a pas de trajet : c'est un doute sur une ligne, pas
+    une observation, donc rien à figer. Sans `trip_id` non plus : on ne sait
+    pas quel train on a compté, et deviner serait fabriquer de la donnée.
+    """
+    if timetable is None or not Path(timetable).exists():
+        return None
+    trip_id = body.get("trip_id")
+    if not trip_id or not isinstance(trip_id, str):
+        return None
+    arrets = trip_stops_all(timetable, trip_id, stops_database)
+    if len(arrets) < 2:
+        return None
+    return json.dumps(
+        {
+            "trip_id": trip_id,
+            "arrets": [
+                {"stop_id": item["stop_id"], "name": item["name"], "depart_sec": item["depart_sec"]}
+                for item in arrets
+            ],
+        },
+        ensure_ascii=False,
+    )
 
 
 def _clean_legs(value: object) -> str:
@@ -695,7 +739,7 @@ def _list_saisies(database: Path) -> list[dict]:
             """
             SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
                    trip_id, passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
-                   snapshot, kind, created_at, legs
+                   snapshot, kind, created_at, legs, trajet
             FROM saisie
             ORDER BY created_at
             """
@@ -725,6 +769,9 @@ def _list_saisies(database: Path) -> list[dict]:
                 "kind": row[14],
                 "created_at": row[15],
                 "legs": json.loads(row[16]) if row[16] else None,
+                # Le trajet figé au moment du comptage, pas relu au moment de la
+                # lecture : c'est tout l'intérêt. Voir `_freeze_trajet`.
+                "trajet": json.loads(row[17]) if row[17] else None,
             }
         )
     return listed
@@ -1164,6 +1211,17 @@ descendus et en ajoutant les voyageurs montés.</p>
 supprimé, train très en retard qui expliquerait une forte charge, mise en place
 d'un car de substitution qui expliquerait à l'inverse une charge plus faible,
 etc.</p>
+
+<p>À chaque comptage, l'outil enregistre aussi le <strong>trajet complet du
+train</strong>, pas seulement le tronçon que vous avez compté&nbsp;: toutes les
+gares qu'il dessert, du départ à l'arrivée, avec l'heure de chacune. Vous ne
+faites rien de plus, et la saisie ne change pas. C'est pour plus tard, quand on
+voudra estimer une fréquentation&nbsp;: la charge qu'un train emporte au-delà du
+tronçon compté est exactement ce qu'un effectif à un endroit ne dit pas. Ce
+trajet est une copie figée au moment du comptage, et non une lecture de
+l'horaire au moment où vous consultez cette page&nbsp;: si une ligne change de
+gares plus tard, votre comptage dira toujours ce que vous avez vu ce jour-là. Si
+vous n'avez pas choisi de train, il n'y a rien&nbsp;: l'outil ne devine pas.</p>
 
 <h2>D'où viennent les données</h2>
 
