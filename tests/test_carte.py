@@ -1,27 +1,34 @@
 """La carte : ce qu'elle dessine, et ce qu'elle refuse de dessiner.
 
-La v1 relie les arrêts par un segment droit. Ce n'est pas la voie réelle du
-train, et la page le dit. Ces tests verrouillent le contrat : deux points
-placeables au minimum, l'ordre du serpent conservé, et l'honnêteté du pied de
-page quand un comptage n'a pas de coordonnées.
+Les tracés suivent la voie ferrée réelle, via `reseau.py`, et tombent droit
+quand le réseau ne relie pas deux arrêts. Ces tests verrouillent le contrat :
+deux points placeables au minimum, l'ordre du serpent conservé, le tracé routé distinct
+des marqueurs d'arrêt, et l'honnêteté du pied de page sur les
+segments droits comme sur les comptages sans coordonnées.
 """
 
 import csv
+import math
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from comptagefer.app import create_app
-from comptagefer.carte import counted_features
+from comptagefer.carte import counted_features, map_page
 from comptagefer.offer import import_stop_names
 
+# Coordonnées [lat, lon] de gares réelles, prises dans `gares.merged.geojson`
+# (Cerema) puis arrondies comme le fait `counted_features`. Lyon Part-Dieu est à
+# 4.859355 et non 4.8557 : à 280 m de la gare, le point de voie le plus proche
+# est hors de la borne de 500 m et le tracé resterait droit. C'est un
+# Gabarit, pas un hasard.
 STOPS = [
-    ("StopArea:Lyon", "Lyon Part-Dieu", "", 45.7608, 4.8557),
-    ("StopPoint:LyonA", "Lyon Part-Dieu voie A", "StopArea:Lyon", 45.7608, 4.8557),
-    ("StopArea:Vienne", "Vienne", "", 45.4481, 4.8789),
-    ("StopPoint:VienneA", "Vienne voie 1", "StopArea:Vienne", 45.4481, 4.8789),
-    ("StopArea:Valence", "Valence", "", 44.9294, 4.9925),
-    ("StopPoint:ValenceA", "Valence voie A", "StopArea:Valence", 44.9294, 4.9925),
+    ("StopArea:Lyon", "Lyon Part-Dieu", "", 45.7606, 4.8594),
+    ("StopPoint:LyonA", "Lyon Part-Dieu voie A", "StopArea:Lyon", 45.7606, 4.8594),
+    ("StopArea:Vienne", "Vienne", "", 45.5212, 4.8742),
+    ("StopPoint:VienneA", "Vienne voie 1", "StopArea:Vienne", 45.5212, 4.8742),
+    ("StopArea:Valence", "Valence", "", 44.9280, 4.8933),
+    ("StopPoint:ValenceA", "Valence voie A", "StopArea:Valence", 44.9280, 4.8933),
     # Une voie sans coordonnées : c'est le cas réel dans le GTFS national, et
     # elle doit hériter de la position de sa gare.
     ("StopPoint:VienneB", "Vienne voie 2", "StopArea:Vienne", "", ""),
@@ -74,8 +81,218 @@ def test_a_count_becomes_a_segment_between_its_two_stops(tmp_path):
     ]
     features = counted_features(stops, rows)
     assert len(features) == 1
-    assert features[0]["points"] == [[45.7608, 4.8557], [44.9294, 4.9925]]
+    assert features[0]["points"] == [[45.7606, 4.8594], [44.928, 4.8933]]
     assert features[0]["stops"] == ["Lyon Part-Dieu", "Valence"]
+
+
+def test_a_count_between_two_stations_follows_the_railway_track(tmp_path):
+    """Lyon–Valence est un tracé de voie ferrée, pas une diagonale.
+
+    Le test utilise deux gares qui sont dans le réseau livré, donc le routage a
+    toutes les chances de réussir. Si le réseau change et qu'elles n'y sont
+    plus, le test le dit — c'est un signal, pas un échec à contourner.
+    """
+    stops = _stops_db(tmp_path)
+    features = counted_features(
+        stops,
+        [
+            {
+                "client_id": "jeton",
+                "kind": "count",
+                "origin_stop_id": "StopArea:Lyon",
+                "destination_stop_id": "StopArea:Valence",
+                "origin_name": "Lyon Part-Dieu",
+                "destination_name": "Valence",
+                "passengers": 40,
+                "pseudo": None,
+                "legs": None,
+            }
+        ],
+    )
+    feature = features[0]
+    assert feature["droite"] is False, "Lyon–Valence est sur le réseau, le tracé doit le suivre"
+    assert len(feature["trace"]) > 2, "un tracé qui ne garde que les deux gares coupe au travers"
+    # Le tracé part et arrive sur les gares, pas sur le point de voie le plus
+    # proche : c'est la gare qu'on a comptée. La tolérance couvre le crochet
+    # d'accroche, qui est de l'ordre de la centaine de mètres.
+    assert _trace_passe_par(feature["trace"], feature["points"][0])
+    assert _trace_passe_par(feature["trace"], feature["points"][1])
+
+
+def test_the_markers_stay_on_the_stops_and_the_track_takes_the_detour(tmp_path):
+    """Marqueurs et tracé sont deux listes, pour deux raisons.
+
+    Le tracé est sur la voie, les marqueurs sur les arrêts. Les confondre
+    décalerait chaque gare de plusieurs centaines de mètres vers le rail le
+    plus proche, ce qui se voit dès qu'on zoome sur une gare.
+    """
+    stops = _stops_db(tmp_path)
+    feature = counted_features(
+        stops,
+        [
+            {
+                "client_id": "serpent",
+                "kind": "serpent",
+                "origin_stop_id": "StopArea:Lyon",
+                "destination_stop_id": "StopArea:Valence",
+                "passengers": 10,
+                "legs": [
+                    {"stop_id": "StopPoint:LyonA", "stop_name": "Lyon Part-Dieu"},
+                    {"stop_id": "StopPoint:VienneA", "stop_name": "Vienne"},
+                    {"stop_id": "StopPoint:ValenceA", "stop_name": "Valence"},
+                ],
+            }
+        ],
+    )[0]
+    assert len(feature["points"]) == 3, "trois arrêts, trois marqueurs"
+    assert len(feature["trace"]) > 3, "le tracé doit avoir plus de points que les arrêts"
+    for marqueur in feature["points"]:
+        assert _trace_passe_par(feature["trace"], marqueur), (
+            "chaque marqueur doit avoir sa gare sur le tracé"
+        )
+
+
+def test_a_snake_routes_each_leg_and_still_passes_through_every_stop(tmp_path):
+    """Un serpent de trois arrêts donne deux segments routés, pas deux droites.
+
+    Et le tracé passe par les trois gares : c'est un parcours de voyageur,
+    pas un bond de la première à la dernière. On compare avec une tolérance
+    de 200 m, pas à l'identique : le tracé s'accroche à la voie la plus proche
+    de la gare, qui est à quelques dizaines de mètres, et une comparaison
+    exacte dirait à tort que le serpent ne passe pas par son arrêt du milieu.
+    """
+    stops = _stops_db(tmp_path)
+    feature = counted_features(
+        stops,
+        [
+            {
+                "client_id": "serpent",
+                "kind": "serpent",
+                "origin_stop_id": "StopArea:Lyon",
+                "destination_stop_id": "StopArea:Valence",
+                "passengers": 10,
+                "legs": [
+                    {"stop_id": "StopPoint:LyonA", "stop_name": "Lyon Part-Dieu"},
+                    {"stop_id": "StopPoint:VienneA", "stop_name": "Vienne"},
+                    {"stop_id": "StopPoint:ValenceA", "stop_name": "Valence"},
+                ],
+            }
+        ],
+    )[0]
+    assert feature["droite"] is False
+    assert len(feature["trace"]) >= 3
+    assert _trace_passe_par(feature["trace"], feature["points"][1]), (
+        "le tracé doit passer près de Vienne"
+    )
+
+
+def _trace_passe_par(trace: list[list[float]], arret: list[float], tolerance_m: float = 200.0):
+    for point in trace:
+        d = math.hypot(
+            (point[1] - arret[1]) * 111320.0 * math.cos(math.radians(arret[0])),
+            (point[0] - arret[0]) * 111320.0,
+        )
+        if d <= tolerance_m:
+            return True
+    return False
+
+
+def test_a_count_between_two_stops_the_network_cannot_link_stays_straight_and_says_so(tmp_path):
+    """Pas de chemin réseau : le segment droit, et la page le dit.
+
+    C'est le contrat honnête du bas de page. Un tracé droit doit être annoncé,
+    sinon le lecteur prend la carte pour une carte qui suit la voie.
+    """
+    stops = _stops_db(tmp_path)
+    features = counted_features(
+        stops,
+        [
+            {
+                "client_id": "jeton",
+                "kind": "count",
+                "origin_stop_id": "StopArea:Nulle",
+                "destination_stop_id": "StopArea:Lyon",
+                "origin_name": "Quelque part",
+                "destination_name": "Lyon Part-Dieu",
+                "passengers": 1,
+                "pseudo": None,
+                "legs": None,
+            }
+        ],
+    )
+    # Nulle n'a pas de coordonnées : le comptage n'est pas dessiné du tout.
+    assert features == []
+
+    # Un point hors réseau mais avec des coordonnées, lui, est dessiné droit.
+    import sqlite3
+
+    connection = sqlite3.connect(stops)
+    connection.execute(
+        "INSERT INTO stop (stop_id, name, lat, lon, parent, is_area) VALUES (?,?,?,?,?,?)",
+        ("StopArea:Campagne", "Gare de campagne", 46.9, 3.1, "", 1),
+    )
+    connection.commit()
+    connection.close()
+    features = counted_features(
+        stops,
+        [
+            {
+                "client_id": "jeton",
+                "kind": "count",
+                "origin_stop_id": "StopArea:Campagne",
+                "destination_stop_id": "StopArea:Lyon",
+                "origin_name": "Gare de campagne",
+                "destination_name": "Lyon Part-Dieu",
+                "passengers": 1,
+                "pseudo": None,
+                "legs": None,
+            }
+        ],
+    )
+    assert len(features) == 1
+    assert features[0]["droite"] is True, "un point hors réseau doit rester un segment droit"
+    assert features[0]["trace"] == features[0]["points"]
+    assert "reste droit" in map_page(features, 1)
+
+
+def test_the_footer_counts_traces_and_says_when_nothing_is_straight(tmp_path):
+    """Zéro segment droit, zéro phrase sur le segment droit.
+
+    Le bas de page annonce ce qui s'est passé, pas ce qui pourrait arriver. Sur
+    une carte où tous les tracés suivent la voie, annoncer « 0 tracé a un
+    segment droit » serait une limite du site là où il n'y en a pas eu.
+    """
+    stops = _stops_db(tmp_path)
+    features = counted_features(
+        stops,
+        [
+            {
+                "client_id": "jeton",
+                "kind": "count",
+                "origin_stop_id": "StopArea:Lyon",
+                "destination_stop_id": "StopArea:Valence",
+                "passengers": 40,
+                "pseudo": None,
+                "legs": None,
+            }
+        ],
+    )
+    assert features[0]["droite"] is False
+    pied = _pied_de(map_page(features, 1))
+    assert "suivent la voie ferrée" in pied
+    assert "reste droit" not in pied
+
+
+def _pied_de(page: str) -> str:
+    """Le paragraphe de décompte, seul.
+
+    La note du haut de page parle aussi de segment droit, puisqu'elle décrit
+    la règle en général. Chercher la phrase dans toute la page confondrait les
+    deux : le test doit porter sur ce qui s'est passé, pas sur ce qui est
+    possible.
+    """
+    debut = page.index("carte-pied")
+    return page[debut : page.index("</p>", debut)]
 
 
 def test_the_snake_draws_every_stop_it_recorded_in_order(tmp_path):
@@ -102,7 +319,7 @@ def test_the_snake_draws_every_stop_it_recorded_in_order(tmp_path):
     feature = counted_features(stops, rows)[0]
     assert feature["stops"] == ["Lyon Part-Dieu", "Vienne", "Valence"]
     assert len(feature["points"]) == 3
-    assert feature["points"][1] == [45.4481, 4.8789]
+    assert feature["points"][1] == [45.5212, 4.8742]
 
 
 def test_a_stop_point_without_coordinates_inherits_its_station(tmp_path):
@@ -122,7 +339,7 @@ def test_a_stop_point_without_coordinates_inherits_its_station(tmp_path):
         }
     ]
     feature = counted_features(stops, rows)[0]
-    assert feature["points"][1] == [45.4481, 4.8789], "la voie sans position prend celle de sa gare"
+    assert feature["points"][1] == [45.5212, 4.8742], "la voie sans position prend celle de sa gare"
 
 
 def test_a_count_without_two_placeable_stops_is_left_out(tmp_path):
@@ -144,7 +361,7 @@ def test_a_count_without_two_placeable_stops_is_left_out(tmp_path):
 
 
 def test_the_page_says_how_many_counts_it_could_not_place(tmp_path):
-    stops = _stops_db(tmp_path)
+    _stops_db(tmp_path)
     client = TestClient(create_app(tmp_path))
     client.post("/api/sessions", json=_count())
     client.post(
@@ -169,8 +386,8 @@ def test_the_map_page_links_back_to_the_list_and_the_method(tmp_path):
     assert 'href="/comptages"' in page.text
     assert 'href="/methode"' in page.text
     assert "pas une fréquentation officielle" in page.text
-    # Le segment droit est une limite de la v1, pas un détail : elle est écrite.
-    assert "ne suit pas la voie réelle" in page.text
+    # Le réseau ferré est une limite de la donnée, pas un détail : elle est écrite.
+    assert "suivent la voie ferrée réelle" in page.text
 
 
 def test_an_empty_map_invites_to_count_instead_of_showing_an_empty_frame(tmp_path):

@@ -8,6 +8,11 @@ changement doit respecter : [docs/regles.md](docs/regles.md).
 
 Licence du code : GPL-3.0. Les comptages publiés sont en Licence Ouverte 2.0.
 
+Les données entrées ne sont pas toutes sous la même licence, et la confusion
+serait facile : le **GTFS national** vient de la SNCF en Licence Ouverte 2.0,
+le **réseau ferré** qui fait le tracé de la carte vient du Cerema en Licence
+Etalab 2.0. `/methode` cite les deux à leur page.
+
 ## Déployer
 
 Il faut Docker. Rien d'autre.

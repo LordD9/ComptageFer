@@ -329,7 +329,12 @@ La carte sert à voir les résultats, pas à saisir.
 - liste des comptages, pseudo affiché s'il a été donné — **fait**
 - `GET /api/export.csv`, licence indiquée : Licence Ouverte 2.0 — **fait**
 - mention visible : ce n'est pas une fréquentation officielle — **fait**
-- carte Leaflet : arrêts comptés, segments droits entre les arrêts d'une saisie — **fait**, c'est `/carte`
+- carte Leaflet : arrêts comptés, tracés le long de la voie ferrée réelle — **fait**, c'est `/carte`
+  - le tracé est routé sur le réseau ferré national (Cerema, Licence Etalab 2.0),
+    pas interpolé entre deux arrêts ; un Paris–Marseille suit les voies
+  - quand le réseau ne relie pas deux arrêts, le segment reste droit, et le
+    bas de page dit combien de tracés sont dans ce cas
+  - les marqueurs restent sur les gares : le tracé ne les déplace pas
   - un serpent est dessiné arrêt par arrêt, pas comme un couple origine-destination
   - un arrêt enfant sans position prend celle de sa gare
   - moins de deux arrêts plaçables, la saisie n'est pas dessinée et la page le dit
@@ -344,6 +349,42 @@ Deux faits de la source ont décidé la forme de la page ligne, et il vaut mieux
 - **Les noms de ligne ne sont pas uniques.** Le GTFS national compte 725 lignes pour 423 noms courts : `C13` désigne six lignes différentes, `INCONNU` cinquante-trois. Une URL construite sur le nom court ouvrirait donc une page au hasard. Tout ce qui identifie une ligne passe par le `route_id`, et le titre affiché porte toujours le nom long, parce que « C13 » ne veut rien dire pour quelqu'un qui ne connaît pas la numérotation SNCF.
 - Le réimport se fait une fois : une base installée avant les pages ligne est détectée au démarrage suivant et réimportée, parce qu'une recherche de ligne muette serait pire qu'une attente. Le `routes.txt` ajoute environ 20 Mo à `timetable.db`, qui pèse déjà 200 Mo.
 - **Le rattachement d'un comptage à une ligne passe par le `trip_id`**, le seul lien écrit au moment du comptage. Une paire origine-destination ne suffirait pas : deux lignes se partagent souvent le même corridor. Un « train signalé », lui, n'a pas de trip et n'apparaît sur aucune page ligne — on ne lui invente pas de ligne.
+
+#### Le tracé suit la voie, et trois mesures ont décidé comment
+
+`reseau.py` route un segment de saisie le long des voies SNCF. Le GeoJSON brut
+fait 12 Mo ; il ne peut pas être lu à chaque requête, et le simplifier assez
+pour entrer dans l'image coûtait la moitié des gares. Trois chiffres ont
+tranché, et ils sont reproductibles avec `tools/build_reseau.py` :
+
+- **Simplifier casse l'accrochage.** Douglas-Peucker à 20 m fait tomber
+  l'accrochage des gares de 95 % à 75 %, puis à 65 % sur le graphe contracté.
+  Il efface les points des faisceaux, où la voie se sépare en quelques rails
+  écartés de quelques mètres, et une gare s'y retrouve à plus de 500 m de
+  toute polyligne conservée. La géométrie est donc **conservée entière**, et
+  c'est le format qui paie le poids.
+- **C'est l'encodage, pas la simplification, qui fait le fichier.** Stocker
+  chaque point par son écart au précédent fait passer le fichier de 4,80 à
+  1,03 Mo compressés, à géométrie identique. Les deux valent 320 218 points ;
+  seule la seconde se simplifie sans rien perdre.
+- **Simplifier avant de contracter casse la topologie.** Dans cet ordre-là, le
+  réseau se morce en 524 composantes connexes au lieu de 73, et presque aucun
+  trajet ne reste routable. La contraction vient donc en premier, toujours.
+
+Le contrat qui en découle : un trajet impossible rend `None`, jamais une
+polyligne inventée. C'est ce `None` qui garde le segment droit et qui fait
+que le bas de page peut annoncer le nombre de tracés concernés. Une carte qui
+dessinerait un chemin plausible entre deux gares non reliées serait pire
+qu'une carte honnête.
+
+Reste une limite, mesurée et assumée : **85 % des gares s'accrochent** au
+réseau livré (médiane à 38 m, aucune au-delà de 500 m). Les 15 % restantes
+sont des gares dont la voie n'est pas dans le jeu SNCF — faisceaux couverts,
+tunnels de gare, lignes récentes. On pourrait monter la borne et les
+rattraper, mais une gare accrochée à un kilomètre de sa voie verrait son
+tracé partir du mauvais côté d'un pont : la limite est écrite dans le bas de
+la page plutôt que masquée. Elle vaut aussi pour les voies visées par le
+sous-traitement ou les cars, qui ne suivent pas une voie.
 
 ### Phase 8 — Publication automatique
 
