@@ -190,6 +190,19 @@ def _bulle(page) -> str | None:
     return bulles.last.text_content()
 
 
+def _geler(page) -> None:
+    """Allonge la vie des bulles pour une assertion.
+
+    La bulle vit 900 ms. Sur une machine lente — un runner CI, un téléphone
+    chargé — un `click` suivi d'une lecture peut dépasser ce délai, et le test
+    échouerait sur une animation que rien ne contrôle. On passe la durée à une
+    minute : la lecture est alors déterministe, et `test_une_bulle_quitte_finalement_l_ecran`
+    vérifie séparément que la bulle s'en va bien, sans cette aide.
+    """
+    page.evaluate("() => document.head.appendChild(Object.assign(document.createElement('style'),"
+                  " {textContent: '.bulle { animation-duration: 60000ms !important; }'}))")
+
+
 def _reach_form(page, site: str) -> None:
     page.goto(site)
     page.fill("#origin-q", "Lyon")
@@ -328,6 +341,7 @@ def test_every_press_shows_the_delta_it_actually_applied(page, site):
     exact, ce qui répond au cas du doigt qui glisse et ne change rien.
     """
     _reach_form(page, site)
+    _geler(page)
     page.click("#plus10")
     assert _bulle(page) == "+10"
     assert page.text_content("#count-display") == "10"
@@ -351,6 +365,7 @@ def test_a_press_that_changes_nothing_claims_nothing(page, site):
     total ne baisse pas.
     """
     _reach_form(page, site)
+    _geler(page)
     page.click("#minus")
     assert page.text_content("#count-display") == "0"
     assert _bulle(page) is None, "un appui sans effet ne doit rien annoncer"
@@ -364,6 +379,7 @@ def test_two_quick_presses_leave_two_bulles(page, site):
     nœuds dans le DOM pendant un comptage.
     """
     _reach_form(page, site)
+    _geler(page)
     page.click("#plus10")
     page.click("#plus10")
     assert page.locator(".bulle").count() == 2
@@ -375,7 +391,7 @@ def test_two_quick_presses_leave_two_bulles(page, site):
     assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
 
 
-def test_a_bulb_eventually_leaves_the_screen(page, site):
+def test_une_bulle_quitte_finalement_l_ecran(page, site):
     """Une bulle qui ne s'en va pas reste pour le comptage suivant.
 
     Sans filet sur `animationend`, une animation jamais démarrée — onglet en
@@ -395,6 +411,7 @@ def test_the_bubble_is_not_read_out_twice(page, site):
     geste annoncé deux fois, une annonce par appui au lieu d'une par résultat.
     """
     _reach_form(page, site)
+    _geler(page)
     assert page.locator("#count-display").get_attribute("aria-live") == "polite"
     page.click("#plus10")
     assert page.locator(".bulle").get_attribute("aria-hidden") == "true"
@@ -408,6 +425,7 @@ def test_the_bubble_does_not_swallow_the_next_press(page, site):
     symptôme ressemble exactement à celui qu'on corrige.
     """
     _reach_form(page, site)
+    _geler(page)
     page.click("#plus5")
     assert page.locator(".bulle").count() == 1
     page.click("#plus5")
@@ -421,6 +439,7 @@ def test_the_bulb_is_positioned_over_the_button_that_was_pressed(page, site):
     regarde quand il ne sait pas si son doigt a porté.
     """
     _reach_form(page, site)
+    _geler(page)
     page.click("#plus10")
     centre_bulle = page.locator(".bulle").bounding_box()
     bouton = page.locator("#plus10").bounding_box()
@@ -441,6 +460,7 @@ def test_reduced_motion_keeps_the_feedback(page, site):
     problème d'origine.
     """
     _reach_form(page, site)
+    _geler(page)
     page.emulate_media(reduced_motion="reduce")
     page.click("#plus10")
     assert _bulle(page) == "+10", "le retour visuel disparaît avec l'animation"
