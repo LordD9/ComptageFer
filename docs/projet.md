@@ -466,6 +466,47 @@ Le seuil est unique et non calibré par type de train, parce qu'aucune source ne
 
 Un test navigateur accompany ces phases depuis la PR 15 : le formulaire est du JavaScript écrit à la main dans une chaîne Python, et sans Chromium la suite passe au vert sur une page morte. Le workflow `Tests` le joue sur chaque PR.
 
+### Phase 8 — La lecture, en trois vagues
+
+La phase 7 a rendu l'outil correct. Celle-ci le rend lisible, en trois vagues
+dans une seule PR (#40), parce qu'elles se servent l'une l'autre : on ne peut
+pas comparer des corridors sans pouvoir d'abord les choisir.
+
+**Vague 1 — la lecture s'ouvre sur un écran large.** Carte à côté de la liste
+sur grand écran, page ligne à côté de ses arrêts. Une media query, pas une
+refonte : rien au-delà de 48 rem, le téléphone ne change pas. **Livrée** (`84e79a0`).
+
+**Vague 2 — filtrer, et comparer.** `?depuis=&jusqu=&mode=&ligne=` filtrent la
+liste en une requête SQL ; `?vue=paire` regroupe les mêmes relevés par
+origine-destination ; `?page=` découpe. La pagination a été **mesurée** : à
+6 000 relevés la page rendait 2,38 Mo, coupée à 200 elle rend 89 ko. **Livrée**
+(`b54b64f`, `1edbe0f`).
+
+**Vague 3 — la liste et la carte se suivent, et la charge se dessine.**
+Synchronisation liste/carte et profil de charge en SVG, sans changement
+d'interface. **À faire.**
+
+Le champ « ligne » est un texte libre, pas une liste déroulante : le GTFS
+national attribue le même « C13 » à six lignes, donc une liste de noms courts
+ouvrirait une page au hasard. Il prend le `route_id`.
+
+Deux choses que les vagues 1 et 2 ont apprises et qui ne se devinent pas :
+
+- **La feuille de style n'est jamais exécutée par pytest.** La vue par paire
+  portait la classe `tableau`, retirée sous 48 rem : la page répondait 200 et les
+  tests de contenu passaient, sur un téléphone il n'y avait rien. Même classe
+  de défaut que la vague 1. D'où les tests Chromium, désormais la règle pour
+  toute vue.
+- **Un tableau qui se dit vide doit le dire.** Une liste vide ne s'annonce pas,
+  et le décompte d'une page doit nommer son ensemble : « 200 sur 6 000 », jamais
+  « 200 ». C'est la faute que la pagination de la vague 2 a corrigée deux fois,
+  sur les deux vues.
+
+Une limite, dite : le filtre ligne a bien sa clause `trip_id IN (...)`, mais
+sans `timetable.db` dans la suite pytest elle n'est pas vérifiée bout en bout. La
+page `/ligne`, qui utilise la même lecture, l'est. C'est le prochain chantier de
+couverture.
+
 ### Ensuite, dans cet ordre
 
 1. Géométries de lignes, si les segments droits ne suffisent plus. Jointure OSM, ou GTFS régionaux qui ont un `shapes.txt`.
