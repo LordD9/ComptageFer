@@ -12,7 +12,7 @@ PAGE = """<!doctype html>
   p.hint { color: #5c564c; margin: 0 0 1rem; }
   label { display: block; font-weight: 650; margin: 1rem 0 0.4rem; }
   input, button, select { font: inherit; }
-  input[type="search"], input[type="number"], input[type="text"] {
+  input[type="search"], input[type="number"], input[type="text"], select {
     width: 100%; box-sizing: border-box; min-height: 3.2rem; padding: 0.6rem 0.8rem;
     border: 1px solid #c9c1b4; border-radius: 0.8rem; background: #fff;
   }
@@ -122,6 +122,35 @@ PAGE = """<!doctype html>
       <input id="pseudo" type="text" maxlength="40" autocomplete="nickname">
       <label for="comment">Commentaire, publié dans le CSV</label>
       <input id="comment" type="text" maxlength="280">
+    </details>
+    <details>
+      <summary>Matériel roulant et composition</summary>
+      <p class="hint">Facultatif, mais c'est ce qui rend l'effectif comparable d'une rame à l'autre&nbsp;: un train peut être une UM3, et vous n'avez compté qu'une voiture. Sans cette précision, 180 voyageurs dans une voiture d'une UM3 et 180 dans les trois sont le même relevé.</p>
+      <label for="materiel">Type de matériel roulant</label>
+      <input id="materiel" type="text" maxlength="40" list="materiels" placeholder="Z 20500, Z 6400, 2N NG…">
+      <datalist id="materiels">
+        <option value="Z 20500"></option>
+        <option value="Z 20900"></option>
+        <option value="Z 22500"></option>
+        <option value="Z 6400"></option>
+        <option value="2N NG"></option>
+        <option value="2N NP"></option>
+        <option value="Z 50000"></option>
+      </datalist>
+      <label for="composition">Composition de la rame</label>
+      <select id="composition">
+        <option value="">Je ne sais pas</option>
+        <option value="US">US — une voiture</option>
+        <option value="UM2">UM2 — deux voitures</option>
+        <option value="UM3">UM3 — trois voitures</option>
+      </select>
+      <label for="perimetre">Ce que vous avez compté</label>
+      <select id="perimetre">
+        <option value="">—</option>
+        <option value="voiture">Une seule voiture</option>
+        <option value="um">Toute la rame</option>
+      </select>
+      <p id="materiel-note" class="status" role="status" hidden></p>
     </details>
     <p><button id="send" type="button">Enregistrer le comptage</button></p>
     <p id="error" class="bad"></p>
@@ -635,7 +664,39 @@ function countPayload() {
     standing: optionalNumber("standing"),
     seats_free: optionalNumber("seats"),
     imbalance: optionalNumber("imbalance"),
+    ...materiel(),
     snapshot: state.photo
+  };
+}
+// Composition et périmètre vont ensemble, et le serveur les refuse séparés.
+// Le dire à l'écran avant l'envoi vaut mieux qu'un 422 après un comptage déjà
+// fait dans le train : l'usager est encore là pour corriger.
+function signalerMateriel() {
+  const composition = $("composition").value;
+  const perimetre = $("perimetre").value;
+  const message = $("materiel-note");
+  let texte = "";
+  if (composition && !perimetre) {
+    texte = "Dites ce que vous avez compté : une voiture ou toute la rame.";
+  } else if (!composition && perimetre) {
+    texte = "Il faut la composition de la rame pour savoir ce que ce chiffre compte.";
+  } else if (composition === "US" && perimetre === "um") {
+    texte = "Une US, c'est une seule voiture : le périmètre « toute la rame » ne s'y applique pas.";
+  }
+  message.textContent = texte;
+  message.hidden = !texte;
+  return !texte;
+}
+$("composition").addEventListener("change", signalerMateriel);
+$("perimetre").addEventListener("change", signalerMateriel);
+function materiel() {
+  const composition = $("composition").value;
+  const perimetre = $("perimetre").value;
+  if (!signalerMateriel()) throw new Error("composition et périmètre incohérents");
+  return {
+    materiel: $("materiel").value.trim(),
+    composition: composition,
+    perimetre: perimetre
   };
 }
 function readQueue() {
@@ -671,6 +732,12 @@ flushQueue();
 offerSnake();
 $("send").onclick = async () => {
   $("error").textContent = "";
+  // Le contrôle de cohérence a son propre message : le try/catch en dessous
+  // sert à la file hors ligne, et son texte y parlait de réseau.
+  if (!signalerMateriel()) {
+    $("error").textContent = $("materiel-note").textContent;
+    return;
+  }
   let body;
   try {
     body = countPayload();
