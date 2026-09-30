@@ -77,6 +77,43 @@ jobs:
             test "$code" = "200" || { echo "echec sur le tri $requete"; exit 1; }
           done
 
+      - name: Verifier les filtres et la vue par paire
+        run: |
+          # Les filtres sont des parametres d'URL comme le tri, et un
+          # filtre casse la page silencieusement : il rend une liste
+          # vide, ou la liste entiere. Les deux répondent 200, donc seul
+          # un contenu verifie les attrape. Un parametre erronee doit
+          # rester lisible, et doit etre NOMMÉ plutot qu'ignore en
+          # silence — c'est ce que le test de contenu verifie ici.
+          verifier() {
+            requete="$1"; attendu="$2"
+            corps=$(curl -sS "http://127.0.0.1:8000/comptages$requete")
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000/comptages$requete")
+            echo "/comptages$requete -> $code"
+            test "$code" = "200" || { echo "echec HTTP sur $requete"; exit 1; }
+            echo "$corps" | grep -q "$attendu" || {
+              echo "echec : '$attendu' absent pour $requete"; exit 1; }
+          }
+          # La vue par paire regroupe et compte les corridors. Le
+          # conteneur est vide, donc on verifie la bascule et le decompte
+          # « 0 paire » plutot qu'un contenu qui n'existe pas encore.
+          verifier "?vue=paire" "Voir la liste des relevés"
+          verifier "?vue=paire&tri=moyenne&sens=desc" "0 paire de gares"
+          # Un filtre mode applique doit se lire dans la page.
+          verifier "?mode=unique" "mode unique"
+          # Un parametre illisible doit etre ecarte ET dit. Le texte
+          # contient une apostrophe, deja echappee en amont par `lire`,
+          # donc elle reste litterale : on cherche un fragment sans elle.
+          verifier "?depuis=bidon" "pas une date (AAAA-MM-JJ), filtre ignor"
+          # Une vue inconnue reste lisible et retombe sur la liste.
+          verifier "?vue=inconnu" "Voir par paire de gares"
+          # La pagination n'est PAS verifiee ici : le conteneur de test
+          # demarre vide, donc il n'y a rien a paginer et le seuil ne
+          # serait jamais franchi. Elle est couverte par la suite pytest,
+          # qui construit 205 relevés.
+          # Filtre et tri combines : les deux doivent survivre ensemble.
+          verifier "?mode=unique&tri=passengers&sens=asc" "mode=unique"
+
       - name: Verifier que la publication est inactive sans identifiants
         run: |
           # Le conteneur de test n'a pas de cle data.gouv. Il doit le dire

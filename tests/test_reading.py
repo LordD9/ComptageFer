@@ -159,11 +159,16 @@ def test_a_missing_train_is_not_labelled_as_a_count(tmp_path):
                                       "snapshot": photo})
 
     page = client.get("/comptages").text
+    # Le corps de la liste, sans le formulaire de filtre : celui-ci nomme
+    # les trois modes dans ses options, donc chercher « unique » dans la
+    # page entière testerait la liste déroulante et pas le relevé.
+    liste = page.split("<main>", 1)[1].split("<footer", 1)[0]
+    releve = liste.split("class='cartes'", 1)[1]
 
-    assert "signalé" in page
-    assert "unique" not in page, "un train signalé n'est pas un comptage unique"
+    assert "signalé" in releve
+    assert "unique" not in releve, "un train signalé n'est pas un comptage unique"
     # « sans effectif voyageurs » serait un faux pluriel sur une unité absente.
-    assert "voyageurs" not in page, "un relevé sans effectif n'a pas d'unité à écrire"
+    assert "voyageurs" not in releve, "un relevé sans effectif n'a pas d'unité à écrire"
 
 
 def test_sorting_is_in_the_url_and_survives_a_bad_one(tmp_path):

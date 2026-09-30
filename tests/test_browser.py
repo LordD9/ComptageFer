@@ -179,25 +179,47 @@ def _poster_releve(site: str, jeton: str, nom: str, effectif: int) -> None:
     page en test de saisie. On écrit donc directement, et on ne teste ici
     que ce qui se voit.
     """
+    _ecrire_releve(site, jeton, nom, "Vienne", effectif, "1_F:TER:1234")
+
+
+def _ecrire_releve(
+    site: str,
+    jeton: str,
+    origine: str,
+    destination: str,
+    effectif: int | None,
+    trip_id: str = "1_F:TER:1234",
+) -> None:
+    """Un relevé dont on choisit la paire et la ligne.
+
+    Séparé de `_poster_releve` parce que la vue par paire a besoin de
+    corridors distincts et que la page ligne a besoin d'un `trip_id`
+    connu : un seul helper ne peut pas servir les deux sans paramètres
+    que l'autre n'a aucun sens à prendre.
+    """
     photo = {
         "precedent": None,
-        "courant": {"trip_id": "1_F:TER:1234", "status": "SCHEDULED", "delay_seconds": 0},
+        "courant": {"trip_id": trip_id, "status": "SCHEDULED", "delay_seconds": 0},
         "suivant": None,
     }
     corps = {
         "client_id": jeton,
-        "origin_stop_id": "StopArea:Lyon",
-        "destination_stop_id": "StopArea:Vienne",
-        "origin_name": nom,
-        "destination_name": "Vienne",
-        "trip_id": "1_F:TER:1234",
-        "passengers": effectif,
+        "origin_stop_id": f"StopArea:{origine}",
+        "destination_stop_id": f"StopArea:{destination}",
+        "origin_name": origine,
+        "destination_name": destination,
+        "trip_id": trip_id,
         "reliability": 70,
         "pseudo": "railfan",
         "snapshot": photo,
     }
+    # Sans `passengers`, c'est un train signalé : un relevé de l'offre
+    # qui manque, pas une charge mesurée.
+    if effectif is not None:
+        corps["passengers"] = effectif
+    route = "/api/sessions" if effectif is not None else "/api/missing"
     requete = urllib.request.Request(
-        site + "/api/sessions",
+        site + route,
         data=json.dumps(corps).encode(),
         headers={"Content-Type": "application/json"},
     )
@@ -608,6 +630,141 @@ def test_the_list_switches_between_cards_and_table(page, site):
     assert "tri=passengers" in page.url, "le tri doit être une URL, pas un état navigateur"
     valeurs_apres = page.locator("table.tableau tbody tr td:nth-child(3)").all_text_contents()
     assert valeurs_avant != valeurs_apres, "cliquer sur la colonne doit changer l'ordre"
+
+
+def test_the_filters_work_on_a_real_form_and_stay_in_the_url(page, site):
+    """Filtrer se fait par le formulaire, et l'URL porte le résultat.
+
+    Le formulaire est la seule interface : sans JavaScript, un `<form
+    method='get'>` est la page entière, et il faut le vérifier sur un vrai
+    moteur — un `name` mal orthographié produit une URL sans paramètre, la
+    liste se recharge entière, et aucun test de contenu ne voit la
+    différence.
+    """
+    _ecrire_releve(site, "f-1", "Lyon", "Chambéry", 40)
+    _ecrire_releve(site, "f-2", "Grenoble", "Lyon", 90)
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(site + "/comptages")
+    avant = page.locator(".cartes article").count()
+    assert avant == 2, avant
+
+    # On filtre par mode, comme un lecteur qui veut les seuls serpents.
+    page.select_option("#mode", "serpent")
+    page.click("form.filtres button[type='submit']")
+    page.wait_for_selector("form.filtres")
+
+    assert "mode=serpent" in page.url, "le filtre doit être dans l'URL, pas dans un état"
+    assert page.locator(".cartes article").count() == 0
+    # Le verrou : une page vide doit dire pourquoi et offrir la sortie.
+    vide = page.locator(".vide-filtre")
+    assert vide.is_visible(), "un filtre à vide doit l'expliquer, pas laisser une page nue"
+    assert "Enlever le filtre" in vide.text_content()
+
+    # Le lien de sortie ramène à la liste entière.
+    vide.locator("a").first.click()
+    page.wait_for_selector("form.filtres")
+    assert page.locator(".cartes article").count() == 2, "enlever le filtre doit tout ramener"
+
+
+def test_a_bad_filter_is_named_on_the_page_not_silently_dropped(page, site):
+    """Une date illisible se lit dans la page.
+
+    C'est le défaut que pytest ne voit pas : le paramètre est écarté, la
+    liste s'affiche entière, et le lecteur croit que son filtre a
+    fonctionné. Le message doit être là, et la liste doit rester pleine —
+    écarter un filtre ne doit pas vider la liste.
+    """
+    _ecrire_releve(site, "b-1", "Lyon", "Chambéry", 40)
+
+    page.goto(site + "/comptages?depuis=bidon")
+
+    erreurs = page.locator("ul.erreurs")
+    assert erreurs.count() == 1, "le motif de l'écart doit être affiché"
+    assert "pas une date" in erreurs.text_content()
+    assert page.locator(".cartes article").count() == 1, "un filtre écarté ne vide pas la liste"
+
+
+def test_the_paired_view_is_readable_on_a_phone(page, site):
+    """La vue par paire ne s'efface pas au changement d'écran.
+
+    Elle a la classe `tableau`, et `.tableau` est retirée du rendu sous
+    48 rem pour que la liste ne se lise pas deux fois. Sans une règle
+    propre, la vue par paire disparaissait sur un téléphone — la page
+    répondait 200, le test de contenu passait, et un vrai lecteur
+    n'avait rien. C'est exactement la classe de défaut que la vague 1 a
+    déjà payée une fois.
+    """
+    _ecrire_releve(site, "p-1", "Lyon", "Chambéry", 100)
+    _ecrire_releve(site, "p-2", "Lyon", "Chambéry", 200)
+    _ecrire_releve(site, "p-3", "Nice", "Menton", 50)
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(site + "/comptages?vue=paire")
+    table = page.locator("table.paires")
+    assert table.is_visible(), "la vue par paire doit rester lisible sur un téléphone"
+    assert table.locator("tbody tr").count() == 2
+
+    # Et la liste, elle, garde son basculement : la paire n'a pas dû
+    # casser le comportement de la vague 1.
+    assert not page.locator("div.cartes").is_visible()
+
+    page.set_viewport_size({"width": 1500, "height": 1000})
+    page.goto(site + "/comptages")
+    assert page.locator("table.tableau").first.is_visible()
+    assert not page.locator("div.cartes").is_visible()
+
+
+def test_the_paired_view_sorts_by_number_of_counts_and_says_why(page, site):
+    """Le tri par défaut met en tête le corridor le mieux documenté.
+
+    Sur un vrai moteur, parce que l'en-tête est un lien : c'est le clic
+    qui doit rester dans l'URL, et le second clic doit inverser. Le
+    corridor le « moins chargé » a deux relevés, le « plus chargé » en a
+    un — le mettre en tête par effectif moyen répondrait à une autre
+    question.
+    """
+    _ecrire_releve(site, "s-1", "Nice", "Menton", 1)
+    _ecrire_releve(site, "s-2", "Nice", "Menton", 1)
+    _ecrire_releve(site, "s-3", "Lyon", "Chambéry", 900)
+
+    page.set_viewport_size({"width": 1500, "height": 1000})
+    page.goto(site + "/comptages?vue=paire")
+    lignes = page.locator("table.paires tbody tr")
+    assert lignes.count() == 2
+    assert "Nice" in lignes.nth(0).text_content(), "le corridor le mieux documenté en tête"
+
+    # Le tri par en-tête est une URL, et le second clic inverse.
+    page.click("table.paires thead th:nth-child(1) a")
+    page.wait_for_selector("table.paires tbody tr")
+    assert "tri=trajet" in page.url, "le tri de la vue par paire doit être une URL"
+    avant = lignes.nth(0).text_content()
+    page.click("table.paires thead th:nth-child(1) a")
+    page.wait_for_selector("table.paires tbody tr")
+    assert "sens=desc" in page.url
+    assert lignes.nth(0).text_content() != avant, "un second clic doit inverser le tri"
+
+
+def test_the_filters_survive_a_sort(page, site):
+    """Trier après avoir filtré ne doit pas retirer le filtre.
+
+    C'est la faute la plus facile à introduire et la plus discrète : le
+    lien de tri construit son URL à partir de rien, la liste entière
+    revient, et le lecteur voit les relevés qu'il venait d'exclure. Le
+    test la suit réellement, par le clic.
+    """
+    _ecrire_releve(site, "k-1", "Lyon", "Chambéry", 40)
+    _ecrire_releve(site, "k-2", "Grenoble", "Lyon", 90)
+
+    page.set_viewport_size({"width": 1500, "height": 1000})
+    page.goto(site + "/comptages?mode=unique")
+    assert page.locator("table.tableau tbody tr").count() == 2
+
+    page.click("table.tableau thead th:nth-child(3) a")
+    page.wait_for_selector("table.tableau tbody tr")
+
+    assert "mode=unique" in page.url, "le lien de tri a perdu le filtre"
+    assert page.locator("table.tableau tbody tr").count() == 2
 
 
 def test_the_header_navigates_from_every_reading_page(page, site):

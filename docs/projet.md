@@ -357,6 +357,20 @@ Le chrome est donc écrit une fois, dans `comptagefer/affichage.py` : en-tête, 
 
 La carte prend la hauteur de l'écran sur grand écran, la liste des tracés passe à côté. La page ligne lit ses arrêts et ses comptages côte à côte. C'est une media query, pas une refonte : rien n'a été ajouté au-delà de 48 rem, et le téléphone ne change pas.
 
+#### Filtrer, et comparer par paire de gares
+
+Un écran large sert d'abord à comparer, donc `comptagefer/filtres.py` porte les trois filtres de `/comptages` — `?depuis=&jusqu=&mode=&ligne=` — plus la vue `?vue=paire`. Cinq décisions ne se devinent pas dans le code :
+
+- **Les filtres sont dans l'URL, et tous les liens de la page les conservent.** C'est le prolongement du tri : une liste filtrée se partage et se teste. Le corollaire est la faute que pytest ne voit pas — un lien de tri qui reconstruit son URL perd le `ligne=` courant, et le lecteur voit les relevés qu'il vient d'exclure. Toutes les URL passent donc par une seule fabrique, qui prend l'état courant et le modifie au lieu de le reconstruire.
+- **Un filtre illisible est écarté *et nommé*.** L'écarter en silence est pire que ne pas l'écarter : le lecteur qui filtre par « laisse-passer » verrait la liste entière et croirait que son filtre n'a rien donné. La page affiche donc la raison de l'écart dans le formulaire, et les chips disent ce qui est *appliqué*.
+- **`?ligne=` passe par le `trip_id`**, comme `/ligne`, et pour la même raison : deux lignes se partagent souvent le corridor. Le champ est un texte libre et non une liste déroulante, parce que le GTFS national attribue le même « C13 » à six lignes — une liste de noms courts ouvrirait une page au hasard.
+- **La vue par paire est un paramètre, pas une page.** Elle répond à une question qu'aucune page ne posait — « la charge typique sur Lyon–Chambéry » — en HTML, sans JavaScript, pour la même raison que le tri. Son tri par défaut est le **nombre de relevés décroissant** : un corridor en tête avec 40 relevés est mieux documenté qu'un corridor en tête avec 2. Le mettre en tête par effectif moyen répondrait à une autre question, « le plus chargé », qui mélange ce que la base sait et ce que la circulation fait. Un train signalé compte dans `releves` et pas dans la moyenne : le compter comme 0 ferait passer « non mesuré » pour « vide ».
+- **La pagination est mesurée, pas anticipée.** À 6 000 relevés, `/comptages` rendait 2,38 Mo de HTML en 227 ms. La liste est coupée après le tri — une page affichée avant tri se reconnaît à rien — à 200 par page, et la page dit « 200 sur 5 000 » pour que la tranche ne se prenne pas pour le jeu entier. Le total est compté en SQL, pas déduit de la liste rendue. Sous 200 relevés, aucun sélecteur de page : un bouton « page 1 » unique se lit comme cassé.
+
+Le verrou que le plan posait tient : un filtre qui vide la liste dit ce qu'il a filtré et propose de l'enlever. « Enlever le filtre » et « Tout enlever » retirent tout — une page vide ne dit pas *quel* filtre a échoué, donc il n'y a pas « celui-ci ».
+
+Deux décisions ne sont pas de l'implémentation mais de la suite : le tri reste en Python, pas dans la requête, pour que `_list_saisies` — qui rend aussi le CSV publié — reste hors de tout paramètre d'affichage ; et la page par paire n'est pas paginée, parce qu'il y a au plus autant de paires que de relevés et qu'y annoncer des pages mentirait sur ce qu'il reste à voir.
+
 Deux faits de la source ont décidé la forme de la page ligne, et il vaut mieux les écrire ici qu'un jour dans un ticket :
 
 - **Les noms de ligne ne sont pas uniques.** Le GTFS national compte 725 lignes pour 423 noms courts : `C13` désigne six lignes différentes, `INCONNU` cinquante-trois. Une URL construite sur le nom court ouvrirait donc une page au hasard. Tout ce qui identifie une ligne passe par le `route_id`, et le titre affiché porte toujours le nom long, parce que « C13 » ne veut rien dire pour quelqu'un qui ne connaît pas la numérotation SNCF.
