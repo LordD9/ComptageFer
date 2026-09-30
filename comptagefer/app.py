@@ -45,6 +45,28 @@ from comptagefer.rt import (
 
 STOPS_URL = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip"
 
+# Les trains franciliens vivent dans un autre GTFS, pas dans le national.
+#
+# Le GTFS national est le « Export_OpenData_SNCF_GTFS_NewTripId » : ses 731
+# routes ne contiennent aucune ligne francilienne, mesuré sur le fichier du
+# moment. Ce n'est pas un oubli de l'appli, c'est le périmètre du jeu.
+#
+# Le GTFS « IDFM-gtfs.zip » de l'Île-de-France Mobilités n'est pas la SNCF
+# francilienne non plus : sur 2026 routes, 1966 sont en `route_type` 3, donc
+# du bus — RATP, Keolis, lesCars. Le RER y est noyé. Le bon fichier est le
+# « transilien-gtfs.zip » de l'OpenData SNCF : 38 routes, RER A/B/D/N, ligne U,
+# et les TER qui desservent la région.
+#
+# Les deux jeux n'ont **aucune** clé en commun — 0 sur `trip_id`, `service_id`,
+# `route_id` comme sur `stop_id`, mesuré sur les fichiers du moment. C'est ce qui
+# permet de les importer dans la même base sans qu'un trip_id national soit
+# écrasé par un francilien, ou l'inverse.
+TRANSILIEN_URL = "https://eu.ftp.opendatasoft.com/sncf/gtfs/transilien-gtfs.zip"
+
+# Les fichiers lus dans chaque archive. Un GTFS n'est pas obligé d'avoir le
+# même contenu que son voisin ; on prend ce qui est là plutôt que d'exiger.
+GTFS_FILES = ("stops.txt", "trips.txt", "stop_times.txt", "calendar_dates.txt", "routes.txt")
+
 # Une session d'administration tient une heure de travail, pas plus. Le
 # dictionnaire qui les porte est en mémoire : sans expiration il ne redescend
 # jamais, et une session volée resterait valable jusqu'au redémarrage.
@@ -447,6 +469,16 @@ def _poll_forever(database: Path) -> None:
         time.sleep(120)
 
 
+def _extract(payload: bytes, folder: Path, names: tuple[str, ...]) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(BytesIO(payload)) as archive:
+        for name in names:
+            if name not in archive.namelist():
+                continue
+            with archive.open(name) as raw, (folder / name).open("wb") as target:
+                shutil.copyfileobj(raw, target)
+
+
 def ensure_referential(data_dir: Path) -> None:
     from comptagefer.offer import import_stop_names, open_stops
     from comptagefer.timetable import import_timetable
@@ -458,22 +490,34 @@ def ensure_referential(data_dir: Path) -> None:
         with open_stops(stops) as connection:
             need_stops = connection.execute("SELECT COUNT(*) FROM stop").fetchone()[0] == 0
     need_times = not timetable.exists() or not _timetable_has_lignes(timetable)
-    if not need_stops and not need_times:
+    # Une base importée avant les franciliens a des lignes mais pas les leurs :
+    # sans ce test, l'application ne les chercherait jamais. On regarde si le jeu
+    # francilien est déjà là plutôt que de comparer un nombre de lignes, qui
+    # changerait à chaque nouveau GTFS et forcerait un réimport à chaque
+    # démarrage.
+    need_transilien = not _timetable_has_transilien(timetable)
+    if not need_stops and not need_times and not need_transilien:
         return
-    payload = _fetch(STOPS_URL, timeout=180)
     folder = data_dir / "import"
-    folder.mkdir(parents=True, exist_ok=True)
+    transilien_folder = data_dir / "import-transilien"
+    # Déclaré ici et pas dans le `if` : il est utilisé par les deux branches et
+    # par le remplacement final, et une liaison conditionnelle donnerait un
+    # `possibly unbound` qui masque le vrai risque — celui d'un remplacement
+    # exécuté sans import.
+    importing = data_dir / "timetable.importing"
+    # On reparte de la base en place, pas d'un fichier neuf. Le cas « national
+    # déjà importé, francilien manquant » est le cas normal d'une installation
+    # qui tourne déjà : repartir de zéro n'écraserait pas la base mais
+    # construirait un `timetable.importing` **sans** les 731 lignes nationales,
+    # qui le remplacerait ensuite. Les 60 000 trips TER disparaîtraient au
+    # démarrage suivant, et rien ne le signalerait.
+    if need_transilien and not need_times and timetable.exists():
+        shutil.copyfile(timetable, importing)
     try:
-        with zipfile.ZipFile(BytesIO(payload)) as archive:
-            for name in ("stops.txt", "trips.txt", "stop_times.txt", "calendar_dates.txt", "routes.txt"):
-                if name not in archive.namelist():
-                    continue
-                with archive.open(name) as raw, (folder / name).open("wb") as target:
-                    shutil.copyfileobj(raw, target)
+        _extract(_fetch(STOPS_URL, timeout=180), folder, GTFS_FILES)
         if need_stops:
             import_stop_names(stops, folder / "stops.txt")
         if need_times:
-            importing = data_dir / "timetable.importing"
             import_timetable(
                 importing,
                 folder / "trips.txt",
@@ -481,9 +525,48 @@ def ensure_referential(data_dir: Path) -> None:
                 folder / "calendar_dates.txt",
                 folder / "routes.txt",
             )
+        if need_transilien:
+            _extract(_fetch(TRANSILIEN_URL, timeout=300), transilien_folder, GTFS_FILES)
+            # Les gares franciliennes aussi : sans elles, l'usager ne peut ni
+            # choisir une gare parisienne, ni faire de géolocalisation. Elles ont
+            # leurs propres `stop_id`, donc rien n'écrase le national.
+            import_stop_names(stops, transilien_folder / "stops.txt")
+            import_timetable(
+                importing,
+                transilien_folder / "trips.txt",
+                transilien_folder / "stop_times.txt",
+                transilien_folder / "calendar_dates.txt",
+                transilien_folder / "routes.txt",
+            )
+        if need_times or need_transilien:
+            # Le remplacement n'a lieu qu'une fois, les deux jeux importés. Une
+            # interruption entre les deux laisserait une base à moitié
+            # francilienne, qu'aucun test ne détecterait ensuite : `timetable.db`
+            # serait là, donc plus jamais réimporté.
             importing.replace(timetable)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+        shutil.rmtree(transilien_folder, ignore_errors=True)
+
+
+def _timetable_has_transilien(timetable: Path) -> bool:
+    """Le jeu francilien est-il déjà dans la base ?
+
+    On reconnaît le préfixe de ses `trip_id`, pas un nom de ligne : un nom
+    change avec la refonte d'une ligne, un préfixe d'exploitant non. Et on
+    regarde `circulation`, pas `ligne` : les RER sont 25 routes sur 38, donc
+    compter les routes donnerait un faux positif dès qu'une seule est présente.
+    """
+    if not timetable.exists():
+        return False
+    try:
+        with sqlite3.connect(timetable) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM circulation WHERE trip_id LIKE 'IDFM:TN:SNCF:%' LIMIT 1"
+            ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
 
 
 def _timetable_has_lignes(timetable: Path) -> bool:
@@ -1251,7 +1334,8 @@ def _method_page() -> str:
 <p class="mode">Ce que l'outil fait, et comment lire un comptage.</p>
 
 <p>Bienvenue sur ComptagesFer. Ce site permet de contribuer à la connaissance
-des flux ferroviaires (+ certains cars TER) en France. C'est précieux pour ouvrir
+des flux ferroviaires (+ certains cars TER) en France, y compris sur les trains
+franciliens (RER, ligne U) et les TER d'Île-de-France. C'est précieux pour ouvrir
 ces données au plus grand nombre. Vous pouvez consulter et exporter les
 comptages réalisés, sans restrictions, mais en gardant en tête qu'il s'agit de
 chiffres collectés par des particuliers, sans garantie de fiabilité.</p>
@@ -1336,14 +1420,21 @@ vous n'avez pas choisi de train, il n'y a rien&nbsp;: l'outil ne devine pas.</p>
 
 <ul>
   <li><strong>L'offre des trains</strong> vient du GTFS national « Réseau SNCF
-      TGV, Intercités et TER » (données ouvertes SNCF, Licence Ouverte 2.0).
-      Il donne des horaires théoriques, pas la réalité du jour.</li>
+      TGV, Intercités et TER » (données ouvertes SNCF, Licence Ouverte 2.0),
+      et, pour l'Île-de-France, du GTFS « Transilien » de la même source, qui
+      donne le RER et la ligne U. Il donne des horaires théoriques, pas la
+      réalité du jour.</li>
   <li><strong>L'état des trains</strong> vient des flux GTFS-RT Trip Updates et
       Service Alerts, rafraîchis toutes les 2 minutes et conservés 6 heures. Si
       Trip Updates est vide, SIRI ET Lite est tenté une fois. L'état affiché
       est celui connu à cet instant&nbsp;: « programmé » veut dire
       « l'horaire existe, le retard n'est pas encore connu&nbsp;», pas
-      « à l'heure&nbsp;».</li>
+      « à l'heure&nbsp;».
+      <br><strong>Les trains franciliens n'ont pas de flux temps réel ici.</strong>
+      Les RER publient leur état par SIRI sur la plateforme d'Île-de-France
+      Mobilités, qui n'est pas au format GTFS-RT. Un RER affiché
+      « programmé&nbsp;» l'est donc <em>toujours</em>, même en retard&nbsp;: c'est
+      une absence de donnée, pas une absence de retard.</li>
   <li><strong>Les comptages</strong> viennent des gens. C'est la seule source qui
       ne soit ni un horaire théorique ni un flux automatique.</li>
   <li><strong>Le tracé de la carte</strong> suit la voie ferrée réelle, à partir

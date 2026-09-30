@@ -15,8 +15,19 @@ KINDS = {
     "OGO": "TGV",
 }
 
+# Les trips franciliens n'ont pas la forme du national : c'est
+# `IDFM:TN:SNCF:<uuid>`, là où le national fait `OCESN…F1187_F:OUI:FR:Line::…`.
+# Le garde plus bas cherche `_F:` ou `_R:`, que les trips IDFM ne contiennent
+# pas : sans une porte à part, `kind_of` aurait rendu « Train » pour tous les
+# franciliens. « TN » seul, ce n'est pas mieux — un code interne lu comme un nom
+# de ligne dans la liste des trains. « Transilien » est le mot que cherche
+# quelqu'un qui veut compter un RER.
+TRANSILIEN = "IDFM:TN:SNCF:"
+
 
 def kind_of(trip_id: str) -> str:
+    if trip_id.startswith(TRANSILIEN):
+        return "Transilien"
     marker = ""
     if "_F:" in trip_id or "_R:" in trip_id:
         marker = trip_id.split(":", 2)[1]
