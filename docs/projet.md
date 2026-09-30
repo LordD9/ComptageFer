@@ -219,7 +219,7 @@ Le flux temps réel ne donne pas le nom des gares, et il travaille surtout en St
 - `passengers`, l'effectif. En mode serpent c'est l'effectif portes fermées : c'est le nombre saisi, pas le total reconstruit. La reconstruction reste dans `legs`.
 - `reliability`, entier de 0 à 100
 - `pseudo`, facultatif, texte libre court. Pas un compte, pas un droit. Il reste ce que le CSV publie, y compris quand la personne a un compte : le compte en a un aussi, mais il ne sort pas.
-- `compte_id`, facultatif, ajouté par la phase 9. Un identifiant de compte, ou rien. Il rattache un relevé à son auteur dans l'application, et **n'est jamais exporté** : le CSV est un jeu ouvert, republicisé chaque nuit, et y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent. La migration l'ajoute par `ALTER TABLE`, donc les relevés antérieurs gardent `NULL` : ils comptent dans les données et pas au classement.
+- `compte_id`, facultatif, ajouté par la phase 9. Un identifiant de compte, ou rien. Il rattache un relevé à son auteur dans l'application, et **n'est exporté nulle part** : ni dans le CSV, ni dans une URL, ni dans un journal, ni dans une page. Le CSV est un jeu ouvert, republicisé chaque nuit, et y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent. La migration l'ajoute par `ALTER TABLE`, donc les relevés antérieurs gardent `NULL` : ils comptent dans les données et pas au classement.
 - `comment`, facultatif, texte libre court. C'est la partie qui explique un comptage atypique : train précédent supprimé, car de substitution, forte charge. Il est publié dans le CSV, donc lu par ceux qui réutilisent les données, et affiché dans l'admin.
 - `standing`, `seats_free`, `imbalance`, optionnels
 - `legs`, le profil du serpent, en JSON. La suite ordonnée des arrêts avec l'effectif de départ puis montées et descentes. Effectif suivant = effectif + montées − descentes.
@@ -562,6 +562,15 @@ apporté.
 Trois règles gouvernent toute la phase, et chacune a déjà coûté une décision
 ailleurs dans ce document :
 
+- **L'application marche sans l'option compte.** C'est la première règle, avant
+  les autres, parce qu'elle décide si la phase est réversible. Sans clé d'envoi
+  dans le `.env`, l'application démarre, la saisie marche, le classement affiche
+  sa liste vide, et `/compte` dit en une phrase que la connexion n'est pas
+  configurée sur cette installation. Aucune page n'est retirée, aucune erreur,
+  aucun 500 : c'est le même traitement que `DATAGOUV_API_KEY` absent, qui
+  laisse l'application démarrer et dit son état sur `/api/publish`. Une
+  installation contributeuse, la mienne sur le Pi, une démonstration et une
+  contribution à un fork restent donc possibles sans rien configurer
 - **Le compte reste facultatif à 100 %.** Aucun écran ne le demande, aucune
   saisie ne le réclame, aucun formulaire ne le bloque. `POST /api/sessions`
   accepte une requête sans cookie et sans jeton, comme aujourd'hui, et c'est le
@@ -573,12 +582,12 @@ ailleurs dans ce document :
   c'est le pire comportement possible pour un jeu de données qui sert à
   estimer une charge. Le score suit donc la couverture, et sa calibration se
   mesure sur la base réelle au lieu d'être choisie dans une intuition.
-- **`compte_id` ne sort jamais dans le CSV.** Le CSV est un jeu de données
-  ouvert, en Licence Ouverte 2.0, republié chaque nuit sur data.gouv.fr. Y
-  écrire un identifiant de compte stable et durable produirait une donnée
-  personnelle lisible par tous, ce que ni le pseudo ni la Licence Ouverte ne
-  demandent. Le compte vit dans l'application, le pseudo continue de signer
-  le relevé dans le CSV.
+- **`compte_id` ne sort nulle part.** Ni dans le CSV, ni dans une URL, ni dans
+  un journal, ni dans une page. Le CSV est un jeu de données ouvert, en Licence
+  Ouverte 2.0, republié chaque nuit sur data.gouv.fr : y écrire un identifiant
+  de compte stable et durable produirait une donnée personnelle lisible par
+  tous, ce que ni le pseudo ni la Licence Ouverte ne demandent. Le compte vit
+  dans l'application, le pseudo continue de signer le relevé dans le CSV.
 
 #### Vague 1 — HTTPS, parce que le lien magique ne peut pas attendre
 
@@ -620,6 +629,17 @@ historique n'a rien à montrer.
   `app.py`
 - `saisie.compte_id`, une colonne nullable
 
+La session tient dans un cookie `comptagefer_compte`, `httponly` et
+`samesite=lax`, avec `secure` seulement quand `COMPTAGEFER_HTTPS` est posée —
+sinon le cookie ne part pas sur une installation en `http://10.x`. Sa durée est
+longue, de l'ordre de la session `admin_sessions` multipliée par dix : un lien
+magique est déjà pénible à demander, le renvoyer à chaque déploiement serait
+une deuxième punition. Le cookie porte un jeton aléatoire, et c'est le SHA-256
+de ce jeton qui va dans `session` — donc la base ne contient pas de session
+utilisable, mais un cookie volé donne bien une session volée. C'est le même
+niveau de protection que `comptagefer_admin`, et c'est suffisant ici : ce que le
+compte protège, c'est un historique et un score.
+
 Une seule connexion pour tout le monde, dans `app.db` : un compte référence ses
 relevés, et deux fichiers SQLite signifieraient deux connexions et une
 transaction qui ne couvre pas les deux. Le sauvegarder reste « copier
@@ -658,13 +678,42 @@ Ce comportement est mesuré par un test qui vide la file à deux moments
 différents. Il est dans la liste parce qu'il est contre-intuitif : il dépend
 de l'heure d'envoi, pas de l'heure du comptage.
 
-**Le rythme des envois.** `/compte/connexion` envoie un email à la demande. Sans
-limite, c'est une pompe à email depuis le domaine de Balraj, et OVH coupe le
-domaine — ce qui tuerait l'envoi pour tout le monde, pas seulement pour
-l'abuseur. Donc : un envoi par adresse toutes les minutes, cinq par heure et par
-adresse IP, et le compteur vit en mémoire. Un compteur en base serait écrit à
-chaque tentative, y compris de la part de quelqu'un qui essaie d'y écrire
+**L'envoi, et son plafond.** `/compte/connexion` envoie un email à la demande.
+
+Le service d'envoi est gratuit et externe. Zimbra est écarté : l'offre Starter
+d'OVH coûte 0,30 € HT par mois et par compte, et un hobby n'a pas à payer pour
+un formulaire de connexion. Restent les paliers gratuits des fournisseurs
+transactionnels, dont les quotas sont aujourd'hui mesurés :
+
+| service | palier gratuit | ce que ça permet |
+| --- | --- | --- |
+| Resend | 100 envois par jour, 3 000 par mois | très largement assez, avec un plafond bas |
+| Brevo | 300 envois par jour | plus large, mais l'inscription demande une carte bancaire |
+
+Le choix se fait sur la période gratuite réelle, pas sur le plafond affiché :
+un jour de pic à 200 connexions ferait tomber le service entier, et tous les
+comptages en cours avec. Le plan ne fixe donc **que la règle** — ne jamais
+promettre plus que le quota le permet — et le fournisseur se choisit au moment
+de le coder, en notant le quota retenu dans ce document.
+
+Trois plafonds, et le troisième est celui qui compte :
+
+- un envoi par adresse toutes les minutes
+- cinq par heure et par adresse IP
+- un compteur global par jour, **sous le quota du fournisseur avec une marge**
+  large, et qui affiche son état dans `/compte`
+
+Le troisième est le seul qui tienne la promesse. Les deux premiers protègent
+d'une adresse et d'une IP ; seul le global protège le quota, donc le service,
+donc tout le monde d'un coup. Le compteur vit en mémoire, comme les envois ne
+demandent aucune écriture durable. Un compteur en base s'écrirait à chaque
+tentative, y compris de la part de quelqu'un dont le but est d'en écrire
 beaucoup.
+
+Quand le plafond global est atteint, `/compte` le dit — le compte est déjà
+possible sans email, la connexion est simplement fermée pour aujourd'hui. Le
+message ne prétend pas que l'email est parti : un lien annoncé et jamais reçu
+est pire qu'un refus annoncé.
 
 **La suppression du compte.** Elle n'est pas dans l'interface. Une
 suppression de compte détache ses relevés — `compte_id` à `NULL`, le pseudo
@@ -676,13 +725,24 @@ choix de confort.
 
 **Ce que le score récompense**, dans l'ordre d'importance :
 
-- **un corridor qu'aucun relevé ne portait.** Le point le plus élevé, et le
-  premier. C'est un relevé qui ajoute une paire origine-destination à la base
+- **un relevé qui se lit à l'échelle de la rame.** C'est le premier critère,
+  et il est devant la couverture parce qu'il répond à la seule question pour
+  laquelle la base existe. Un `perimetre` à `um` sur une UM2 ou une UM3 donne
+  la charge de la rame entière, donc un chiffre comparable d'un train à l'autre.
+  Un `perimetre` à `voiture` ne donne qu'une voiture, et 180 personnes dans une
+  voiture d'une UM3 et 180 dans les trois sont le même relevé écrit deux fois —
+  c'est la raison pour laquelle `PERIMETRES` existe dans le code, et la même
+  raison vaut pour le score. Un relevé à `um` rapporte plus qu'un relevé à
+  `voiture`
+- **un serpent de charge.** Le profil le long de la ligne dit où la charge se
+  monte et où elle descend, là où un effectif unique ne dit qu'une valeur entre
+  deux gares. Le même raisonnement que ci-dessus : plus d'information
+  interprétable, donc plus de points. C'est aussi la seule partie de la base
+  qui renseigne le §2 sur la montée et la descente
+- **un corridor qu'aucun relevé ne portait.** C'est un relevé qui ajoute une
+  paire origine-destination à la base
 - **un corridor qui n'a pas été vu depuis longtemps.** Un corridor vu la semaine
   dernière vaut un relevé, pas une découverte. La fenêtre se mesure
-- **une capacité maîtrisée.** Composition et périmètre connus rendent le chiffre
-  interprétable, et le projet le dit déjà à la saisie. C'est un bonus, pas un
-  critère d'admission
 - **la fidélité déclarée** ne rapporte rien. Elle est déclarée par celui qui
   compte, donc elle est manipulable par construction, et la mettre au score
   ferait monter tout le monde à 100. Elle reste une information affichée
@@ -736,15 +796,24 @@ Trois choses que le tri impose, parce qu'elles sont vraies aussi pour
 
 #### Ce que la vague ne fait pas
 
-- **Pas de points pour le serpent** mieux que pour le comptage unique. Le
-  serpent donne un profil, pas une charge plus fiable : ce sont deux
-  granularités du même chiffre. Le distinguer au score récompenserait la
-  saisie longue sur le train, ce qui est une contrainte et pas une qualité
 - **Pas de badge, pas de niveau, pas de série.** Ce sont des mécaniques de jeu,
   pas des informations sur les données. Elles ajoutent un « j'ai compté 47
   fois » qui ne veut rien dire sur le réseau
 - **Pas de rang privé.** Le classement est public. Un classement privé
   n'intéresse personne et coûte une page
+
+Une décision a été écrite à l'envers dans une première version de ce plan, et
+elle est reprise ici parce que le raisonnement qui la réfutait était faux. J'y
+écrivais qu'un serpent ne devait pas rapporter plus qu'un comptage unique, parce
+que les deux seraient « deux granularités du même chiffre ». C'est une
+distinction de forme, pas de contenu : un effectif unique donne une valeur
+entre deux gares, un serpent donne où la charge monte et où elle descend, et
+seule la deuxième répond à la question du §2 sur les montées et descentes. La
+même correction vaut pour le périmètre : `um` n'est pas une façon de dire la
+même chose autrement, c'est la seule forme du relevé qui donne une charge
+comparable d'un train à l'autre. Le plan reconnaissait déjà que 180 dans une
+voiture d'une UM3 et 180 dans les trois sont deux relevés différents, et c'est
+justement pour ça que `PERIMETRES` existe.
 
 #### Fichiers
 
@@ -754,7 +823,7 @@ se lit d'un bloc d'abord.
 - `comptagefer/app.py` — `compte` et `session` créées au démarrage, routes `/compte`, `/compte/connexion`, `/compte/deconnecter`, `/classement`, et la colonne `compte_id` sur `saisie`
 - `comptagefer/compte.py` — le nouveau module : jeton, session, envoi du lien, score. Un module et non quinze fonctions dans `app.py`, qui est déjà à 2 279 lignes
 - `comptagefer/affichage.py` — `/compte` et `/classement` entrent dans `NAVIGATION`, donc dans le chrome et le test de tutoiement
-- `compose.yaml` et `.env.example` — `COMPTAGEFER_HTTPS`, `COMPTAGEFER_EMAIL`, `COMPTAGEFER_EMAIL_PASSWORD`, et le serveur SMTP
+- `compose.yaml` et `.env.example` — quatre variables, toutes facultatives : `COMPTAGEFER_HTTPS`, `COMPTAGEFER_EMAIL`, `COMPTAGEFER_EMAIL_PASSWORD`, `COMPTAGEFER_EMAIL_FOURNISSEUR`. Aucune n'a de valeur par défaut dans le compose, et le README les décrit une par une
 - `README.md` — chaque variable du compose y est décrite, sinon `test_compose_doc.py` échoue, et il a raison d'échouer
 
 Trois tests s'appliquent sans qu'on les pense, et le plan les nomme pour ne pas
@@ -772,20 +841,35 @@ les découvrir en CI :
 Une phase se termine par quelque chose de déployable, donc chaque vague a la
 sienne :
 
+- **l'application démarre sans l'option compte.** Aucune des quatre variables
+  dans l'environnement : `/health` répond, la saisie enregistre un relevé,
+  `/classement` s'affiche vide en annonçant qu'il l'est, et `/compte` dit que la
+  connexion n'est pas configurée. Aucun 500. C'est le test le plus important de
+  la phase, parce qu'il tient la promesse de réversibilité
 - **HTTPS** : le lien de connexion en HTTPS répond et le même lien en HTTP est
   refusé. Un cookie `secure` posé sur une installation en `http://10.x` casse la
   session, et ce test existe parce que ce serait un bug de configuration, pas de
   code
+- **le cookie tient** : la session survit à un redémarrage du conteneur, donc à
+  un `docker compose restart`, et expire bien quand elle doit
 - **compte** : un relevé posté sans cookie est enregistré, compté dans les
   données et absent du classement. Un relevé posté avec une session ouverte est
   rattaché. C'est le test qui tient la promesse « 100 % facultatif »
-- **score** : un corridor inédit vaut plus qu'un corridor vu la veille, un
-  corridor redondant du même jour ne vaut rien de plus, et la fiabilité déclarée
-  ne change pas le score. Sur une base réelle, la distribution est jointe au
-  message de la PR
+- **`compte_id` ne fuit pas** : la colonne est absente du CSV, absente de
+  `/api/export.csv`, absente de toute URL, et absente du corps des pages. Un
+  test le vérifie en cherchant la valeur dans les trois sorties, pas en lisant
+  la liste des colonnes — une colonne exportée sous un autre nom fuite aussi
+- **score** : un relevé à `um` vaut plus qu'un relevé à `voiture`, un serpent
+  vaut plus qu'un comptage unique, un corridor inédit vaut plus qu'un corridor
+  vu la veille, un corridor redondant du même jour ne vaut rien de plus, et la
+  fiabilité déclarée ne change pas le score. Sur une base réelle, la
+  distribution est jointe au message de la PR
 - **classement** : il s'affiche dans Chromium, sur téléphone comme sur écran
   large, il dit son dénominateur, il annonce une liste vide, et il se lit sans
   JavaScript
+- **l'envoi est plafonné** : au plafond global, `/compte` dit que la connexion
+  est fermée pour aujourd'hui. Il ne dit pas qu'un email est parti s'il n'est
+  pas parti
 
 ### Ensuite, dans cet ordre
 
@@ -805,8 +889,8 @@ sienne :
 6. Fermée. L'hébergeur est celui qui lance le conteneur. Il définit `ADMIN_TOKEN` à côté de Compose, et administre avec ce jeton.
 7. Fermée. On choisit son train dans une liste de 4 heures centrée sur maintenant, annotée par le temps réel. À la sélection, on fige ce train, le précédent et le suivant.
 8. Ouverte, phase 9. Le compte est facultatif à 100 %, et il se connecte par un lien envoyé par email — pas de mot de passe, pas de fournisseur d'identité. Un lien de connexion est un mot de passe qui voyage en clair dans une boîte mail : le servir en HTTP le rend lisible à tout relais, donc HTTPS est une condition de la phase et pas une amélioration du déploiement.
-9. Ouverte, phase 9. Le classement récompense l'utilité, pas le volume. Un point par relevé récompenserait quelqu'un qui revient compter le même train vide dix fois. Les coefficients se calibrent sur la base réelle, pas dans une intuition.
-10. Ouverte, phase 9. `compte_id` ne sort jamais dans le CSV. Le jeu est ouvert et republicisé chaque nuit ; y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent.
+9. Ouverte, phase 9. Le classement récompense l'utilité, pas le volume. Un point par relevé récompenserait quelqu'un qui revient compter le même train vide dix fois. Les coefficients se calibrent sur la base réelle, pas dans une intuition. À l'intérieur de cette utilité, deux formes rapportent plus que les autres parce qu'elles sont plus interprétables : le serpent de charge, qui dit où la charge monte et descend, et le relevé à périmètre `um`, qui donne la charge de la rame entière.
+10. Ouverte, phase 9. `compte_id` n'est exporté nulle part — ni CSV, ni URL, ni journal, ni page. Le jeu est ouvert et republicisé chaque nuit ; y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent.
 
 ## 9. Ce qui n'est pas une promesse
 
