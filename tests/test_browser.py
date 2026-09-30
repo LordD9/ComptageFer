@@ -171,6 +171,62 @@ def _sessions(site: str) -> list[dict]:
         return json.load(response)
 
 
+def _poster_releve(site: str, jeton: str, nom: str, effectif: int) -> None:
+    """Un relevé écrit hors du navigateur.
+
+    Passer par le formulaire pour chaque relevé afin d'en préparer la
+    lecture à l'écran serait lent, et transformerait un test de mise en
+    page en test de saisie. On écrit donc directement, et on ne teste ici
+    que ce qui se voit.
+    """
+    _ecrire_releve(site, jeton, nom, "Vienne", effectif, "1_F:TER:1234")
+
+
+def _ecrire_releve(
+    site: str,
+    jeton: str,
+    origine: str,
+    destination: str,
+    effectif: int | None,
+    trip_id: str = "1_F:TER:1234",
+) -> None:
+    """Un relevé dont on choisit la paire et la ligne.
+
+    Séparé de `_poster_releve` parce que la vue par paire a besoin de
+    corridors distincts et que la page ligne a besoin d'un `trip_id`
+    connu : un seul helper ne peut pas servir les deux sans paramètres
+    que l'autre n'a aucun sens à prendre.
+    """
+    photo = {
+        "precedent": None,
+        "courant": {"trip_id": trip_id, "status": "SCHEDULED", "delay_seconds": 0},
+        "suivant": None,
+    }
+    corps = {
+        "client_id": jeton,
+        "origin_stop_id": f"StopArea:{origine}",
+        "destination_stop_id": f"StopArea:{destination}",
+        "origin_name": origine,
+        "destination_name": destination,
+        "trip_id": trip_id,
+        "reliability": 70,
+        "pseudo": "railfan",
+        "snapshot": photo,
+    }
+    # Sans `passengers`, c'est un train signalé : un relevé de l'offre
+    # qui manque, pas une charge mesurée.
+    if effectif is not None:
+        corps["passengers"] = effectif
+    route = "/api/sessions" if effectif is not None else "/api/missing"
+    requete = urllib.request.Request(
+        site + route,
+        data=json.dumps(corps).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(requete) as response:
+        assert response.status == 200
+
+
 def _fill_count(page, value: int) -> None:
     """Remplit le nombre exact comme un utilisateur : on tape dans le champ."""
     field = page.locator("#passengers")
@@ -532,6 +588,208 @@ def test_the_method_page_is_readable_and_honest(page, site):
         assert titres.count(titre) == 1, f"section absente ou dupliquée : {titre!r} dans {titres}"
 
 
+def test_the_list_switches_between_cards_and_table(page, site):
+    """Une seule lecture à l'écran, jamais les deux.
+
+    Le tableau est écrit dans la même page que les cartes parce qu'elles
+    sont la même liste. Ce qui les sépare, c'est la feuille de style, et
+    elle n'est jamais exécutée par pytest : sans ce test, une media query
+    cassée laisserait la page afficher ses sept relevés deux fois sur un
+    écran large, sans qu'aucune suite ne le remarque.
+
+    Les deux lectures sont donc vérifiées sur un vrai moteur, dans les
+    deux sens, et le téléphone est vérifié aussi : c'est la cible, et une
+    correction pour le grand écran ne doit pas la casser.
+    """
+    _poster_releve(site, "bascule-1", "Lyon", 40)
+    _poster_releve(site, "bascule-2", "Vienne", 90)
+
+    def visible(page, selecteur: str) -> bool:
+        return page.locator(selecteur).first.is_visible()
+
+    # Téléphone : les cartes, et rien d'autre.
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(site + "/comptages")
+    assert visible(page, ".cartes"), "les cartes sont la lecture du téléphone"
+    assert not visible(page, "table.tableau"), "le tableau n'a pas sa place sur un téléphone"
+
+    # Grand écran : le tableau, et rien d'autre.
+    page.set_viewport_size({"width": 1500, "height": 1000})
+    page.goto(site + "/comptages")
+    assert visible(page, "table.tableau"), "le grand écran lit en tableau"
+    assert not visible(page, ".cartes"), (
+        "les cartes ne doivent pas rester au-dessus du tableau : "
+        "le lecteur verrait chaque relevé deux fois"
+    )
+    assert page.locator("table.tableau tbody tr").count() == 2
+
+    # Et l'inverse du tri par colonne, réel, sur le même moteur.
+    valeurs_avant = page.locator("table.tableau tbody tr td:nth-child(3)").all_text_contents()
+    page.click("table.tableau thead th:nth-child(3) a")
+    page.wait_for_selector("table.tableau tbody tr")
+    assert "tri=passengers" in page.url, "le tri doit être une URL, pas un état navigateur"
+    valeurs_apres = page.locator("table.tableau tbody tr td:nth-child(3)").all_text_contents()
+    assert valeurs_avant != valeurs_apres, "cliquer sur la colonne doit changer l'ordre"
+
+
+def test_the_filters_work_on_a_real_form_and_stay_in_the_url(page, site):
+    """Filtrer se fait par le formulaire, et l'URL porte le résultat.
+
+    Le formulaire est la seule interface : sans JavaScript, un `<form
+    method='get'>` est la page entière, et il faut le vérifier sur un vrai
+    moteur — un `name` mal orthographié produit une URL sans paramètre, la
+    liste se recharge entière, et aucun test de contenu ne voit la
+    différence.
+    """
+    _ecrire_releve(site, "f-1", "Lyon", "Chambéry", 40)
+    _ecrire_releve(site, "f-2", "Grenoble", "Lyon", 90)
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(site + "/comptages")
+    avant = page.locator(".cartes article").count()
+    assert avant == 2, avant
+
+    # On filtre par mode, comme un lecteur qui veut les seuls serpents.
+    page.select_option("#mode", "serpent")
+    page.click("form.filtres button[type='submit']")
+    page.wait_for_selector("form.filtres")
+
+    assert "mode=serpent" in page.url, "le filtre doit être dans l'URL, pas dans un état"
+    assert page.locator(".cartes article").count() == 0
+    # Le verrou : une page vide doit dire pourquoi et offrir la sortie.
+    vide = page.locator(".vide-filtre")
+    assert vide.is_visible(), "un filtre à vide doit l'expliquer, pas laisser une page nue"
+    assert "Enlever le filtre" in vide.text_content()
+
+    # Le lien de sortie ramène à la liste entière.
+    vide.locator("a").first.click()
+    page.wait_for_selector("form.filtres")
+    assert page.locator(".cartes article").count() == 2, "enlever le filtre doit tout ramener"
+
+
+def test_a_bad_filter_is_named_on_the_page_not_silently_dropped(page, site):
+    """Une date illisible se lit dans la page.
+
+    C'est le défaut que pytest ne voit pas : le paramètre est écarté, la
+    liste s'affiche entière, et le lecteur croit que son filtre a
+    fonctionné. Le message doit être là, et la liste doit rester pleine —
+    écarter un filtre ne doit pas vider la liste.
+    """
+    _ecrire_releve(site, "b-1", "Lyon", "Chambéry", 40)
+
+    page.goto(site + "/comptages?depuis=bidon")
+
+    erreurs = page.locator("ul.erreurs")
+    assert erreurs.count() == 1, "le motif de l'écart doit être affiché"
+    assert "pas une date" in erreurs.text_content()
+    assert page.locator(".cartes article").count() == 1, "un filtre écarté ne vide pas la liste"
+
+
+def test_the_paired_view_is_readable_on_a_phone(page, site):
+    """La vue par paire ne s'efface pas au changement d'écran.
+
+    Elle a la classe `tableau`, et `.tableau` est retirée du rendu sous
+    48 rem pour que la liste ne se lise pas deux fois. Sans une règle
+    propre, la vue par paire disparaissait sur un téléphone — la page
+    répondait 200, le test de contenu passait, et un vrai lecteur
+    n'avait rien. C'est exactement la classe de défaut que la vague 1 a
+    déjà payée une fois.
+    """
+    _ecrire_releve(site, "p-1", "Lyon", "Chambéry", 100)
+    _ecrire_releve(site, "p-2", "Lyon", "Chambéry", 200)
+    _ecrire_releve(site, "p-3", "Nice", "Menton", 50)
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(site + "/comptages?vue=paire")
+    table = page.locator("table.paires")
+    assert table.is_visible(), "la vue par paire doit rester lisible sur un téléphone"
+    assert table.locator("tbody tr").count() == 2
+
+    # Et la liste, elle, garde son basculement : la paire n'a pas dû
+    # casser le comportement de la vague 1.
+    assert not page.locator("div.cartes").is_visible()
+
+    page.set_viewport_size({"width": 1500, "height": 1000})
+    page.goto(site + "/comptages")
+    assert page.locator("table.tableau").first.is_visible()
+    assert not page.locator("div.cartes").is_visible()
+
+
+def test_the_paired_view_sorts_by_number_of_counts_and_says_why(page, site):
+    """Le tri par défaut met en tête le corridor le mieux documenté.
+
+    Sur un vrai moteur, parce que l'en-tête est un lien : c'est le clic
+    qui doit rester dans l'URL, et le second clic doit inverser. Le
+    corridor le « moins chargé » a deux relevés, le « plus chargé » en a
+    un — le mettre en tête par effectif moyen répondrait à une autre
+    question.
+    """
+    _ecrire_releve(site, "s-1", "Nice", "Menton", 1)
+    _ecrire_releve(site, "s-2", "Nice", "Menton", 1)
+    _ecrire_releve(site, "s-3", "Lyon", "Chambéry", 900)
+
+    page.set_viewport_size({"width": 1500, "height": 1000})
+    page.goto(site + "/comptages?vue=paire")
+    lignes = page.locator("table.paires tbody tr")
+    assert lignes.count() == 2
+    assert "Nice" in lignes.nth(0).text_content(), "le corridor le mieux documenté en tête"
+
+    # Le tri par en-tête est une URL, et le second clic inverse.
+    page.click("table.paires thead th:nth-child(1) a")
+    page.wait_for_selector("table.paires tbody tr")
+    assert "tri=trajet" in page.url, "le tri de la vue par paire doit être une URL"
+    avant = lignes.nth(0).text_content()
+    page.click("table.paires thead th:nth-child(1) a")
+    page.wait_for_selector("table.paires tbody tr")
+    assert "sens=desc" in page.url
+    assert lignes.nth(0).text_content() != avant, "un second clic doit inverser le tri"
+
+
+def test_the_filters_survive_a_sort(page, site):
+    """Trier après avoir filtré ne doit pas retirer le filtre.
+
+    C'est la faute la plus facile à introduire et la plus discrète : le
+    lien de tri construit son URL à partir de rien, la liste entière
+    revient, et le lecteur voit les relevés qu'il venait d'exclure. Le
+    test la suit réellement, par le clic.
+    """
+    _ecrire_releve(site, "k-1", "Lyon", "Chambéry", 40)
+    _ecrire_releve(site, "k-2", "Grenoble", "Lyon", 90)
+
+    page.set_viewport_size({"width": 1500, "height": 1000})
+    page.goto(site + "/comptages?mode=unique")
+    assert page.locator("table.tableau tbody tr").count() == 2
+
+    page.click("table.tableau thead th:nth-child(3) a")
+    page.wait_for_selector("table.tableau tbody tr")
+
+    assert "mode=unique" in page.url, "le lien de tri a perdu le filtre"
+    assert page.locator("table.tableau tbody tr").count() == 2
+
+
+def test_the_header_navigates_from_every_reading_page(page, site):
+    """Un en-tête commun doit être un en-tête commun.
+
+    Cinq pages, cinq fois le même bandeau : c'est la seule chose qui permet
+    à un lecteur de savoir qu'il est ailleurs dans le site. Si une page
+    garde son ancien paragraphe de liens, elle perd le repère sans qu'aucun
+    test de contenu ne s'en aperçoive.
+    """
+    for chemin in ("/comptages", "/carte", "/rechercher", "/methode", "/ligne?ligne=R-TER-1"):
+        page.goto(site + chemin)
+        entete = page.locator("header.site")
+        assert entete.count() == 1, f"{chemin} n'a pas l'en-tête commun"
+        # Chaque destination est là. `/` apparaît deux fois, et c'est
+        # voulu : la marque du site et le lien « Compter » mènent au même
+        # formulaire, et on ne retire pas le nom du site de sa propre page.
+        for cible in ("/comptages", "/carte", "/rechercher", "/methode"):
+            assert entete.locator(f'a[href="{cible}"]').count() == 1, (
+                f"{chemin} : le lien {cible} manque dans l'en-tête, ou y est en double"
+            )
+        assert entete.locator('a[href="/"]').count() == 2, chemin
+        assert entete.is_visible(), chemin
+
+
 def test_the_reading_page_links_to_the_method(page, site):
     """Le lien doit exister sur la page où se lisent les chiffres, sinon la
     méthode reste une page que personne ne visite."""
@@ -842,26 +1100,48 @@ def test_the_load_snake_is_reachable(page, site):
 
 FAKE_LEAFLET = """
 window.L = {};
-const dessines = { segments: [], points: [], vues: [] };
+const dessines = { segments: [], points: [], vues: [], styles: [], carte: null };
 window.dessines = dessines;
 function latLng(lat, lon) { return { lat: lat, lon: lon }; }
 latLng.extend = function (autre) { return { extend: function () { return autre; } }; };
 window.L.map = function (id) {
   dessines.vues.push(id);
-  return {
+  const carte = {
     setView: function () {},
-    fitBounds: function (bornes) { dessines.bornes = bornes; },
+    fitBounds: function (bornes) { dessines.bornes = bornes; carte.zoomSurBornes = true; },
     invalidateSize: function () {},
     addTo: function () { return null; },
+    on: function (nom, fn) { (carte.handlers = carte.handlers || {})[nom] = fn; },
   };
+  dessines.carte = carte;
+  return carte;
 };
 window.L.latLng = latLng;
-window.L.latLngBounds = function (un, deux) { return { extend: function () { return un; } }; };
+// `extend` renvoie un objet qui rend la main, et qui doit donc porter `pad`
+// comme le neuf : c'est la chaîne que Leaflet renvoie en vrai. Sans lui, la
+// sélection d'un tracé échouerait sur `pad is not a function` et le test
+// vérifierait une erreur de script au lieu du comportement.
+window.L.latLngBounds = function (un, deux) {
+  const bornes = { _bornes: [un, deux], pad: function () { return this; } };
+  bornes.extend = function () { return bornes; };
+  return bornes;
+};
 window.L.layerGroup = function () { return { addTo: function () { return null; } }; };
 window.L.tileLayer = function (url) { return { url: url, addTo: function () { return null; } }; };
 window.L.polyline = function (points, options) {
   dessines.segments.push({ points: points, options: options });
-  return { addTo: function () { return null; } };
+  // `addTo` rend la main sur l'objet lui-même, comme Leaflet : la page range
+  // ce qu'elle reçoit pour pouvoir le surligner plus tard. Renvoyer `null`
+  // ici ferait échouer la synchronisation en silence, et le test vérifierait
+  // l'absence d'erreur plutôt que l'absence d'effet.
+  return {
+    options: options,
+    setStyle: function (extra) {
+      Object.assign(this.options, extra);
+      dessines.styles.push(Object.assign({}, extra));
+    },
+    addTo: function () { return this; },
+  };
 };
 window.L.circleMarker = function (point, options) {
   dessines.points.push({ point: point, options: options });
@@ -947,6 +1227,349 @@ def test_the_map_page_has_no_horizontal_overflow(page, site):
         "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
     )
     assert debord <= 0, f"la page déborde de {debord}px"
+
+
+# --- la liste et la carte se suivent ----------------------------------------
+#
+# La vague 3. Ces tests sont sur un vrai moteur parce que c'est la seule façon
+# d'exercer un `mouseenter`, un `aria-pressed` et un `hidden` : la page
+# répond 200 et le HTML est correct même quand aucun des trois ne fait rien.
+
+def _deux_comptages(site: str) -> None:
+    """Deux corridors distincts, pour que la synchronisation ait deux cibles.
+
+    Un seul tracé ne permettrait pas de vérifier que le survol éteint *les
+    autres* : c'est l'erreur classique d'une synchronisation qui allume tout.
+    """
+    _ecrire_releve(site, "synchro-1", "Lyon", "Vienne", 40)
+    _ecrire_releve(site, "synchro-2", "Vienne", "Valence", 90)
+
+
+# --- la courbe de charge ----------------------------------------------------
+#
+# Elle est tracée par le script au clic, donc invisible pour pytest : c'est
+# ici qu'elle se vérifie, sur le DOM d'un vrai moteur. Le JS écrit le texte
+# par `textContent`, qui n'interprète rien — un nom de gare contenant
+# « <script> » s'affiche, il ne s'exécute pas, et le test le vérifie.
+
+def _serpent(site: str, jeton: str, a_bord: int, boarded: int, alighted: int) -> None:
+    """Un serpent Lyon → Vienne → Valence dont la fin est incomplète.
+
+    La dernière descente est omise, comme quand le voyageur ne compte pas sa
+    propre sortie : c'est le cas que la courbe doit arrêter plutôt que
+    prolonger par un palier.
+    """
+    corps = {
+        "client_id": jeton,
+        "kind": "serpent",
+        "origin_stop_id": "StopArea:Lyon",
+        "destination_stop_id": "StopArea:Valence",
+        "origin_name": "Lyon",
+        "destination_name": "Valence",
+        "trip_id": "1_F:TER:1234",
+        "passengers": a_bord,
+        "reliability": 70,
+        "legs": [
+            {"stop_id": "StopPoint:LyonA", "stop_name": "Lyon Part-Dieu", "onboard": a_bord},
+            {"stop_id": "StopPoint:VienneA", "stop_name": "Vienne", "boarded": boarded, "alighted": alighted},
+            {"stop_id": "StopPoint:ValenceA", "stop_name": "Valence", "boarded": 0},
+        ],
+    }
+    requete = urllib.request.Request(
+        site + "/api/sessions",
+        data=json.dumps(corps).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(requete) as response:
+        assert response.status == 200
+
+
+def _ouvre_la_courbe(page, site: str, index: int = 0) -> None:
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(f".ligne[data-i='{index}']")
+    page.click(f".ligne[data-i='{index}']")
+    page.wait_for_selector(f"#profil-{index} svg")
+
+
+def _points(page, index: int = 0) -> list[tuple[int, int]]:
+    brut = page.get_attribute(f"#profil-{index} polyline", "points")
+    return [(int(p.split(",")[0]), int(p.split(",")[1])) for p in brut.split()]
+
+
+def test_the_curve_is_drawn_when_a_line_is_clicked(page, site):
+    _ecrire_releve(site, "courbe-1", "Lyon", "Vienne", 40)
+    _ouvre_la_courbe(page, site)
+
+    assert page.locator("#profil-0 svg").count() == 1
+    assert page.locator("#profil-0 circle").count() == 2, "un disque par arrêt"
+    assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
+
+
+def test_the_curve_starts_at_zero_and_says_its_maximum(page, site):
+    """L'axe part de zéro, et le maximum est nommé.
+
+    Ces deux vérifications vivaient en Python tant que le tracé était écrit
+    par le serveur. Elles sont le prix du passage en JavaScript, et elles
+    doivent rester : un graphique sans maximum nommé est une forme.
+    """
+    _serpent(site, "courbe-2", 40, 3, 1)
+    _ouvre_la_courbe(page, site)
+
+    points = _points(page)
+    assert len(points) == 2, f"la courbe s'arrête à Vienne : Valence n'a pas de descente, {points}"
+    # L'axe du SVG descend : plus y est grand, plus la valeur est basse. La
+    # charge monte de 40 à 42, donc l'ordonnée doit *décroître*.
+    assert points[0][1] > points[1][1], f"la charge monte, l'ordonnée doit baisser : {points}"
+    # Le repère du bas porte 0, et celui du haut le plafond arrondi à 50.
+    reperes = page.locator("#profil-0 text.axe").all_text_contents()
+    assert "0" in reperes, f"l'axe ne part pas de zéro : {reperes}"
+    assert "50" in reperes, f"le plafond doit être arrondi au pas de 10 : {reperes}"
+    legende = page.text_content("#profil-0 figcaption")
+    assert "Maximum 42 voyageurs, à Vienne." in legende
+
+
+def test_the_curve_says_where_the_count_stops(page, site):
+    """Une descente non relevée arrête la courbe, et le dit.
+
+    Prolonger jusqu'à la dernière gare dessinerait un palier, « rien ne
+    s'est passé », alors qu'on vient précisément de dire qu'on n'en sait rien.
+    """
+    _serpent(site, "courbe-3", 40, 3, 1)
+    _ouvre_la_courbe(page, site)
+
+    legende = page.text_content("#profil-0 figcaption")
+    assert "arrête à Valence" in legende, f"l'arrêt du compte n'est pas dit : {legende}"
+    desc = page.text_content("#profil-0 desc")
+    assert "Le compte s'arrête à Valence" in desc, "le lecteur d'écran n'est pas informé non plus"
+
+
+def test_the_curve_is_described_for_a_screen_reader(page, site):
+    """Un graphique sans alternative textuelle n'est pas une image, c'est un trou."""
+    _serpent(site, "courbe-4", 40, 3, 1)
+    _ouvre_la_courbe(page, site)
+
+    assert page.get_attribute("#profil-0 svg", "role") == "img"
+    desc = page.text_content("#profil-0 desc")
+    # Les mêmes nombres que le dessin, pas un résumé.
+    assert "Lyon Part-Dieu 40" in desc, desc
+    assert "Vienne 42" in desc, desc
+
+
+def test_a_stop_name_cannot_inject_markup_into_the_curve(page, site):
+    """Les noms viennent de la base : ils sont écrits, jamais interprétés.
+
+    Le script construit le texte par `textContent`, qui n'interprète rien.
+    C'est la raison d'être du `noms_bruts` : un nom échappé, réinterprété,
+    afficherait « &amp; » à l'écran.
+    """
+    photo = {
+        "precedent": None,
+        "courant": {"trip_id": "1_F:TER:1234", "status": "SCHEDULED", "delay_seconds": 0},
+        "suivant": None,
+    }
+    # Trois arrêts, tous connus de la fixture : un serpent dont une gare est
+    # inconnue serait écarté de la carte, et il n'y aurait rien à cliquer.
+    corps = {
+        "client_id": "injec-1",
+        "kind": "serpent",
+        "origin_stop_id": "StopArea:Lyon",
+        "destination_stop_id": "StopArea:Valence",
+        "origin_name": "Lyon",
+        "destination_name": "Valence",
+        "trip_id": "1_F:TER:1234",
+        "passengers": 40,
+        "reliability": 70,
+        "snapshot": photo,
+        "legs": [
+            {"stop_id": "StopPoint:LyonA", "stop_name": "<script>alert(1)</script>", "onboard": 40},
+            {"stop_id": "StopPoint:VienneA", "stop_name": "Vienne & Cie", "boarded": 3, "alighted": 1},
+            {"stop_id": "StopPoint:ValenceA", "stop_name": "Valence", "boarded": 0, "alighted": 2},
+        ],
+    }
+    requete = urllib.request.Request(
+        site + "/api/sessions",
+        data=json.dumps(corps).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(requete) as response:
+        assert response.status == 200
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.click(".ligne[data-i='0']")
+    page.wait_for_selector("#profil-0 svg")
+
+    # Le nom est affiché tel quel, pas exécuté, et « & Cie » n'est pas
+    # devenu « &amp; Cie » — donc le nom voyage brut, et c'est `textContent`
+    # qui garantit qu'il ne s'interprète pas.
+    assert page.locator("#profil-0 script").count() == 0
+    labels = page.locator("#profil-0 text.axe").all_text_contents()
+    assert "<script>alert(1)</script>" in labels, f"le nom doit s'afficher tel quel : {labels}"
+    # Seules la première et la dernière gare sont nommées : dix noms sur 320
+    # pixels seraient illisibles. Le `&` de Vienne n'est donc pas étiqueté
+    # ici — c'est le <desc> complet qui le porte.
+    assert "Vienne & Cie" not in labels, (
+        f"seules les gares du bout sont nommées, sinon l'axe est illisible : {labels}"
+    )
+    desc = page.text_content("#profil-0 desc")
+    assert "Vienne & Cie 42" in desc, f"le nom complet doit rester lisible : {desc}"
+    assert "&amp;" not in desc, "un nom échappé afficherait « &amp; » à l'écran"
+    assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
+
+
+def test_hovering_a_line_lights_up_its_track(page, site):
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.route("**/*.png", lambda route: route.abort())
+    page.goto(site + "/carte")
+    page.wait_for_function("() => window.dessines && window.dessines.segments.length === 2")
+    assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
+
+    page.hover(".ligne[data-i='1']")
+    allumes = page.evaluate("() => window.dessines.segments[1].options")
+    eteintes = page.evaluate("() => window.dessines.segments[0].options")
+    assert allumes["weight"] > 4, "le tracé survolé doit s'épaissir"
+    assert allumes["opacity"] == 1
+    assert eteintes["opacity"] < 1, (
+        "les autres tracés doivent s'effacer : c'est ce qui dit lequel est survolé"
+    )
+
+
+def test_leaving_the_line_puts_the_tracks_back(page, site):
+    """Le survol est temporaire. Un tracé qui reste allumé ment sur la suite."""
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_function("() => window.dessines && window.dessines.segments.length === 2")
+
+    page.hover(".ligne[data-i='0']")
+    assert page.evaluate("() => window.dessines.segments[0].options.weight") > 4
+    # La souris part vers le titre de la page, hors de la liste.
+    page.hover("h1")
+    revenue = page.evaluate("() => window.dessines.segments[0].options.weight")
+    assert revenue == 4, f"le tracé doit revenir à son poids normal, il est à {revenue}"
+
+
+def test_clicking_a_line_opens_its_charge_curve(page, site):
+    _reach_form(page, site)
+    page.click("#plus10")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+
+    courbe = page.locator("figure.profil").first
+    assert not courbe.is_visible(), "aucune courbe ne s'ouvre toute seule"
+    page.click(".ligne[data-i='0']")
+    assert courbe.is_visible(), "le clic doit ouvrir la courbe de charge"
+    assert page.locator(".ligne[data-i='0']").get_attribute("aria-pressed") == "true"
+    # La courbe est bien celle du relevé choisi, pas un cadre vide.
+    assert courbe.locator("svg").count() == 1
+
+
+def test_clicking_a_second_line_closes_the_first(page, site):
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+
+    page.click(".ligne[data-i='0']")
+    assert page.locator("figure.profil").first.is_visible()
+    page.click(".ligne[data-i='1']")
+    visibles = page.locator("figure.profil:visible").count()
+    assert visibles == 1, (
+        f"deux courbes ouvertes à la fois ({visibles}) : la comparaison a son propre mode"
+    )
+
+
+def test_clicking_the_same_line_again_closes_it(page, site):
+    """Un bouton qui ne se referme pas oblige à recharger la page."""
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+
+    page.click(".ligne[data-i='0']")
+    assert page.locator("figure.profil:visible").count() == 1
+    page.click(".ligne[data-i='0']")
+    assert page.locator("figure.profil:visible").count() == 0
+    assert page.locator(".ligne[data-i='0']").get_attribute("aria-pressed") == "false"
+
+
+def test_the_keyboard_reaches_the_curve_too(page, site):
+    """Le clavier doit obtenir ce que la souris obtient.
+
+    Un bouton qui ne s'ouvre qu'au clic de souris est un bouton inaccessible,
+    et le test ne le verrait pas : il faudrait tryser au clavier pour s'en
+    apercevoir.
+    """
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+
+    page.focus(".ligne[data-i='0']")
+    page.keyboard.press("Enter")
+    assert page.locator("figure.profil:visible").count() == 1, (
+        "Entrée doit ouvrir la courbe : un bouton ne doit pas être une souris à lui seul"
+    )
+
+
+def test_the_list_still_works_without_leaflet(page, site):
+    """Sans la bibliothèque, la liste reste utilisable : survol et courbe.
+
+    Ce que la carte apporte — le déplacement au clic — disparaît, mais le
+    reste ne doit pas. La page qui répond 200 avec une liste morte est
+    exactement le défaut que les vagues 1 et 2 ont appris à traquer.
+    """
+    _deux_comptages(site)
+    _carte_sans_leaflet(page, site)
+    page.wait_for_selector("body")
+    assert _console_errors(page) == [], f"erreur JS sans Leaflet : {_console_errors(page)}"
+    assert "carte n'a pas pu se charger" in page.text_content("body")
+
+    page.click(".ligne[data-i='0']")
+    assert page.locator("figure.profil:visible").count() == 1, (
+        "la courbe de charge ne dépend pas de Leaflet : elle est dans la page"
+    )
+
+
+def test_the_charge_curve_survives_a_phone_layout(page, site):
+    """Sur un téléphone, la courbe doit être lisible et pas débordante.
+
+    C'est le défaut déjà rencontré deux fois dans cette PR : une vue retirée
+    sous 48 rem, une page qui répond 200 et n'affiche rien. Ici la courbe est
+    dans le flux, donc le risque est le débordement.
+    """
+    _deux_comptages(site)
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+    page.click(".ligne[data-i='0']")
+
+    courbe = page.locator("figure.profil:visible").first
+    assert courbe.is_visible(), "la courbe doit exister sur un téléphone aussi"
+    largeur = courbe.locator("svg").first.bounding_box()
+    assert largeur["width"] <= 390, f"la courbe déborde : {largeur['width']}px sur un écran de 390"
+
+
+def test_a_reported_train_stays_plain_text_on_the_map(page, site):
+    """Pas d'effectif, pas de bouton : la ligne reste du texte lisible.
+
+    Vérifié dans un vrai moteur, et pas seulement en pytest, parce qu'un
+    `<button>` sans gestionnaire est visible et cliquable : le lecteur
+    cliquerait et rien ne se passerait.
+    """
+    _ecrire_releve(site, "sans-effectif", "Lyon", "Vienne", None)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector("body")
+    assert _console_errors(page) == []
+    assert page.locator(".ligne").count() == 0, "un train signalé n'a pas de courbe, donc pas de bouton"
+    assert "sans effectif" in page.text_content("body"), "mais il reste dans la liste, lisible"
 
 
 # --- la reprise du serpent après fermeture d'onglet -------------------------

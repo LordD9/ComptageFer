@@ -408,6 +408,119 @@ def test_a_stop_name_cannot_inject_html_into_the_page(tmp_path):
     assert "&lt;img src=x" in page.text
 
 
+def test_the_list_line_is_a_button_that_reveals_the_charge_curve(tmp_path):
+    """La vague 3 : la liste commande la carte, et elle porte la courbe.
+
+    Le bouton est l'élément testé, pas un `<li>` décoratif : c'est lui qui
+    porte `aria-controls`, donc c'est lui qui doit exister. Une liste qui ne
+    serait que du texte passerait tous les tests de contenu et ne
+    synchroniserait rien.
+    """
+    stops = _stops_db(tmp_path)
+    features = counted_features(
+        stops,
+        [{
+            "client_id": "jeton",
+            "kind": "count",
+            "origin_stop_id": "StopArea:Lyon",
+            "destination_stop_id": "StopArea:Valence",
+            "passengers": 40,
+            "pseudo": None,
+            "legs": None,
+        }],
+    )
+    page = map_page(features, 1)
+    assert '<button class="ligne"' in page
+    assert 'aria-controls="profil-0"' in page
+    # Le conteneur est vide et masqué : le tracé est fait par le script au
+    # clic, parce qu'écrit dans le HTML il pesait 43 % d'une page de 30
+    # relevés pour un graphique que personne ne voit. Sa géométrie est
+    # vérifiée dans un vrai Chromium, sur le DOM.
+    assert '<figure class="profil" id="profil-0" hidden></figure>' in page
+
+
+def test_a_reported_train_gets_no_curve(tmp_path):
+    """Pas d'effectif, pas de courbe — et pas de bouton qui ne fait rien."""
+    stops = _stops_db(tmp_path)
+    features = counted_features(
+        stops,
+        [{
+            "client_id": "jeton",
+            "kind": "missing",
+            "origin_stop_id": "StopArea:Lyon",
+            "destination_stop_id": "StopArea:Valence",
+            "passengers": None,
+            "pseudo": None,
+            "legs": None,
+        }],
+    )
+    page = map_page(features, 1)
+    assert "<polyline" not in page
+    assert "<button" not in page, "un bouton sans courbe est une promesse que la page ne tient pas"
+
+
+def test_an_incomplete_snake_is_told_where_its_curve_stops(tmp_path):
+    """La fin d'un serpent sans descente relevée est dite, pas devinée."""
+    stops = _stops_db(tmp_path)
+    features = counted_features(
+        stops,
+        [{
+            "client_id": "serpent",
+            "kind": "serpent",
+            "origin_stop_id": "StopArea:Lyon",
+            "destination_stop_id": "StopArea:Valence",
+            "passengers": 40,
+            "pseudo": None,
+            "legs": [
+                {"stop_id": "StopPoint:LyonA", "stop_name": "Lyon Part-Dieu", "onboard": 40},
+                {"stop_id": "StopPoint:VienneA", "stop_name": "Vienne", "boarded": 3, "alighted": 1},
+                {"stop_id": "StopPoint:ValenceA", "stop_name": "Valence", "boarded": 0},
+            ],
+        }],
+    )
+    assert features[0]["charge"] == [40, 42], "la courbe ne continue pas après une descente inconnue"
+    # L'arrêt est dit par la légende, que le script écrit au clic. Que la
+    # donnée parte bien avec l'arrêt est vérifié ici ; que la phrase
+    # apparaisse est vérifié dans un vrai Chromium.
+    assert features[0]["incomplet_brut"] == "Valence"
+
+
+def test_the_curve_is_named_after_the_places_it_could_plot(tmp_path):
+    """Une gare sans coordonnées n'a pas de place sur le parcours.
+
+    Le cas est réel : une voie du GTFS national sans position hérite de celle
+    de sa gare, mais un serpent peut contenir une gare qu'on ne sait pas poser.
+    Donner une abscisse à cette gare ferait avancer la charge d'un cran sans
+    que le train se soit déplacé.
+    """
+    stops = _stops_db(tmp_path)
+    features = counted_features(
+        stops,
+        [{
+            "client_id": "serpent",
+            "kind": "serpent",
+            "origin_stop_id": "StopArea:Lyon",
+            "destination_stop_id": "StopArea:Valence",
+            "passengers": 10,
+            "pseudo": None,
+            "legs": [
+                {"stop_id": "StopPoint:LyonA", "stop_name": "Lyon Part-Dieu", "onboard": 10},
+                {"stop_id": "StopArea:Nulle", "stop_name": "Gare fantôme", "boarded": 5, "alighted": 0},
+                {"stop_id": "StopPoint:ValenceA", "stop_name": "Valence", "boarded": 0, "alighted": 4},
+            ],
+        }],
+    )
+    # La gare fantôme est écartée de la courbe comme elle l'est du tracé :
+    # elle a bien été parcourue, mais elle n'a pas de place sur le graphique.
+    # Donc deux abscisses pour trois arrêts comptés — et les montées de la
+    # gare fantôme restent dans le calcul.
+    assert features[0]["noms_bruts"] == ["Lyon Part-Dieu", "Valence"]
+    assert features[0]["charge"] == [10, 11], (
+        "10 à Lyon, puis 10 + 5 à la gare fantôme puis - 4 à Valence : "
+        "la gare fantôme est dans le calcul mais pas dans le graphique"
+    )
+
+
 def test_a_client_id_cannot_break_out_of_the_page_script(tmp_path):
     """Le `client_id` était le seul champ non échappé, et il atterrit dans le
     même `<script>` que le reste. Un `</script>` dedans fermait la balise et la

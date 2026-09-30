@@ -345,6 +345,32 @@ La carte sert à voir les résultats, pas à saisir.
 - recherche par nom — **fait**, c'est `/rechercher`, un seul champ pour une gare ou une ligne
 - page ligne : liste brute, ou invitation à contribuer s'il n'y a rien — **fait**, c'est `/ligne`
 
+#### La lecture sur un écran large
+
+Sept pages recopient chacune leur mise en page, et sept fois le même `max-width: 32rem`. Le mobile y est bon — le formulaire se fait au pouce, dans un train — mais `/comptages` sur un écran large, c'était une colonne de 512 px centrée, avec la moitié de la hauteur en vide.
+
+Le chrome est donc écrit une fois, dans `comptagefer/affichage.py` : en-tête, navigation, pied, et une media query qui ouvre la lecture à 72 rem au-delà de 48 rem. Trois décisions valent d'être écrites ici, parce qu'elles ne se devinent pas dans le CSS :
+
+- **Une page, deux lectures.** La liste existe en cartes et en tableau, dans le même HTML : les cartes sur un téléphone, le tableau sur grand écran, l'un retiré du rendu quand l'autre s'affiche. Les faire coexister ferait lire chaque relevé deux fois. Le tableau ajoute ce qui manquait : date, fiabilité, tri par en-tête. Le tri est un paramètre d'URL (`?tri=&sens=`) et non un état navigateur : une liste triée se partage et se teste, et il n'y a pas de JavaScript dans une page dont le JavaScript n'est jamais exécuté par la suite de tests.
+- **Un relevé sans valeur sort en dernier, dans les deux sens.** Un « train signalé » n'a pas d'effectif : trié décroissant, il remonterait en tête et se lirait comme le relevé le plus chargé. `reverse=True` portant sur un « la valeur manque » booléen fait exactement ça, donc ils sont retirés, triés, puis remis à la fin.
+- **Ce qui est dans la base est sur la page.** `created_at`, `reliability`, `comment`, `standing`, `seats_free`, `imbalance` sortaient dans le CSV sans qu'un lecteur du site puisse les voir. La date est en heure de Paris, pas en ISO UTC.
+
+La carte prend la hauteur de l'écran sur grand écran, la liste des tracés passe à côté. La page ligne lit ses arrêts et ses comptages côte à côte. C'est une media query, pas une refonte : rien n'a été ajouté au-delà de 48 rem, et le téléphone ne change pas.
+
+#### Filtrer, et comparer par paire de gares
+
+Un écran large sert d'abord à comparer, donc `comptagefer/filtres.py` porte les trois filtres de `/comptages` — `?depuis=&jusqu=&mode=&ligne=` — plus la vue `?vue=paire`. Cinq décisions ne se devinent pas dans le code :
+
+- **Les filtres sont dans l'URL, et tous les liens de la page les conservent.** C'est le prolongement du tri : une liste filtrée se partage et se teste. Le corollaire est la faute que pytest ne voit pas — un lien de tri qui reconstruit son URL perd le `ligne=` courant, et le lecteur voit les relevés qu'il vient d'exclure. Toutes les URL passent donc par une seule fabrique, qui prend l'état courant et le modifie au lieu de le reconstruire.
+- **Un filtre illisible est écarté *et nommé*.** L'écarter en silence est pire que ne pas l'écarter : le lecteur qui filtre par « laisse-passer » verrait la liste entière et croirait que son filtre n'a rien donné. La page affiche donc la raison de l'écart dans le formulaire, et les chips disent ce qui est *appliqué*.
+- **`?ligne=` passe par le `trip_id`**, comme `/ligne`, et pour la même raison : deux lignes se partagent souvent le corridor. Le champ est un texte libre et non une liste déroulante, parce que le GTFS national attribue le même « C13 » à six lignes — une liste de noms courts ouvrirait une page au hasard.
+- **La vue par paire est un paramètre, pas une page.** Elle répond à une question qu'aucune page ne posait — « la charge typique sur Lyon–Chambéry » — en HTML, sans JavaScript, pour la même raison que le tri. Son tri par défaut est le **nombre de relevés décroissant** : un corridor en tête avec 40 relevés est mieux documenté qu'un corridor en tête avec 2. Le mettre en tête par effectif moyen répondrait à une autre question, « le plus chargé », qui mélange ce que la base sait et ce que la circulation fait. Un train signalé compte dans `releves` et pas dans la moyenne : le compter comme 0 ferait passer « non mesuré » pour « vide ».
+- **La pagination est mesurée, pas anticipée.** À 6 000 relevés, `/comptages` rendait 2,38 Mo de HTML en 227 ms. La liste est coupée après le tri — une page affichée avant tri se reconnaît à rien — à 200 par page, et la page dit « 200 sur 5 000 » pour que la tranche ne se prenne pas pour le jeu entier. Le total est compté en SQL, pas déduit de la liste rendue. Sous 200 relevés, aucun sélecteur de page : un bouton « page 1 » unique se lit comme cassé.
+
+Le verrou que le plan posait tient : un filtre qui vide la liste dit ce qu'il a filtré et propose de l'enlever. « Enlever le filtre » et « Tout enlever » retirent tout — une page vide ne dit pas *quel* filtre a échoué, donc il n'y a pas « celui-ci ».
+
+Deux décisions ne sont pas de l'implémentation mais de la suite : le tri reste en Python, pas dans la requête, pour que `_list_saisies` — qui rend aussi le CSV publié — reste hors de tout paramètre d'affichage ; et la vue par paire est coupée au même seuil que la liste, pour la même raison. J'avais écrit le contraire, en arguant qu'il y a au plus autant de paires que de relevés et que la vue serait donc plus légère : **la mesure refute cet argument**. Sur 6 000 relevés répartis sur 90 × 37 gares, la vue par paire rendait 0,60 Mo et 148 ms — six fois le poids d'une page de liste. Une justification écrite sans mesure coûte une page à 0,6 Mo le jour où la base grossit.
+
 Deux faits de la source ont décidé la forme de la page ligne, et il vaut mieux les écrire ici qu'un jour dans un ticket :
 
 - **Les noms de ligne ne sont pas uniques.** Le GTFS national compte 725 lignes pour 423 noms courts : `C13` désigne six lignes différentes, `INCONNU` cinquante-trois. Une URL construite sur le nom court ouvrirait donc une page au hasard. Tout ce qui identifie une ligne passe par le `route_id`, et le titre affiché porte toujours le nom long, parce que « C13 » ne veut rien dire pour quelqu'un qui ne connaît pas la numérotation SNCF.
@@ -439,6 +465,92 @@ garde les versions, mais rien ici ne les expose.
 Le seuil est unique et non calibré par type de train, parce qu'aucune source ne donne la capacité du matériel : le GTFS national n'a aucun fichier de matériel, et le flux GTFS-RT ne publie pas cette information. Le seuil attrape donc une erreur de frappe, pas un train trop plein. Le message affiché ne prétend donc plus qu'un train français contient tant de personnes : il invite seulement à vérifier le chiffre. Un plafond par type de train resterait à faire si une source de capacité apparaît un jour, et il faudra alors mesurer plutôt que deviner.
 
 Un test navigateur accompany ces phases depuis la PR 15 : le formulaire est du JavaScript écrit à la main dans une chaîne Python, et sans Chromium la suite passe au vert sur une page morte. Le workflow `Tests` le joue sur chaque PR.
+
+### Phase 8 — La lecture, en trois vagues
+
+La phase 7 a rendu l'outil correct. Celle-ci le rend lisible, en trois vagues
+dans une seule PR (#40), parce qu'elles se servent l'une l'autre : on ne peut
+pas comparer des corridors sans pouvoir d'abord les choisir.
+
+**Vague 1 — la lecture s'ouvre sur un écran large.** Carte à côté de la liste
+sur grand écran, page ligne à côté de ses arrêts. Une media query, pas une
+refonte : rien au-delà de 48 rem, le téléphone ne change pas. **Livrée** (`84e79a0`).
+
+**Vague 2 — filtrer, et comparer.** `?depuis=&jusqu=&mode=&ligne=` filtrent la
+liste en une requête SQL ; `?vue=paire` regroupe les mêmes relevés par
+origine-destination ; `?page=` découpe. La pagination a été **mesurée** : à
+6 000 relevés la page rendait 2,38 Mo, coupée à 200 elle rend 89 ko. **Livrée**
+(`b54b64f`, `1edbe0f`).
+
+**Vague 3 — la liste et la carte se suivent, et la charge se dessine.**
+Synchronisation liste/carte et profil de charge en SVG, sans changement
+d'interface. **Livrée** (`b2046dd`).
+
+Trois décisions, prises pendant la construction et non avant :
+
+- **Le survol allume, le clic sélectionne.** Le survol est réversible et
+  gratuit ; le clic déplace la carte et ouvre la courbe, ce qu'un survol
+  ferait dix fois en descendant la liste. Le clavier a les deux : `focus`
+  allume comme `mouseenter`, `Entrée` sélectionne comme le clic.
+- **Un comptage unique a aussi une courbe.** Il porte sur tout son
+  origine-destination, donc sa charge est constante entre les deux gares :
+  deux points de même valeur. Ce n'est pas une interpolation, c'est ce que
+  l'observation veut dire. Le graphe a donc le même sens pour les deux
+  modes, au lieu d'être un cas particulier à côté.
+- **Un train signalé n'a ni courbe ni bouton.** Un bouton qui n'ouvre rien
+  est une promesse que la page ne tient pas ; la ligne reste du texte.
+
+Une limite, dite : un serpent dont la dernière descente n'est pas relevée —
+le voyageur ne compte pas sa propre sortie — a une courbe qui s'arrête à
+l'avant-dernière gare, et la légende nomme l'arrêt où le compte s'arrête.
+Prolonger la courbe jusqu'à la dernière gare dessinerait un palier, « rien
+ne s'est passé », alors qu'on vient précisément de dire qu'on n'en sait rien.
+De même, une gare sans coordonnées est parcourue et comptée, mais n'a pas de
+place sur le graphique : ses montées et descentes entrent dans le calcul de
+la charge, et elle ne reçoit pas de point. Sans cette règle, la valeur de
+l'arrêt suivant se lirait à la mauvaise gare.
+
+La courbe est **tracée par le script au clic**, pas écrite dans le HTML. Elle
+l'a été d'abord écrite par le serveur, en Python, pour que pytest la relise :
+c'était le bon réflexe et la mauvaise mesure. À 30 relevés, les SVG faisaient
+**43 % de la page** — 27 ko pour un graphique qu'aucun lecteur ne voit avant
+d'en ouvrir un. Les données étaient déjà là (`charge`, `noms_bruts` dans le
+`<script>`) : le serveur ne les économisait pas, il les dupliquait. La page
+est passée de 62,6 ko à **40,1 ko**, soit 36 % de moins.
+
+Ce que ça coûte, et qui est réel : pytest ne voit plus la géométrie. Elle est
+donc vérifiée dans un vrai Chromium, sur le DOM — l'axe part de zéro, le
+plafond est arrondi au pas de 10, le maximum est nommé avec sa gare, la
+courbe s'arrête où le compte s'arrête. C'est un test plus lent et moins fin
+qu'un test de fonction, et c'est le bon échange quand la fonction en question
+n'est visible qu'après un clic.
+
+Un défaut que ce passage a révélé, et qui existait déjà : un nom de gare
+contenant `</script>` **fermait la balise** et tuait le script au chargement.
+`json.dumps` n'échappe pas `<`, et le `noms_bruts` rendait le cas possible.
+Le `</` est maintenant échappé en `<\/` à la frontière du JSON. Sans
+Chromium, ce défaut serait resté invisible : pytest ne charge pas de JavaScript.
+
+Le champ « ligne » est un texte libre, pas une liste déroulante : le GTFS
+national attribue le même « C13 » à six lignes, donc une liste de noms courts
+ouvrirait une page au hasard. Il prend le `route_id`.
+
+Deux choses que les vagues 1 et 2 ont apprises et qui ne se devinent pas :
+
+- **La feuille de style n'est jamais exécutée par pytest.** La vue par paire
+  portait la classe `tableau`, retirée sous 48 rem : la page répondait 200 et les
+  tests de contenu passaient, sur un téléphone il n'y avait rien. Même classe
+  de défaut que la vague 1. D'où les tests Chromium, désormais la règle pour
+  toute vue.
+- **Un tableau qui se dit vide doit le dire.** Une liste vide ne s'annonce pas,
+  et le décompte d'une page doit nommer son ensemble : « 200 sur 6 000 », jamais
+  « 200 ». C'est la faute que la pagination de la vague 2 a corrigée deux fois,
+  sur les deux vues.
+
+Une limite, dite : le filtre ligne a bien sa clause `trip_id IN (...)`, mais
+sans `timetable.db` dans la suite pytest elle n'est pas vérifiée bout en bout. La
+page `/ligne`, qui utilise la même lecture, l'est. C'est le prochain chantier de
+couverture.
 
 ### Ensuite, dans cet ordre
 

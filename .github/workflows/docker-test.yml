@@ -66,6 +66,91 @@ jobs:
             test "$code" = "200" || { echo "echec sur $chemin"; exit 1; }
           done
 
+      - name: Verifier le tri de la liste
+        run: |
+          # Le tri est un parametre d'URL : s'il cesse de repondre, la page
+          # des comptages perd sa seule facon de se trier, et rien d'autre ne
+          # le remarque. Un parametre erronee doit rester lisible aussi.
+          for requete in "?tri=passengers&sens=asc" "?tri=date&sens=desc" "?tri=bidon&sens=zzz"; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000/comptages$requete")
+            echo "/comptages$requete -> $code"
+            test "$code" = "200" || { echo "echec sur le tri $requete"; exit 1; }
+          done
+
+      - name: Verifier les filtres et la vue par paire
+        run: |
+          # Les filtres sont des parametres d'URL comme le tri, et un
+          # filtre casse la page silencieusement : il rend une liste
+          # vide, ou la liste entiere. Les deux répondent 200, donc seul
+          # un contenu verifie les attrape. Un parametre erronee doit
+          # rester lisible, et doit etre NOMMÉ plutot qu'ignore en
+          # silence — c'est ce que le test de contenu verifie ici.
+          verifier() {
+            requete="$1"; attendu="$2"
+            corps=$(curl -sS "http://127.0.0.1:8000/comptages$requete")
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000/comptages$requete")
+            echo "/comptages$requete -> $code"
+            test "$code" = "200" || { echo "echec HTTP sur $requete"; exit 1; }
+            echo "$corps" | grep -q "$attendu" || {
+              echo "echec : '$attendu' absent pour $requete"; exit 1; }
+          }
+          # La vue par paire regroupe et compte les corridors. Le
+          # conteneur de test demarre vide, donc il n'y a ni corridors ni
+          # decompte a verifier : ce qui compte ici est que la vue
+          # reponde et se distingue de la liste. « 0 paire » ne
+          # s'affiche pas — une liste vide ne s'annonce pas — et c'est
+          # volontaire, donc on ne l'attend pas.
+          verifier "?vue=paire" "Voir la liste des relevés"
+          # Le tri des paires ne doit ni casser ni perdre l'etat. Sur une
+          # base vide, la vue ne dit rien de plus que son lien de retour —
+          # c'est ce lien qui est verifiable : il doit ramener a la liste
+          # en gardant le tri demande.
+          verifier "?vue=paire&tri=moyenne&sens=desc" \
+                   "href='/comptages?tri=moyenne&sens=desc'>Voir la liste"
+          # Un filtre mode applique doit se lire dans la page.
+          verifier "?mode=unique" "mode unique"
+          # Un parametre illisible doit etre ecarte ET dit. Le texte
+          # contient une apostrophe, deja echappee en amont par `lire`,
+          # donc elle reste litterale : on cherche un fragment sans elle.
+          verifier "?depuis=bidon" "pas une date (AAAA-MM-JJ), filtre ignor"
+          # Une vue inconnue reste lisible et retombe sur la liste.
+          verifier "?vue=inconnu" "Voir par paire de gares"
+          # La pagination n'est PAS verifiee ici : le conteneur de test
+          # demarre vide, donc il n'y a rien a paginer et le seuil ne
+          # serait jamais franchi. Elle est couverte par la suite pytest,
+          # qui construit 205 relevés.
+          # Filtre et tri combines : les deux doivent survivre ensemble.
+          verifier "?mode=unique&tri=passengers&sens=asc" "mode=unique"
+
+      - name: Verifier que la carte reste une page lisible
+        run: |
+          # /carte a gagne une synchronisation liste/carte et une courbe de
+          # charge. Sur un conteneur vide il n'y a ni trace ni courbe : ce que
+          # la page doit dire, c'est qu'il n'y a rien à placer, et proposer de
+          # compter. C'est le seul cas que curl peut attraper — le reste est
+          # couvert par les tests Chromium.
+          verifier_carte() {
+            corps=$(curl -sS http://127.0.0.1:8000/carte)
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/carte)
+            echo "/carte -> $code"
+            test "$code" = "200" || { echo "echec HTTP sur /carte"; exit 1; }
+            echo "$corps" | grep -q "Aucun comptage" || { echo "carte vide non annoncee"; exit 1; }
+            # Un bouton qui n'ouvre rien ne doit pas exister, et un conteneur
+            # vide non annonce : la page le doit dans les deux sens.
+            echo "$corps" | grep -q "Compter un train" || { echo "pas d'invitation a compter"; exit 1; }
+            # Pas de `grep && { exit 1; }` : sous `set -e`, un grep qui ne
+            # trouve rien — ce qu'on veut ici — ferait echouer l'etape.
+            # On cherche la balise ouvrante du bouton, pas `aria-controls` :
+            # ce mot est aussi dans le script JavaScript, donc sa présence ne
+            # prouverait rien sur la page.
+            if echo "$corps" | grep -q "<button class=.ligne."; then
+              echo "bouton sans courbe sur une carte vide"
+              exit 1
+            fi
+            return 0
+          }
+          verifier_carte
+
       - name: Verifier que la publication est inactive sans identifiants
         run: |
           # Le conteneur de test n'a pas de cle data.gouv. Il doit le dire
