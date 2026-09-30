@@ -549,16 +549,20 @@ Deux choses que les vagues 1 et 2 ont apprises et qui ne se devinent pas :
 
 Une limite, dite : le filtre ligne a bien sa clause `trip_id IN (...)`, mais
 sans `timetable.db` dans la suite pytest elle n'est pas vérifiée bout en bout. La
-page `/ligne`, qui utilise la même lecture, l'est. C'est le prochain chantier de
-couverture.
+page `/ligne`, qui utilise la même lecture, l'est. C'est pris en compte plus
+bas, en première des suites.
 
 ### Ensuite, dans cet ordre
 
-1. Géométries de lignes, si les segments droits ne suffisent plus. Jointure OSM, ou GTFS régionaux qui ont un `shapes.txt`.
-2. Autres GTFS : cars d'AOM, TER non SNCF. Leur temps réel viendra avec, sur le même poller, seulement s'il existe un flux.
-3. Méthode d'estimation annuelle, écrite avant d'être codée. Jours types, biais de qui compte, seuil minimal de comptages, voyageurs.kilomètres. Le chiffre affiche toujours son dénominateur. Une suppression conservée ne devient pas, à elle seule, un report chiffré.
-4. Comparaison de lignes et agrégats géographiques.
-5. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton.
+1. Couverture bout en bout du filtre `ligne`, qui a bien sa clause
+   `trip_id IN (...)` mais n'est pas vérifié avec un `timetable.db` dans la
+   suite. Une PR pour elle seule : c'est un manque de test, pas une
+   fonctionnalité.
+2. Géométries de lignes, si les segments droits ne suffisent plus. Jointure OSM, ou GTFS régionaux qui ont un `shapes.txt`.
+3. Autres GTFS : cars d'AOM, TER non SNCF. Leur temps réel viendra avec, sur le même poller, seulement s'il existe un flux.
+4. Méthode d'estimation annuelle, écrite avant d'être codée. Jours types, biais de qui compte, seuil minimal de comptages, voyageurs.kilomètres. Le chiffre affiche toujours son dénominateur. Une suppression conservée ne devient pas, à elle seule, un report chiffré.
+5. Comparaison de lignes et agrégats géographiques.
+6. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton.
 
 ## 8. Décisions
 
