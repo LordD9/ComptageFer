@@ -38,3 +38,27 @@ def test_exact_number_stays_reachable_and_labelled(tmp_path: Path) -> None:
     assert found_input, "le champ passengers doit exister"
     assert 'class="hidden"' not in found_input.group(0)
     assert 'for="passengers"' in page
+
+
+def test_the_feedback_bubble_cannot_swallow_a_press(tmp_path: Path) -> None:
+    # La bulle naît sous le doigt, en plein sur le bouton voisin. Si elle capte
+    # le pointeur, le second appui ne part plus et le compte s'arrête — le
+    # symptôme ressemble exactement à celui que la bulle corrige.
+    page = _page(tmp_path)
+    style = re.search(r"\.bulle \{(.*?)\}", page, re.S)
+    assert style, "le style de la bulle doit exister"
+    assert "pointer-events: none" in style.group(1)
+
+
+def test_the_bubble_is_removed_even_without_an_animation(tmp_path: Path) -> None:
+    # `animationend` ne se déclenche pas si l'animation n'a jamais démarré : onglet
+    # en arrière-plan, motion réduit. Sans filet en temps, la bulle reste à
+    # l'écran pour tout le reste du comptage.
+    page = _page(tmp_path)
+    assert re.search(r"animationend", page), "il faut retirer la bulle sur animationend"
+    assert re.search(r"setTimeout\(\(\) => marqueur\.remove\(\)", page), (
+        "il faut un filet en temps, l'animation peut ne pas démarrer"
+    )
+    assert "prefers-reduced-motion" in page, (
+        "couper l'animation ne doit pas couper le retour visuel"
+    )

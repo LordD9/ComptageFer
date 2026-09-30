@@ -178,6 +178,31 @@ def _fill_count(page, value: int) -> None:
     field.type(str(value), delay=5)
 
 
+def _bulle(page) -> str | None:
+    """Ce que la dernière bulle affiche, ou None si l'appui n'a rien montré.
+
+    On lit la dernière bulle encore présente : les précédentes sont parties
+    par leur animation, et c'est le dernier geste qui intéresse l'usager.
+    """
+    bulles = page.locator(".bulle")
+    if bulles.count() == 0:
+        return None
+    return bulles.last.text_content()
+
+
+def _geler(page) -> None:
+    """Allonge la vie des bulles pour une assertion.
+
+    La bulle vit 900 ms. Sur une machine lente — un runner CI, un téléphone
+    chargé — un `click` suivi d'une lecture peut dépasser ce délai, et le test
+    échouerait sur une animation que rien ne contrôle. On passe la durée à une
+    minute : la lecture est alors déterministe, et `test_une_bulle_quitte_finalement_l_ecran`
+    vérifie séparément que la bulle s'en va bien, sans cette aide.
+    """
+    page.evaluate("() => document.head.appendChild(Object.assign(document.createElement('style'),"
+                  " {textContent: '.bulle { animation-duration: 60000ms !important; }'}))")
+
+
 def _reach_form(page, site: str) -> None:
     page.goto(site)
     page.fill("#origin-q", "Lyon")
@@ -302,6 +327,145 @@ def test_counter_is_reset_for_each_train(page, site):
     page.click("#trains button:has-text('TER')")
     page.click("#mode-unique")
     assert page.text_content("#count-display") == "0", "le compte de la squeezation précédente reste"
+
+
+# --- le retour visuel de l'appui --------------------------------------------
+
+
+def test_every_press_shows_the_delta_it_actually_applied(page, site):
+    """Un appui qui ne se voit pas est un appui que l'usager recommence.
+
+    Les retours utilisateur disaient « je ne sais pas si ça a pris » : le total
+    change, mais entre deux appuis rapprochés — le geste réel — rien ne montre
+    que le second est passé. Une bulle monte du bouton pressé avec le delta
+    exact, ce qui répond au cas du doigt qui glisse et ne change rien.
+    """
+    _reach_form(page, site)
+    _geler(page)
+    page.click("#plus10")
+    assert _bulle(page) == "+10"
+    assert page.text_content("#count-display") == "10"
+    page.click("#plus5")
+    assert _bulle(page) == "+5"
+    assert page.text_content("#count-display") == "15"
+    page.click("#plus1")
+    assert _bulle(page) == "+1"
+    assert page.text_content("#count-display") == "16"
+    page.click("#minus")
+    assert _bulle(page) == "−1", "le retour doit se distinguer de l'aller en couleur"
+    assert page.text_content("#count-display") == "15"
+    assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
+
+
+def test_a_press_that_changes_nothing_claims_nothing(page, site):
+    """Un −1 sur un compte à zéro ne montre pas « −1 ».
+
+    Le compteur ne descend jamais sous zéro. Si la bulle annonçait quand même
+    −1, l'usager verrait un geste qu'il n'a pas eu, et chercherait pourquoi le
+    total ne baisse pas.
+    """
+    _reach_form(page, site)
+    _geler(page)
+    page.click("#minus")
+    assert page.text_content("#count-display") == "0"
+    assert _bulle(page) is None, "un appui sans effet ne doit rien annoncer"
+
+
+def test_two_quick_presses_leave_two_bulles(page, site):
+    """Le cas d'usage est le double appui rapproché : c'est là que ça compte.
+
+    Une bulle unique réutilisée masquerait la moitié des gestes. Le compteur est
+    borné pour que des appuis très répétés n'empilent pas des centaines de
+    nœuds dans le DOM pendant un comptage.
+    """
+    _reach_form(page, site)
+    _geler(page)
+    page.click("#plus10")
+    page.click("#plus10")
+    assert page.locator(".bulle").count() == 2
+    assert page.text_content("#count-display") == "20"
+    for _ in range(30):
+        page.click("#plus10")
+    assert page.text_content("#count-display") == "320"
+    assert page.locator(".bulle").count() <= 8, "les bulles s'empilent sans borne"
+    assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
+
+
+def test_une_bulle_quitte_finalement_l_ecran(page, site):
+    """Une bulle qui ne s'en va pas reste pour le comptage suivant.
+
+    Sans filet sur `animationend`, une animation jamais démarrée — onglet en
+    arrière-plan, motion réduit — laisserait le marqueur à l'écran pour toujours.
+    """
+    _reach_form(page, site)
+    page.click("#plus10")
+    assert page.locator(".bulle").count() == 1
+    page.wait_for_selector(".bulle", state="detached")
+    assert page.locator(".bulle").count() == 0
+
+
+def test_the_bubble_is_not_read_out_twice(page, site):
+    """#count-display porte déjà aria-live et annonce le total.
+
+    Une bulle lisible ajouterait « +10 » puis « 10 » à chaque appui : le même
+    geste annoncé deux fois, une annonce par appui au lieu d'une par résultat.
+    """
+    _reach_form(page, site)
+    _geler(page)
+    assert page.locator("#count-display").get_attribute("aria-live") == "polite"
+    page.click("#plus10")
+    assert page.locator(".bulle").get_attribute("aria-hidden") == "true"
+
+
+def test_the_bubble_does_not_swallow_the_next_press(page, site):
+    """`pointer-events: none` n'est pas décoratif.
+
+    La bulle naît sous le doigt qui vient de presser, en plein sur le bouton
+    voisin. Sans ça, elle intercepte le second appui et le compte s'arrête : le
+    symptôme ressemble exactement à celui qu'on corrige.
+    """
+    _reach_form(page, site)
+    _geler(page)
+    page.click("#plus5")
+    assert page.locator(".bulle").count() == 1
+    page.click("#plus5")
+    assert page.text_content("#count-display") == "10", "la bulle a mangé le second appui"
+
+
+def test_the_bulb_is_positioned_over_the_button_that_was_pressed(page, site):
+    """Une bulle qui sort toujours du même endroit ne relie pas le geste à l'effet.
+
+    Le repère doit être le bouton pressé : c'est le seul endroit que l'usager
+    regarde quand il ne sait pas si son doigt a porté.
+    """
+    _reach_form(page, site)
+    _geler(page)
+    page.click("#plus10")
+    centre_bulle = page.locator(".bulle").bounding_box()
+    bouton = page.locator("#plus10").bounding_box()
+    assert abs((centre_bulle["x"] + centre_bulle["width"] / 2) - (bouton["x"] + bouton["width"] / 2)) < 4
+    assert centre_bulle["y"] + centre_bulle["height"] / 2 <= bouton["y"] + bouton["height"] / 2
+
+    page.click("#plus1")
+    assert _bulle(page) == "+1"
+    autre = page.locator(".bulle").last.bounding_box()
+    assert abs((autre["x"] + autre["width"] / 2) - (bouton["x"] + bouton["width"] / 2)) > 4
+
+
+def test_reduced_motion_keeps_the_feedback(page, site):
+    """Couper l'animation ne doit pas couper le retour.
+
+    `prefers-reduced-motion` dit à l'interface de moins bouger, pas de dire
+    moins. Sans ce filet, un usager qui a cette préférence se retrouve avec le
+    problème d'origine.
+    """
+    _reach_form(page, site)
+    _geler(page)
+    page.emulate_media(reduced_motion="reduce")
+    page.click("#plus10")
+    assert _bulle(page) == "+10", "le retour visuel disparaît avec l'animation"
+    assert page.text_content("#count-display") == "10"
+    assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
 
 
 # --- l'envoi réel -----------------------------------------------------------
