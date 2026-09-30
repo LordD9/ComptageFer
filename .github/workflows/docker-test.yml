@@ -140,7 +140,10 @@ jobs:
             echo "$corps" | grep -q "Compter un train" || { echo "pas d'invitation a compter"; exit 1; }
             # Pas de `grep && { exit 1; }` : sous `set -e`, un grep qui ne
             # trouve rien — ce qu'on veut ici — ferait echouer l'etape.
-            if echo "$corps" | grep -q "aria-controls"; then
+            # On cherche la balise ouvrante du bouton, pas `aria-controls` :
+            # ce mot est aussi dans le script JavaScript, donc sa présence ne
+            # prouverait rien sur la page.
+            if echo "$corps" | grep -q "<button class=.ligne."; then
               echo "bouton sans courbe sur une carte vide"
               exit 1
             fi
