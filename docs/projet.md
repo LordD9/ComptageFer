@@ -484,7 +484,7 @@ origine-destination ; `?page=` découpe. La pagination a été **mesurée** : à
 
 **Vague 3 — la liste et la carte se suivent, et la charge se dessine.**
 Synchronisation liste/carte et profil de charge en SVG, sans changement
-d'interface. **Livrée**.
+d'interface. **Livrée** (`b2046dd`).
 
 Trois décisions, prises pendant la construction et non avant :
 
