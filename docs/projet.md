@@ -2,7 +2,7 @@
 
 Outil collaboratif pour compter la fréquentation des TER en France, puis rendre ces comptages publics, lisibles et réutilisables.
 
-**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 planifiée, non commencée — le plan est écrit, le code n'est pas. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
+**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 commencée — le schéma et le rattachement d'un relevé à un compte sont écrits, la connexion est à faire sur le modèle du secret long décrit plus bas. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
 
 **Source du besoin :** cahier des charges « ComptagesFer » (présentation de trois diapositives).
 
@@ -34,7 +34,7 @@ Le cas d'usage est un téléphone, dans un train, souvent avec un réseau médio
 4. Je passe au formulaire. Le retard, l'heure et la suppression ne se tapent pas.
    - **Comptage unique.** Une interstation (les deux arrêts qui l'encadrent), un effectif, et trois indicateurs approximatifs : part de gens debout, part de places assises restantes, écart de charge entre la partie la plus chargée et la moins chargée.
    - **Serpent de charge.** Je monte, je compte une fois les portes fermées, puis à chaque arrêt j'indique montées et descentes jusqu'à ma descente. Les indicateurs du mode unique sont optionnels sur chaque interstation. Compter sa propre descente est optionnel.
-5. Pseudo, si je veux. Facultatif. Un compte, si je veux aussi : facultatif lui aussi, jamais demandé, et il ne donne aucun droit sur les données des autres. La connexion se fait par un lien reçu par email, donc elle marche sans mot de passe à retenir.
+5. Pseudo, si je veux. Facultatif. Un compte, si je veux aussi : facultatif lui aussi, jamais demandé, et il ne donne aucun droit sur les données des autres. La connexion se fait par un secret long que l'outil affiche une fois — rien à retenir, et aucune adresse email n'est demandée.
 6. En quittant, j'indique un pourcentage de fiabilité. Commentaire et modèle de véhicule seulement si j'ai quelque chose à ajouter.
 
 À la sélection, l'outil fige l'état du train choisi, du précédent et du suivant sur la même origine-destination. C'est cette photo qui voyage avec le comptage. On ne relit pas le flux plus tard pour reconstituer le contexte : il ne le contient plus.
@@ -54,7 +54,7 @@ L'export des données brutes, lui, arrive tôt. C'est le retour dû aux gens qui
 - **Simple à poser.** Un conteneur, une base fichier, pas de base managée. La commande est la même partout où Docker tourne.
 - **Le téléphone dans le train est le client principal.** Grandes zones tactiles, peu d'étapes. On saisit le compte, pas le contexte que le flux connaît déjà.
 - **Brut avant estimé.** Pas de chiffre annuel tant que la règle d'extrapolation n'est pas écrite et affichée à côté du chiffre. Une suppression du train précédent est un fait conservé, pas un effectif qu'on réécrit.
-- **Anonyme par défaut, et c'est encore vrai.** On peut contribuer sans compte, sans email et sans pseudo. Un compte existe depuis la phase 9 et n'est jamais demandé : il donne un historique et un classement, et rien qui touche aux données des autres. Un pseudo facultatif peut signer un comptage. Il n'identifie personne, et il n'ouvre aucun droit.
+- **Anonyme par défaut, et c'est encore vrai.** On peut contribuer sans compte, sans pseudo, et sans rien laisser qui permette de retrouver qui a compté. Un compte existe depuis la phase 9 et n'est jamais demandé : il donne un historique et un classement, et rien qui touche aux données des autres. Aucune adresse email n'est stockée, aucune. Un pseudo facultatif peut signer un comptage. Il n'identifie personne, et il n'ouvre aucun droit.
 - **L'offre vient du GTFS, le contexte du temps réel, les comptages des gens.** On ne mélange pas les trois. Une circulation absente est un signalement, pas une ligne créée à la main.
 - **Pas de trace GPS.** La position peut proposer l'arrêt le plus proche. Elle n'est pas enregistrée.
 - **Les comptages partagés sont en Licence Ouverte 2.0.** Le code reste en GPL-3.0. Les deux licences ne se mélangent pas.
@@ -242,7 +242,8 @@ On ne stocke pas de position GPS.
 
 ## 6. Hors périmètre pour l'instant
 
-- Mots de passe, et tout ce qui en dépend : OAuth, fournisseurs externes d'identité. Le compte de la phase 9 passe par un lien envoyé par email, donc il n'y a ni mot de passe à choisir ni à oublier. Il n'y a pas non plus de fournisseur d'identité : le dépôt est personnel, et un compte qui se connecte chez quelqu'un d'autre n'est plus un compte du projet.
+- Mots de passe à retenir, et tout ce qui en dépend : OAuth, fournisseurs externes d'identité. Le compte de la phase 9 affiche un **secret long** une seule fois, à conserver soi-même. Il n'y a ni mot de passe, ni adresse email, ni fournisseur d'identité : le dépôt est personnel, et un compte qui se connecte chez quelqu'un d'autre n'est plus un compte du projet.
+- Passkey WebAuthn pour la connexion. Noté ici parce que c'est **la bonne réponse** à ce que la phase 9 règle de travers — le serveur ne stockerait qu'une clé publique, et la clé privée ne quitterait jamais le téléphone — et qu'elle est écartée pour une raison concrète, écrite plus bas : c'est du JavaScript, donc du travail que la suite de tests n'exerce pas encore sur cette page.
 - Messagerie : aucune notification, aucun récapitulatif, aucune relance. Le compte n'écrit pas à personne.
 - Estimation annuelle de voyageurs et de voyageurs.kilomètres.
 - Comparaison de lignes, agrégats région ou agglomération.
@@ -559,18 +560,26 @@ La phase 8 a rendu les données lisibles. Celle-ci s'adresse à celui qui les
 produit, pour qu'il en produise davantage et qu'il sache ce que son comptage a
 apporté.
 
-Trois règles gouvernent toute la phase, et chacune a déjà coûté une décision
+Quatre règles gouvernent toute la phase, et chacune a déjà coûté une décision
 ailleurs dans ce document :
 
-- **L'application marche sans l'option compte.** C'est la première règle, avant
-  les autres, parce qu'elle décide si la phase est réversible. Sans clé d'envoi
-  dans le `.env`, l'application démarre, la saisie marche, le classement affiche
-  sa liste vide, et `/compte` dit en une phrase que la connexion n'est pas
-  configurée sur cette installation. Aucune page n'est retirée, aucune erreur,
-  aucun 500 : c'est le même traitement que `DATAGOUV_API_KEY` absent, qui
-  laisse l'application démarrer et dit son état sur `/api/publish`. Une
-  installation contributeuse, la mienne sur le Pi, une démonstration et une
-  contribution à un fork restent donc possibles sans rien configurer
+- **Aucune adresse email n'est stockée, et c'est une règle de conception, pas
+  un oubli.** Une adresse est un identifiant *direct* : elle relie toute
+  l'activité future d'une personne à une identité réelle, et elle sert à autre
+  chose qu'à ce projet — c'est une clé d'envoi, un identifiant de connection, un
+  moyen de la croiser avec n'importe quelle fuite. Le §3 dit « pas de trace GPS »
+  et « anonyme par défaut » ; stocker un email les deux rendrait faux. Un secret
+  long n'identifie personne : il ne peut servir qu'ici, donc une base qui fuite
+  donne des pseudos et des hachages — exactement ce que le projet assume déjà de
+  publier.
+- **L'application marche sans l'option compte.** C'est la première règle, parce
+  qu'elle décide si la phase est réversible. Sans variable d'envoi dans le `.env`,
+  l'application démarre, la saisie marche, le classement affiche sa liste vide, et
+  `/compte` dit en une phrase que la connexion n'est pas configurée sur cette
+  installation. Aucune page n'est retirée, aucune erreur, aucun 500 : c'est le
+  même traitement que `DATAGOUV_API_KEY` absent. Une installation contributrice,
+  la mienne sur le Pi, une démonstration et une contribution à un fork restent
+  possibles sans rien configurer
 - **Le compte reste facultatif à 100 %.** Aucun écran ne le demande, aucune
   saisie ne le réclame, aucun formulaire ne le bloque. `POST /api/sessions`
   accepte une requête sans cookie et sans jeton, comme aujourd'hui, et c'est le
@@ -589,11 +598,62 @@ ailleurs dans ce document :
   tous, ce que ni le pseudo ni la Licence Ouverte ne demandent. Le compte vit
   dans l'application, le pseudo continue de signer le relevé dans le CSV.
 
-#### Vague 1 — HTTPS, parce que le lien magique ne peut pas attendre
+#### La connexion : un secret affiché une fois
 
-Un lien de connexion est un mot de passe qui voyage en clair dans une boîte
-mail. Le servir en HTTP sur le VPS OVH le rend lisible à tout relais du chemin.
-Ce n'est pas une amélioration du déploiement, c'est une condition de la phase.
+Le plan prévoyait un lien de connexion envoyé par email. Cette idée est retirée,
+et sa raison est celle de la première règle : elle imposait de stocker une
+adresse email, et une adresse email est la donnée la plus sensible qu'un compte
+puisse détenir. Un lien de connexion est de surcroît un mot de passe qui voyage
+en clair dans une boîte mail — Gmail, Outlook, le proxy de la boîte
+d'entreprise — donc hors de tout contrôle du projet.
+
+Le remplacement tient en une phrase : **`/compte` affiche un secret long une
+seule fois, et la personne le garde.**
+
+- 24 caractères tirés au hasard, groupes de 4 pour être recopiés sans faute
+- le secret est montré **une fois**, à la création, dans une page qui le dit
+- stocké en SHA-256, comme le jeton de session. Jamais en clair, jamais dans un
+  journal
+- le cookie `comptagefer_compte` tient la session au quotidien : le secret est
+  tapé rarement, et un secret qu'on tape 47 fois par jour finit noté sur un
+  papel
+- perdu, le compte est perdu. Pas de récupération. C'est la contrepartie assumée :
+  il n'y a pas d'adresse email à qui écrire
+
+Ce que ça change : plus de service d'envoi, plus de quota, plus de coût, plus
+de dépendance externe, et une application qui fonctionne entièrement hors ligne
+pour cette partie. Ce que ça coûte : la personne doit conserver un secret. Pour
+un service dont le compte ne sert qu'à retrouver ses relevés et à figurer au
+classement, c'est le bon rapport effort/bénéfice — et surtout, il n'y a rien à
+voler qui identifie quelqu'un.
+
+**Ce qui sera fait plus tard, et pourquoi c'est la bonne réponse.** Une
+**passkey WebAuthn** : le serveur ne stocke qu'une clé publique, la clé privée ne
+quitte jamais l'appareil, et la synchronisation iCloud comme Google Password
+Manager est chiffrée de bout en bout. Aucun secret stocké, aucune adresse email,
+et la résistance au hameçonnage vient du navigateur lui-même. C'est exactement la
+propriété que le secret long n'a pas.
+
+Elle n'est pas dans la phase 9 pour une raison mesurable, pas par principe : une
+passkey se crée et se vérifie en JavaScript, et la page `/compte` est aujourd'hui
+du HTML sans script. Le projet a une règle — « pas de JavaScript dans une page
+dont le JavaScript n'est jamais exécuté par la suite de tests » — donc l'ajouter
+exigerait d'abord un test Chromium qui traverse la création d'une passkey, avec
+une authentificateur simulé. C'est faisable, et c'est un travail à part. La note
+est dans le §6 pour qu'on la retrouve quand le reste de la phase sera livré.
+
+#### Vague 1 — HTTPS
+
+Le secret de connexion ne voyage plus par email, donc HTTPS n'est plus la
+condition d'une fonctionnalité : **c'est celle du cookie**. Un cookie `secure`
+posé sur une installation en `http://10.x` n'est jamais renvoyé, donc la session
+serait ouverte puis perdue à la navigation suivante, sans message. Et le
+`comptagefer_compte` serait interceptable en clair sur un réseau partagé — un
+train, un WiFi de gare.
+
+Le site est public et sert des données ouvertes, donc HTTPS est de toute façon
+la bonne posture. Mais il est écrit ici comme une condition de la phase, parce
+que le symptôme d'une installation en HTTP est silencieux.
 
 Le domaine est chez OVH, donc le certificat vient de là aussi :
 
@@ -605,8 +665,8 @@ Le domaine est chez OVH, donc le certificat vient de là aussi :
   contraire
 - `COMPTAGEFER_HTTPS=1` dans le `.env` du VPS. Une variable, pas une
   détection : la détection par en-tête `X-Forwarded-Proto` fait confiance au
-  premier qui parle, et un `secure` sur cookie activé à tort casse la session
-  chez un installation locale en `http://10.x`
+  premier qui parle, et un `secure` activé à tort casse la session chez une
+  installation locale en `http://10.x`
 
 Ce que la vague ne change pas : une installation sans cette variable continue
 de fonctionner en HTTP, avec un cookie sans `secure`. C'est l'état d'aujourd'hui.
@@ -619,15 +679,25 @@ historique n'a rien à montrer.
 
 **Tables.** Deux nouvelles, dans `app.db` — pas un fichier de plus :
 
-- `compte(id, pseudo, email, jeton, expire, cree_le, dernier_voir)` — le
-  `jeton` est le **SHA-256** du lien, jamais le lien. Un jeton à usage unique,
-  expiré au bout de 15 minutes
+- `compte(id, pseudo, secret, cree_le, dernier_voir)` — `id` est une chaîne
+  tirée au hasard et **non** un `AUTOINCREMENT`. Un compteur se devine, et un
+  identifiant devinable est un identifiant qui fuite dès qu'il sort par une URL.
+  `secret` est le **SHA-256** du secret affiché, jamais le secret
 - `session(jeton, compte_id, ouverte, expire)` — en base, et non dans un
   dictionnaire en mémoire comme `admin_sessions`. Un dictionnaire perd les
   sessions au redémarrage du conteneur, donc chaque déploiement déconnecte
   tout le monde ; et il grossit sans borne, ce que l'audit a relevé sur
   `app.py`
 - `saisie.compte_id`, une colonne nullable
+
+**Il n'y a pas de colonne `email`.** Ce n'est pas une omission à rattraper plus
+tard : c'est la première règle de la phase. Une colonne vide prévue pour être
+remplie plus tard est une colonne qui se remplira.
+
+Le secret est comparé en `hmac.compare_digest`, pas avec `==`. Comparer un
+hachage de secret avec `==` se voit sur le temps de réponse, et même si ce
+n'est pas exploitable ici — le secret est long et aléatoire — c'est une
+habitude qui se paie ailleurs, dans du code qui aura moins de contexte.
 
 La session tient dans un cookie `comptagefer_compte`, `httponly` et
 `samesite=lax`, avec `secure` seulement quand `COMPTAGEFER_HTTPS` est posée —
@@ -678,42 +748,27 @@ Ce comportement est mesuré par un test qui vide la file à deux moments
 différents. Il est dans la liste parce qu'il est contre-intuitif : il dépend
 de l'heure d'envoi, pas de l'heure du comptage.
 
-**L'envoi, et son plafond.** `/compte/connexion` envoie un email à la demande.
+**Le coût de la création, et son seul risque qui reste.** Créer un compte
+n'envoie rien et ne coûte rien : un secret est tiré au hasard, affiché une fois,
+et rien ne quitte le serveur. Il n'y a donc plus de quota à surveiller, ni de
+service externe à tomber, ni de dépendance à déployer.
 
-Le service d'envoi est gratuit et externe. Zimbra est écarté : l'offre Starter
-d'OVH coûte 0,30 € HT par mois et par compte, et un hobby n'a pas à payer pour
-un formulaire de connexion. Restent les paliers gratuits des fournisseurs
-transactionnels, dont les quotas sont aujourd'hui mesurés :
+Ce qui reste à surveiller, et c'est un risque nouveau qu'il ne faut pas ignorer :
+la création est une **écriture non authentifiée** dans la base. Une page qui
+crée un compte à la demande est un point d'entrée inépuisé — un script peut en
+faire dix mille en une nuit, ils seront tous vides, et tous apparaîtront au
+classement comme des comptes sans pseudo. La parade est un plafond de créations
+par heure, en mémoire comme le reste, avec deux conséquences à écrire :
 
-| service | palier gratuit | ce que ça permet |
-| --- | --- | --- |
-| Resend | 100 envois par jour, 3 000 par mois | très largement assez, avec un plafond bas |
-| Brevo | 300 envois par jour | plus large, mais l'inscription demande une carte bancaire |
+- un plafond trop bas gêne la vraie usage, donc il est mesuré sur la base, comme
+  les coefficients du score
+- un plafond qui coupe `/compte` doit couper **la création seulement**. Quelqu'un
+  qui revient avec son secret continue de se connecter : c'est une écriture
+  authentifiée, elle ne coûte rien et elle n'est pas une cible
 
-Le choix se fait sur la période gratuite réelle, pas sur le plafond affiché :
-un jour de pic à 200 connexions ferait tomber le service entier, et tous les
-comptages en cours avec. Le plan ne fixe donc **que la règle** — ne jamais
-promettre plus que le quota le permet — et le fournisseur se choisit au moment
-de le coder, en notant le quota retenu dans ce document.
-
-Trois plafonds, et le troisième est celui qui compte :
-
-- un envoi par adresse toutes les minutes
-- cinq par heure et par adresse IP
-- un compteur global par jour, **sous le quota du fournisseur avec une marge**
-  large, et qui affiche son état dans `/compte`
-
-Le troisième est le seul qui tienne la promesse. Les deux premiers protègent
-d'une adresse et d'une IP ; seul le global protège le quota, donc le service,
-donc tout le monde d'un coup. Le compteur vit en mémoire, comme les envois ne
-demandent aucune écriture durable. Un compteur en base s'écrirait à chaque
-tentative, y compris de la part de quelqu'un dont le but est d'en écrire
-beaucoup.
-
-Quand le plafond global est atteint, `/compte` le dit — le compte est déjà
-possible sans email, la connexion est simplement fermée pour aujourd'hui. Le
-message ne prétend pas que l'email est parti : un lien annoncé et jamais reçu
-est pire qu'un refus annoncé.
+Un compte vide ne vaut rien et ne pollue rien : il n'apparaît au classement que
+s'il a au moins un relevé rattaché. C'est pourquoi le classement ne se lit pas
+en SQL seul — le filtre est là, et le test le vérifie.
 
 **La suppression du compte.** Elle n'est pas dans l'interface. Une
 suppression de compte détache ses relevés — `compte_id` à `NULL`, le pseudo
@@ -750,11 +805,17 @@ choix de confort.
   par la même personne dans la même journée rapporte une fois
 
 **Ce que le score ne peut pas faire.** Un seul compte par personne n'est pas
-vérifiable : rien dans un lien magique ne distingue deux personnes qui partagent
-une boîte. Le frein n'est donc pas l'identité, c'est la formule — un spammeur
-qui crée dix comptes pour dix points perd plus de temps qu'il n'en gagne, et il
-pollue le classement des autres, ce que l'admin voit dans `/admin`. C'est une
-limite assumée, écrite ici et pas découverte dans six mois.
+vérifiable, et le secret long n'y change rien : il ne prouve rien sur l'identité
+de qui le détient. Le frein n'est donc pas l'identité, c'est la formule — un
+spammeur qui crée dix comptes pour dix points perd plus de temps qu'il n'en
+gagne, et il pollue le classement des autres, ce que l'admin voit dans `/admin`.
+C'est une limite assumée, écrite ici et pas découverte dans six mois.
+
+Le secret long supprime en revanche le risque d'un lien intercepté, qu'il y
+avait avec l'email : il n'est jamais transmis, donc il n'est jamais volé en
+route. Ce qui reste est un secret que la personne écrit quelque part — une note,
+un gestionnaire de mots de passe. C'est un risque bien plus faible, et il n'est
+pas du ressort du projet.
 
 **La calibration se mesure.** Les coefficients ne sont pas choisis dans ce
 document. Une fonction de score unique, paramétrée, produit une distribution
@@ -821,10 +882,9 @@ Chaque vague nomme ses fichiers avant d'écrire la première ligne, mais la phas
 se lit d'un bloc d'abord.
 
 - `comptagefer/app.py` — `compte` et `session` créées au démarrage, routes `/compte`, `/compte/connexion`, `/compte/deconnecter`, `/classement`, et la colonne `compte_id` sur `saisie`
-- `comptagefer/compte.py` — le nouveau module : jeton, session, envoi du lien, score. Un module et non quinze fonctions dans `app.py`, qui est déjà à 2 279 lignes
+- `comptagefer/compte.py` — le nouveau module : le secret, sa comparaison, la session, le cookie. Un module et non quinze fonctions dans `app.py`, qui est déjà à 2 279 lignes
 - `comptagefer/affichage.py` — `/compte` et `/classement` entrent dans `NAVIGATION`, donc dans le chrome et le test de tutoiement
-- `compose.yaml` et `.env.example` — quatre variables, toutes facultatives : `COMPTAGEFER_HTTPS`, `COMPTAGEFER_EMAIL`, `COMPTAGEFER_EMAIL_PASSWORD`, `COMPTAGEFER_EMAIL_FOURNISSEUR`. Aucune n'a de valeur par défaut dans le compose, et le README les décrit une par une
-- `README.md` — chaque variable du compose y est décrite, sinon `test_compose_doc.py` échoue, et il a raison d'échouer
+- `compose.yaml` et `.env.example` — **une seule** variable, `COMPTAGEFER_HTTPS`, et elle est facultative. Les trois variables d'envoi du plan précédent ont disparu avec l'email : il n'y a plus rien à configurer pour que les comptes marchent. Le README décrit la variable une par une, sinon `test_compose_doc.py` échoue, et il a raison d'échouer
 
 Trois tests s'appliquent sans qu'on les pense, et le plan les nomme pour ne pas
 les découvrir en CI :
@@ -832,7 +892,7 @@ les découvrir en CI :
 - `test_compose_doc.py` exige que toute variable du compose soit dans le README
   **et** dans `.env.example`
 - `test_form.py` exige qu'aucune page ne parle à la 2e personne. « Vous avez
-  envoyé un email », pas « Tu as reçu un lien »
+  « Vous avez copié votre secret », pas « Tu as gardé ton code »
 - la liste de pages du workflow `docker-test.yml` doit gagner `/compte` et
   `/classement`, sinon la page peut être morte en production et verte en CI
 
@@ -841,13 +901,16 @@ les découvrir en CI :
 Une phase se termine par quelque chose de déployable, donc chaque vague a la
 sienne :
 
-- **l'application démarre sans l'option compte.** Aucune des quatre variables
-  dans l'environnement : `/health` répond, la saisie enregistre un relevé,
-  `/classement` s'affiche vide en annonçant qu'il l'est, et `/compte` dit que la
-  connexion n'est pas configurée. Aucun 500. C'est le test le plus important de
-  la phase, parce qu'il tient la promesse de réversibilité
-- **HTTPS** : le lien de connexion en HTTPS répond et le même lien en HTTP est
-  refusé. Un cookie `secure` posé sur une installation en `http://10.x` casse la
+- **aucune adresse email dans la base.** Le test lit le schéma de `compte` et
+  échoue s'il contient une colonne qui ressemble à une adresse. C'est la
+  propriété de la phase, et elle se vérifie en une assertion au lieu d'être une
+  intention
+- **le secret n'apparaît nulle part après son affichage.** La seule fois où il
+  sort en clair, c'est la page de création. Le test poste un relevé, relit
+  `app.db`, `/api/export.csv`, `/comptages` et `/classement`, et cherche le
+  secret comme il cherche `compte_id`
+- **HTTPS** : le cookie `secure` est posé quand `COMPTAGEFER_HTTPS` est là, et
+  absent sinon. Un `secure` sur une installation en `http://10.x` casse la
   session, et ce test existe parce que ce serait un bug de configuration, pas de
   code
 - **le cookie tient** : la session survit à un redémarrage du conteneur, donc à
@@ -859,6 +922,9 @@ sienne :
   `/api/export.csv`, absente de toute URL, et absente du corps des pages. Un
   test le vérifie en cherchant la valeur dans les trois sorties, pas en lisant
   la liste des colonnes — une colonne exportée sous un autre nom fuite aussi
+- **le secret se connecte** : le bon secret ouvre une session, le mauvais non,
+  et un secret d'un autre compte n'ouvre rien. La comparaison est en temps
+  constant, donc le test vérifie le résultat et non le temps
 - **score** : un relevé à `um` vaut plus qu'un relevé à `voiture`, un serpent
   vaut plus qu'un comptage unique, un corridor inédit vaut plus qu'un corridor
   vu la veille, un corridor redondant du même jour ne vaut rien de plus, et la
@@ -867,9 +933,10 @@ sienne :
 - **classement** : il s'affiche dans Chromium, sur téléphone comme sur écran
   large, il dit son dénominateur, il annonce une liste vide, et il se lit sans
   JavaScript
-- **l'envoi est plafonné** : au plafond global, `/compte` dit que la connexion
-  est fermée pour aujourd'hui. Il ne dit pas qu'un email est parti s'il n'est
-  pas parti
+- **la création est plafonnée** : au plafond, `/compte` dit que la création est
+  fermée pour l'instant, et **la connexion par secret continue de marcher**. Une
+  personne qui revient avec son secret n'est pas bloquée par un problème de
+  création
 
 ### Ensuite, dans cet ordre
 
@@ -882,13 +949,13 @@ sienne :
 ## 8. Décisions
 
 1. Fermée. La file d'attente hors ligne passe avant la carte. La carte sert à lire, pas à saisir.
-2. Rouverte, et refermée par la phase 9. Pseudo facultatif, et pas de compte. Un compte existe maintenant : il est facultatif comme le pseudo, il donne un historique et un classement, et il n'ouvre aucun droit sur les données des autres. Ce qui reste fermé, c'est le mot de passe — la connexion passe par un lien envoyé par email.
+2. Rouverte, et refermée par la phase 9. Pseudo facultatif, et pas de compte. Un compte existe maintenant : il est facultatif comme le pseudo, il donne un historique et un classement, et il n'ouvre aucun droit sur les données des autres. Ce qui reste fermé, c'est le mot de passe à retenir : la connexion se fait par un secret long affiché une fois.
 3. Fermée. Pas de marque institutionnelle, pour le moment.
 4. Fermée. La v1 s'arrête au GTFS et au GTFS-RT nationaux SNCF. Cars TER SNCF inclus, cars d'AOM et opérateurs non SNCF exclus.
 5. Fermée. Licence Ouverte 2.0 pour les comptages partagés. GPL-3.0 pour le code.
 6. Fermée. L'hébergeur est celui qui lance le conteneur. Il définit `ADMIN_TOKEN` à côté de Compose, et administre avec ce jeton.
 7. Fermée. On choisit son train dans une liste de 4 heures centrée sur maintenant, annotée par le temps réel. À la sélection, on fige ce train, le précédent et le suivant.
-8. Ouverte, phase 9. Le compte est facultatif à 100 %, et il se connecte par un lien envoyé par email — pas de mot de passe, pas de fournisseur d'identité. Un lien de connexion est un mot de passe qui voyage en clair dans une boîte mail : le servir en HTTP le rend lisible à tout relais, donc HTTPS est une condition de la phase et pas une amélioration du déploiement.
+8. Ouverte, phase 9. Le compte est facultatif à 100 %, et **aucune adresse email n'est stockée**. La connexion se fait par un secret long tiré au hasard et affiché une seule fois. Le plan prévoyait un lien envoyé par email ; c'est retiré, parce qu'une adresse email est un identifiant direct, réutilisable ailleurs, et qu'un lien de connexion est de surcroît un mot de passe qui voyage en clair dans une boîte mail hors de contrôle. Une passkey WebAuthn est notée pour plus tard : elle supprime même le secret à conserver, mais elle exige du JavaScript que la suite de tests n'exerce pas encore.
 9. Ouverte, phase 9. Le classement récompense l'utilité, pas le volume. Un point par relevé récompenserait quelqu'un qui revient compter le même train vide dix fois. Les coefficients se calibrent sur la base réelle, pas dans une intuition. À l'intérieur de cette utilité, deux formes rapportent plus que les autres parce qu'elles sont plus interprétables : le serpent de charge, qui dit où la charge monte et descend, et le relevé à périmètre `um`, qui donne la charge de la rame entière.
 10. Ouverte, phase 9. `compte_id` n'est exporté nulle part — ni CSV, ni URL, ni journal, ni page. Le jeu est ouvert et republicisé chaque nuit ; y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent.
 
