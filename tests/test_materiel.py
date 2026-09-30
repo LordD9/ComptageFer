@@ -179,6 +179,35 @@ def test_the_csv_carries_the_three_columns(tmp_path):
     assert valeurs[colonnes.index("perimetre")] == "voiture"
 
 
+def test_the_downloaded_csv_carries_them(tmp_path):
+    """Le vrai fichier, pas `render_csv` appelé à la main.
+
+    `/api/export.csv` est ce que l'usager télécharge et ce qui part sur
+    data.gouv. Appeler le rendu directement ne prouverait que la moitié : si
+    l'endpoint lisait une autre requête que `_list_saisies` — celle qui porte
+    les trois colonnes — le test passerait quand même, et le fichier publié
+    n'aurait que des cases vides. C'est le genre d'écart que rien d'autre ne
+    voit.
+    """
+    client = TestClient(create_app(tmp_path))
+    client.post(
+        "/api/sessions",
+        json=_body(materiel="Z 20500", composition="UM3", perimetre="voiture"),
+    )
+    reponse = client.get("/api/export.csv")
+    assert reponse.status_code == 200
+    lignes = reponse.text.splitlines()
+    colonnes = lignes[1].split(",")
+    valeurs = lignes[2].split(",")
+    for nom, attendu in (
+        ("materiel", "Z 20500"),
+        ("composition", "UM3"),
+        ("perimetre", "voiture"),
+    ):
+        assert nom in colonnes, f"{nom} absent du fichier téléchargé"
+        assert valeurs[colonnes.index(nom)] == attendu, f"{nom} est vide dans le fichier téléchargé"
+
+
 def test_a_count_without_material_leaves_the_csv_cells_empty(tmp_path):
     """Des cellules vides, pas des zéros ni des « null ».
 
