@@ -432,10 +432,11 @@ def test_the_list_line_is_a_button_that_reveals_the_charge_curve(tmp_path):
     page = map_page(features, 1)
     assert '<button class="ligne"' in page
     assert 'aria-controls="profil-0"' in page
-    # La courbe est dans la page, pas seulement dans le script : c'est le
-    # serveur qui la dessine, pour qu'elle soit relue par pytest.
-    assert "<polyline" in page
-    assert "<figure" in page and "Maximum 40 voyageurs" in page
+    # Le conteneur est vide et masqué : le tracé est fait par le script au
+    # clic, parce qu'écrit dans le HTML il pesait 43 % d'une page de 30
+    # relevés pour un graphique que personne ne voit. Sa géométrie est
+    # vérifiée dans un vrai Chromium, sur le DOM.
+    assert '<figure class="profil" id="profil-0" hidden></figure>' in page
 
 
 def test_a_reported_train_gets_no_curve(tmp_path):
@@ -478,11 +479,10 @@ def test_an_incomplete_snake_is_told_where_its_curve_stops(tmp_path):
         }],
     )
     assert features[0]["charge"] == [40, 42], "la courbe ne continue pas après une descente inconnue"
-    page = map_page(features, 1)
-    # Le fragment est sans apostrophe : `escape()` la transforme en `&#x27;`
-    # dans la page, et une assertion qui chercherait « s'arrête » échouerait
-    # sur un rendu parfaitement correct.
-    assert "arrête à Valence" in page, "le lecteur doit savoir où le compte s'arrête"
+    # L'arrêt est dit par la légende, que le script écrit au clic. Que la
+    # donnée parte bien avec l'arrêt est vérifié ici ; que la phrase
+    # apparaisse est vérifié dans un vrai Chromium.
+    assert features[0]["incomplet_brut"] == "Valence"
 
 
 def test_the_curve_is_named_after_the_places_it_could_plot(tmp_path):

@@ -19,7 +19,6 @@ from html import escape
 from pathlib import Path
 
 from comptagefer.affichage import chrome
-from comptagefer.profil import profil_svg
 
 LEAFLET_JS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
 LEAFLET_CSS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -92,11 +91,13 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
                 "origine": escape(str(row.get("origin_name") or arretees[0][1])),
                 "destination": escape(str(row.get("destination_name") or arretees[-1][1])),
                 "stops": [escape(str(name or stop_id)) for stop_id, name in arretees],
-                # `places` sont les arrêts qu'on sait poser, dans le même
-                # ordre que `points`. C'est ce qui nomme l'axe de la courbe :
-                # une gare sans coordonnées n'a pas de place sur le parcours,
-                # et lui en donner une ferait avancer la charge d'une gare.
-                "places": [escape(str(nom)) for nom in placables],
+                # `noms_bruts` sont les arrêts qu'on sait poser, dans le
+                # même ordre que `points`. Ce sont eux qui nomment l'axe de
+                # la courbe, et ils sont bruts : le script écrit le texte par
+                # `textContent`, qui n'interprète rien, donc un nom contenant
+                # « & » s'affiche tel quel. Une gare sans coordonnées n'a pas
+                # de place sur le parcours, et lui en donner une ferait
+                # avancer la charge d'une gare.
                 "noms_bruts": [str(nom) for nom in placables],
                 # `points` garde la position des arrêts, entiers compris : les
                 # marqueurs de gare doivent tomber sur la gare, pas sur le
@@ -104,15 +105,14 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
                 "points": [[round(lat, 5), round(lon, 5)] for lon, lat in points],
                 "trace": [[round(lat, 5), round(lon, 5)] for lon, lat in trace],
                 "droite": droite,
-                # `charge` est la courbe à bord, arrêt par arrêt : la liste des
-                # effectifs, dans l'ordre des arrêts. Elle est calculée ici
-                # plutôt que dans le script, parce qu'une courbe qu'on ne peut
-                # pas vérifier par pytest est une courbe que personne ne
-                # relit. `incomplet` dit où elle s'arrête.
+                # `charge` est la charge à bord, arrêt par arrêt. Elle est
+                # calculée en Python, et non lissée en JavaScript : c'est le
+                # seul endroit où une absence de données se voit — une
+                # descente non relevée arrête la courbe au lieu de la
+                # compléter par un zéro. `incomplet_brut` dit où elle
+                # s'arrête, et il est brut pour la même raison que
+                # `noms_bruts`.
                 "charge": charge,
-                "incomplet": escape(str(incomplet)) if incomplet else "",
-                # Comme `noms_bruts` : la légende de la courbe échappe de son
-                # côté, donc elle a besoin du nom tel quel.
                 "incomplet_brut": str(incomplet) if incomplet else "",
             }
         )
@@ -405,52 +405,27 @@ def _corps(features: list[dict]) -> str:
 
 
 def _profil(feature: dict, index: int) -> str:
-    """La courbe de charge d'une saisie, ou rien.
+    """Le conteneur vide de la courbe, ou rien.
+
+    Le tracé est dessiné par le script au clic, pas écrit ici. La
+    raison est mesurée : à 30 relevés, des SVG dans le HTML faisaient 43 %
+    de la page — 27 ko pour un graphique qu'aucun lecteur ne voit tant
+    qu'il n'a pas cliqué. Les données, elles, sont déjà dans le `<script>`
+    (`charge`, `noms_bruts`) : le serveur ne les économisait pas, il les
+    dupliquait.
+
+    Ce qu'on y perd, et qui est réel : pytest ne voit plus la géométrie.
+    Elle est donc vérifiée dans un vrai Chromium, sur le DOM, comme la
+    synchronisation liste/carte.
 
     Sans effectif — un train signalé, un serpent sans nombre à bord au
-    départ — il n'y a pas de courbe à dessiner. La ligne reste dans la liste
-    et le bouton n'est pas rendu : un bouton qui ne fait rien est une
-    promesse que la page ne tient pas.
+    départ — il n'y a pas de courbe à dessiner. La ligne reste dans la
+    liste et le bouton n'est pas rendu : un bouton qui ne fait rien est
+    une promesse que la page ne tient pas.
     """
-    charge = feature.get("charge")
-    if not charge:
+    if not feature.get("charge"):
         return ""
-    # Les gares de la courbe sont celles qu'on sait poser, pas celles de la
-    # saisie : une gare sans coordonnées n'a pas de place sur le parcours, et
-    # lui garder une abscisse ferait avancer une courbe qui n'avance pas.
-    # `noms_bruts` et non `places` : la courbe échappe les noms elle-même.
-    noms = feature.get("noms_bruts") or feature["stops"]
-    incomplet = feature.get("incomplet_brut") or ""
-    legende = _legende(charge, noms, incomplet)
-    courbe = profil_svg(
-        charge,
-        [str(nom) for nom in noms[: len(charge)]],
-        feature["couleur"],
-        incomplet=incomplet,
-    )
-    return (
-        f'<figure class="profil" id="profil-{index}" hidden>'
-        f"{courbe}<figcaption>{legende}</figcaption></figure>"
-    )
-
-
-def _legende(charge: list[int], gares: list[str], incomplet: str) -> str:
-    """Ce que la courbe montre, en une phrase, avec son dénominateur.
-
-    Un graphique de charge sans nombre maximal n'est qu'une forme, et la
-    règle du projet est qu'aucun chiffre n'est affiché sans ce qu'il compte.
-
-    La phrase est échappée ici, une seule fois : les noms viennent de la base,
-    et `noms_bruts` n'a jamais vu `escape()`.
-    """
-    sommet = max(charge)
-    rang = charge.index(sommet)
-    where = gares[rang] if len(gares) > rang else ""
-    mot = "voyageur" if sommet == 1 else "voyageurs"
-    texte = f"Maximum {sommet} {mot}, à {where}." if where else f"Maximum {sommet} {mot}."
-    if incomplet:
-        texte += f" La courbe s'arrête à {incomplet} : les descentes suivantes n'ont pas été relevées."
-    return escape(texte)
+    return f'<figure class="profil" id="profil-{index}" hidden></figure>'
 
 
 # La limite du segment droit est une propriété du réseau de données, pas un
@@ -485,6 +460,131 @@ const TILE_MAX_ZOOM = __TILE_MAX_ZOOM__;
 // visible dans le HTML.
 let TRACES_DESSINES = [];
 let CARTE_COURANTE = null;
+
+// La courbe de charge. Le tracé est fait ici, au clic, et non écrit dans le
+// HTML : à 30 relevés il pesait 27 ko, soit 43 % d'une page dont personne
+// ne voit les graphiques avant d'en ouvrir un. Les valeurs, elles, sont
+// déjà arrivées avec FEATURES.
+//
+// On ne fabrique pas de nœud : `innerHTML` n'est pas utilisé ici parce
+// qu'un nom de gare contient déjà son `<` échappé, et le réinterpréter
+// serait une seconde chance d'injection.
+const SVG_NS = "http://www.w3.org/2000/svg";
+const PROFIL_LARGEUR = 320;
+const PROFIL_HAUTEUR = 120;
+const PROFIL_MARGE_G = 30;
+const PROFIL_MARGE_D = 8;
+const PROFIL_MARGE_H = 10;
+const PROFIL_MARGE_B = 22;
+
+function noeud(balise, attributs, texte) {
+  const element = document.createElementNS(SVG_NS, balise);
+  for (const nom of Object.keys(attributs)) element.setAttribute(nom, attributs[nom]);
+  if (texte !== undefined) element.textContent = texte;
+  return element;
+}
+
+function plafond(maximum) {
+  // Un plafond arrondi au pas de 10 : afficher « 43 voyageurs » au sommet
+  // d'une boîte est exact et illisible, parce que le lecteur compare des
+  // hauteurs et non des chiffres. Le minimum est 10, sinon un train vide
+  // donnerait une division par la hauteur d'un trait.
+  if (maximum <= 10) return 10;
+  return Math.ceil(maximum / 10) * 10;
+}
+
+function dessineProfil(figure, feature) {
+  const charge = feature.charge || [];
+  if (!charge.length) return;
+  const gares = (feature.noms_bruts || []).slice(0, charge.length);
+  const haut = PROFIL_HAUTEUR - PROFIL_MARGE_H - PROFIL_MARGE_B;
+  const large = PROFIL_LARGEUR - PROFIL_MARGE_G - PROFIL_MARGE_D;
+  const max = plafond(Math.max.apply(null, charge));
+  const abscisse = function (rang) {
+    // Un seul point tombe au milieu : il n'a ni début ni fin, et le
+    // dessiner aux bords inventerait un parcours.
+    if (charge.length === 1) return PROFIL_MARGE_G + Math.floor(large / 2);
+    return Math.round(PROFIL_MARGE_G + rang * large / (charge.length - 1));
+  };
+  // L'axe descend : plus y est grand, plus la charge est basse. L'axe part
+  // de zéro, sinon un voyageur ressemble à dix.
+  const ordonnee = function (valeur) {
+    return Math.round(PROFIL_MARGE_H + haut - valeur / max * haut);
+  };
+
+  const svg = noeud("svg", {
+    viewBox: "0 0 " + PROFIL_LARGEUR + " " + PROFIL_HAUTEUR,
+    role: "img",
+    "aria-labelledby": "profil-titre-" + figure.id,
+  });
+  svg.appendChild(noeud("title", { id: "profil-titre-" + figure.id },
+    "Charge à bord, voyageurs par arrêt"));
+  // Le <desc> porte les mêmes nombres que le dessin : c'est ce qu'un
+  // lecteur d'écran entend à la place de la courbe.
+  let desc = "Charge à bord, voyageurs par arrêt : ";
+  charge.forEach(function (valeur, rang) {
+    desc += (rang ? ", " : "") + gares[rang] + " " + valeur;
+  });
+  desc += ".";
+  if (feature.incomplet_brut) {
+    desc += " Le compte s'arrête à " + feature.incomplet_brut + " : la suite n'a pas été relevée.";
+  }
+  svg.appendChild(noeud("desc", {}, desc));
+
+  for (const valeur of [0, max]) {
+    svg.appendChild(noeud("line", {
+      x1: PROFIL_MARGE_G, y1: ordonnee(valeur),
+      x2: PROFIL_LARGEUR - PROFIL_MARGE_D, y2: ordonnee(valeur), class: "repere",
+    }));
+    svg.appendChild(noeud("text", {
+      x: PROFIL_MARGE_G - 4, y: ordonnee(valeur) + 4,
+      class: "axe", "text-anchor": "end",
+    }, String(valeur)));
+  }
+
+  const points = charge.map(function (valeur, rang) {
+    return abscisse(rang) + "," + ordonnee(valeur);
+  }).join(" ");
+  svg.appendChild(noeud("polyline", {
+    points: points, fill: "none", stroke: feature.couleur, "stroke-width": "2",
+  }));
+  charge.forEach(function (valeur, rang) {
+    svg.appendChild(noeud("circle", {
+      cx: abscisse(rang), cy: ordonnee(valeur), r: "2.5", fill: feature.couleur,
+    }));
+  });
+  // Seules la première et la dernière gare sont nommées : dix noms sur
+  // 320 pixels sont illisibles, et l'ordre du parcours se lit déjà dans la
+  // liste à côté.
+  if (gares.length) {
+    svg.appendChild(noeud("text", {
+      x: abscisse(0), y: PROFIL_HAUTEUR - 6, class: "axe", "text-anchor": "start",
+    }, gares[0]));
+  }
+  if (charge.length > 1 && gares.length > 1) {
+    svg.appendChild(noeud("text", {
+      x: abscisse(charge.length - 1), y: PROFIL_HAUTEUR - 6, class: "axe", "text-anchor": "end",
+    }, gares[gares.length - 1]));
+  }
+
+  // La légende est la partie qui engage le projet : un graphique sans son
+  // maximum, ni sa gare, est une forme.
+  const sommet = Math.max.apply(null, charge);
+  const rangSommet = charge.indexOf(sommet);
+  const ou = gares[rangSommet] || "";
+  const mot = sommet === 1 ? "voyageur" : "voyageurs";
+  let legende = "Maximum " + sommet + " " + mot + (ou ? ", à " + ou + "." : ".");
+  if (feature.incomplet_brut) {
+    legende += " La courbe s'arrête à " + feature.incomplet_brut
+      + " : les descentes suivantes n'ont pas été relevées.";
+  }
+
+  figure.textContent = "";
+  figure.appendChild(svg);
+  const caption = document.createElement("figcaption");
+  caption.textContent = legende;
+  figure.appendChild(caption);
+}
 
 function dessine() {
   const carte = L.map("carte", { scrollWheelZoom: false });
@@ -579,7 +679,12 @@ function selectionne(bouton) {
   }
   bouton.setAttribute("aria-pressed", "true");
   const profil = document.getElementById(bouton.getAttribute("aria-controls"));
-  if (profil) profil.hidden = false;
+  if (profil) {
+    // Le tracé est fait ici, au clic, pas écrit dans le HTML : il y serait
+    // payé à chaque chargement, alors qu'un seul est visible à la fois.
+    dessineProfil(profil, FEATURES[index]);
+    profil.hidden = false;
+  }
   allume(index);
   // La carte suit la sélection : sans cela, cliquer une ligne ne change
   // qu'une liste, et la moitié gauche de l'écran reste sur le même endroit.
@@ -648,8 +753,16 @@ if (!conteneur) {
 def _script(features: list[dict]) -> str:
     # Chaque valeur passe par json.dumps : l'attribution OpenStreetMap contient
     # des guillemets, et une interpolation brute casserait la chaîne JavaScript.
+    #
+    # `</` est échappé en plus : le JSON est écrit dans un <script>, et un nom
+    # de gare contenant « </script> » le fermerait. Le script mourrait au
+    # chargement — toute la page, sans la moindre erreur visible dans le
+    # HTML. C'est un caractère Unicode, donc invisible lui aussi, ce qui en
+    # fait un défaut qui ne se voit qu'à l'écran.
     return (
-        _MAP_SCRIPT.replace("__FEATURES__", json.dumps(features, ensure_ascii=False))
+        _MAP_SCRIPT.replace(
+            "__FEATURES__", json.dumps(features, ensure_ascii=False).replace("</", "<\\/")
+        )
         .replace("__TILE_URL__", json.dumps(TILE_URL))
         .replace("__TILE_ATTRIBUTION__", json.dumps(TILE_ATTRIBUTION))
         .replace("__TILE_SUBDOMAINS__", json.dumps(TILE_SUBDOMAINS))

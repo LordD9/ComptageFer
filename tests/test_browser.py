@@ -1245,6 +1245,178 @@ def _deux_comptages(site: str) -> None:
     _ecrire_releve(site, "synchro-2", "Vienne", "Valence", 90)
 
 
+# --- la courbe de charge ----------------------------------------------------
+#
+# Elle est tracée par le script au clic, donc invisible pour pytest : c'est
+# ici qu'elle se vérifie, sur le DOM d'un vrai moteur. Le JS écrit le texte
+# par `textContent`, qui n'interprète rien — un nom de gare contenant
+# « <script> » s'affiche, il ne s'exécute pas, et le test le vérifie.
+
+def _serpent(site: str, jeton: str, a_bord: int, boarded: int, alighted: int) -> None:
+    """Un serpent Lyon → Vienne → Valence dont la fin est incomplète.
+
+    La dernière descente est omise, comme quand le voyageur ne compte pas sa
+    propre sortie : c'est le cas que la courbe doit arrêter plutôt que
+    prolonger par un palier.
+    """
+    corps = {
+        "client_id": jeton,
+        "kind": "serpent",
+        "origin_stop_id": "StopArea:Lyon",
+        "destination_stop_id": "StopArea:Valence",
+        "origin_name": "Lyon",
+        "destination_name": "Valence",
+        "trip_id": "1_F:TER:1234",
+        "passengers": a_bord,
+        "reliability": 70,
+        "legs": [
+            {"stop_id": "StopPoint:LyonA", "stop_name": "Lyon Part-Dieu", "onboard": a_bord},
+            {"stop_id": "StopPoint:VienneA", "stop_name": "Vienne", "boarded": boarded, "alighted": alighted},
+            {"stop_id": "StopPoint:ValenceA", "stop_name": "Valence", "boarded": 0},
+        ],
+    }
+    requete = urllib.request.Request(
+        site + "/api/sessions",
+        data=json.dumps(corps).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(requete) as response:
+        assert response.status == 200
+
+
+def _ouvre_la_courbe(page, site: str, index: int = 0) -> None:
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(f".ligne[data-i='{index}']")
+    page.click(f".ligne[data-i='{index}']")
+    page.wait_for_selector(f"#profil-{index} svg")
+
+
+def _points(page, index: int = 0) -> list[tuple[int, int]]:
+    brut = page.get_attribute(f"#profil-{index} polyline", "points")
+    return [(int(p.split(",")[0]), int(p.split(",")[1])) for p in brut.split()]
+
+
+def test_the_curve_is_drawn_when_a_line_is_clicked(page, site):
+    _ecrire_releve(site, "courbe-1", "Lyon", "Vienne", 40)
+    _ouvre_la_courbe(page, site)
+
+    assert page.locator("#profil-0 svg").count() == 1
+    assert page.locator("#profil-0 circle").count() == 2, "un disque par arrêt"
+    assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
+
+
+def test_the_curve_starts_at_zero_and_says_its_maximum(page, site):
+    """L'axe part de zéro, et le maximum est nommé.
+
+    Ces deux vérifications vivaient en Python tant que le tracé était écrit
+    par le serveur. Elles sont le prix du passage en JavaScript, et elles
+    doivent rester : un graphique sans maximum nommé est une forme.
+    """
+    _serpent(site, "courbe-2", 40, 3, 1)
+    _ouvre_la_courbe(page, site)
+
+    points = _points(page)
+    assert len(points) == 2, f"la courbe s'arrête à Vienne : Valence n'a pas de descente, {points}"
+    # L'axe du SVG descend : plus y est grand, plus la valeur est basse. La
+    # charge monte de 40 à 42, donc l'ordonnée doit *décroître*.
+    assert points[0][1] > points[1][1], f"la charge monte, l'ordonnée doit baisser : {points}"
+    # Le repère du bas porte 0, et celui du haut le plafond arrondi à 50.
+    reperes = page.locator("#profil-0 text.axe").all_text_contents()
+    assert "0" in reperes, f"l'axe ne part pas de zéro : {reperes}"
+    assert "50" in reperes, f"le plafond doit être arrondi au pas de 10 : {reperes}"
+    legende = page.text_content("#profil-0 figcaption")
+    assert "Maximum 42 voyageurs, à Vienne." in legende
+
+
+def test_the_curve_says_where_the_count_stops(page, site):
+    """Une descente non relevée arrête la courbe, et le dit.
+
+    Prolonger jusqu'à la dernière gare dessinerait un palier, « rien ne
+    s'est passé », alors qu'on vient précisément de dire qu'on n'en sait rien.
+    """
+    _serpent(site, "courbe-3", 40, 3, 1)
+    _ouvre_la_courbe(page, site)
+
+    legende = page.text_content("#profil-0 figcaption")
+    assert "arrête à Valence" in legende, f"l'arrêt du compte n'est pas dit : {legende}"
+    desc = page.text_content("#profil-0 desc")
+    assert "Le compte s'arrête à Valence" in desc, "le lecteur d'écran n'est pas informé non plus"
+
+
+def test_the_curve_is_described_for_a_screen_reader(page, site):
+    """Un graphique sans alternative textuelle n'est pas une image, c'est un trou."""
+    _serpent(site, "courbe-4", 40, 3, 1)
+    _ouvre_la_courbe(page, site)
+
+    assert page.get_attribute("#profil-0 svg", "role") == "img"
+    desc = page.text_content("#profil-0 desc")
+    # Les mêmes nombres que le dessin, pas un résumé.
+    assert "Lyon Part-Dieu 40" in desc, desc
+    assert "Vienne 42" in desc, desc
+
+
+def test_a_stop_name_cannot_inject_markup_into_the_curve(page, site):
+    """Les noms viennent de la base : ils sont écrits, jamais interprétés.
+
+    Le script construit le texte par `textContent`, qui n'interprète rien.
+    C'est la raison d'être du `noms_bruts` : un nom échappé, réinterprété,
+    afficherait « &amp; » à l'écran.
+    """
+    photo = {
+        "precedent": None,
+        "courant": {"trip_id": "1_F:TER:1234", "status": "SCHEDULED", "delay_seconds": 0},
+        "suivant": None,
+    }
+    # Trois arrêts, tous connus de la fixture : un serpent dont une gare est
+    # inconnue serait écarté de la carte, et il n'y aurait rien à cliquer.
+    corps = {
+        "client_id": "injec-1",
+        "kind": "serpent",
+        "origin_stop_id": "StopArea:Lyon",
+        "destination_stop_id": "StopArea:Valence",
+        "origin_name": "Lyon",
+        "destination_name": "Valence",
+        "trip_id": "1_F:TER:1234",
+        "passengers": 40,
+        "reliability": 70,
+        "snapshot": photo,
+        "legs": [
+            {"stop_id": "StopPoint:LyonA", "stop_name": "<script>alert(1)</script>", "onboard": 40},
+            {"stop_id": "StopPoint:VienneA", "stop_name": "Vienne & Cie", "boarded": 3, "alighted": 1},
+            {"stop_id": "StopPoint:ValenceA", "stop_name": "Valence", "boarded": 0, "alighted": 2},
+        ],
+    }
+    requete = urllib.request.Request(
+        site + "/api/sessions",
+        data=json.dumps(corps).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(requete) as response:
+        assert response.status == 200
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.click(".ligne[data-i='0']")
+    page.wait_for_selector("#profil-0 svg")
+
+    # Le nom est affiché tel quel, pas exécuté, et « & Cie » n'est pas
+    # devenu « &amp; Cie » — donc le nom voyage brut, et c'est `textContent`
+    # qui garantit qu'il ne s'interprète pas.
+    assert page.locator("#profil-0 script").count() == 0
+    labels = page.locator("#profil-0 text.axe").all_text_contents()
+    assert "<script>alert(1)</script>" in labels, f"le nom doit s'afficher tel quel : {labels}"
+    # Seules la première et la dernière gare sont nommées : dix noms sur 320
+    # pixels seraient illisibles. Le `&` de Vienne n'est donc pas étiqueté
+    # ici — c'est le <desc> complet qui le porte.
+    assert "Vienne & Cie" not in labels, (
+        f"seules les gares du bout sont nommées, sinon l'axe est illisible : {labels}"
+    )
+    desc = page.text_content("#profil-0 desc")
+    assert "Vienne & Cie 42" in desc, f"le nom complet doit rester lisible : {desc}"
+    assert "&amp;" not in desc, "un nom échappé afficherait « &amp; » à l'écran"
+    assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
+
+
 def test_hovering_a_line_lights_up_its_track(page, site):
     _deux_comptages(site)
     page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))

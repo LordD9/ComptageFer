@@ -510,9 +510,26 @@ place sur le graphique : ses montées et descentes entrent dans le calcul de
 la charge, et elle ne reçoit pas de point. Sans cette règle, la valeur de
 l'arrêt suivant se lirait à la mauvaise gare.
 
-La courbe est écrite par le serveur en Python (`comptagefer.profil`), pas en
-JavaScript : c'est le seul moyen qu'elle soit relue par pytest. Le `<desc>`
-porte les mêmes nombres que le dessin, pour un lecteur d'écran.
+La courbe est **tracée par le script au clic**, pas écrite dans le HTML. Elle
+l'a été d'abord écrite par le serveur, en Python, pour que pytest la relise :
+c'était le bon réflexe et la mauvaise mesure. À 30 relevés, les SVG faisaient
+**43 % de la page** — 27 ko pour un graphique qu'aucun lecteur ne voit avant
+d'en ouvrir un. Les données étaient déjà là (`charge`, `noms_bruts` dans le
+`<script>`) : le serveur ne les économisait pas, il les dupliquait. La page
+est passée de 62,6 ko à **40,1 ko**, soit 36 % de moins.
+
+Ce que ça coûte, et qui est réel : pytest ne voit plus la géométrie. Elle est
+donc vérifiée dans un vrai Chromium, sur le DOM — l'axe part de zéro, le
+plafond est arrondi au pas de 10, le maximum est nommé avec sa gare, la
+courbe s'arrête où le compte s'arrête. C'est un test plus lent et moins fin
+qu'un test de fonction, et c'est le bon échange quand la fonction en question
+n'est visible qu'après un clic.
+
+Un défaut que ce passage a révélé, et qui existait déjà : un nom de gare
+contenant `</script>` **fermait la balise** et tuait le script au chargement.
+`json.dumps` n'échappe pas `<`, et le `noms_bruts` rendait le cas possible.
+Le `</` est maintenant échappé en `<\/` à la frontière du JSON. Sans
+Chromium, ce défaut serait resté invisible : pytest ne charge pas de JavaScript.
 
 Le champ « ligne » est un texte libre, pas une liste déroulante : le GTFS
 national attribue le même « C13 » à six lignes, donc une liste de noms courts
