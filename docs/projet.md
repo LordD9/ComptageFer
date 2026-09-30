@@ -2,7 +2,7 @@
 
 Outil collaboratif pour compter la fréquentation des TER en France, puis rendre ces comptages publics, lisibles et réutilisables.
 
-**Statut :** phases 0 à 5 livrées, septembre 2026. Phases 6, 7 et 8 commencées. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
+**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 planifiée, non commencée — le plan est écrit, le code n'est pas. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
 
 **Source du besoin :** cahier des charges « ComptagesFer » (présentation de trois diapositives).
 
@@ -34,7 +34,7 @@ Le cas d'usage est un téléphone, dans un train, souvent avec un réseau médio
 4. Je passe au formulaire. Le retard, l'heure et la suppression ne se tapent pas.
    - **Comptage unique.** Une interstation (les deux arrêts qui l'encadrent), un effectif, et trois indicateurs approximatifs : part de gens debout, part de places assises restantes, écart de charge entre la partie la plus chargée et la moins chargée.
    - **Serpent de charge.** Je monte, je compte une fois les portes fermées, puis à chaque arrêt j'indique montées et descentes jusqu'à ma descente. Les indicateurs du mode unique sont optionnels sur chaque interstation. Compter sa propre descente est optionnel.
-5. Pseudo, si je veux. Facultatif. Pas un compte.
+5. Pseudo, si je veux. Facultatif. Un compte, si je veux aussi : facultatif lui aussi, jamais demandé, et il ne donne aucun droit sur les données des autres. La connexion se fait par un lien reçu par email, donc elle marche sans mot de passe à retenir.
 6. En quittant, j'indique un pourcentage de fiabilité. Commentaire et modèle de véhicule seulement si j'ai quelque chose à ajouter.
 
 À la sélection, l'outil fige l'état du train choisi, du précédent et du suivant sur la même origine-destination. C'est cette photo qui voyage avec le comptage. On ne relit pas le flux plus tard pour reconstituer le contexte : il ne le contient plus.
@@ -54,7 +54,7 @@ L'export des données brutes, lui, arrive tôt. C'est le retour dû aux gens qui
 - **Simple à poser.** Un conteneur, une base fichier, pas de base managée. La commande est la même partout où Docker tourne.
 - **Le téléphone dans le train est le client principal.** Grandes zones tactiles, peu d'étapes. On saisit le compte, pas le contexte que le flux connaît déjà.
 - **Brut avant estimé.** Pas de chiffre annuel tant que la règle d'extrapolation n'est pas écrite et affichée à côté du chiffre. Une suppression du train précédent est un fait conservé, pas un effectif qu'on réécrit.
-- **Anonyme par défaut.** Pas de compte pour contribuer. Un pseudo facultatif peut signer un comptage. Il n'identifie personne, et il n'ouvre aucun droit.
+- **Anonyme par défaut, et c'est encore vrai.** On peut contribuer sans compte, sans email et sans pseudo. Un compte existe depuis la phase 9 et n'est jamais demandé : il donne un historique et un classement, et rien qui touche aux données des autres. Un pseudo facultatif peut signer un comptage. Il n'identifie personne, et il n'ouvre aucun droit.
 - **L'offre vient du GTFS, le contexte du temps réel, les comptages des gens.** On ne mélange pas les trois. Une circulation absente est un signalement, pas une ligne créée à la main.
 - **Pas de trace GPS.** La position peut proposer l'arrêt le plus proche. Elle n'est pas enregistrée.
 - **Les comptages partagés sont en Licence Ouverte 2.0.** Le code reste en GPL-3.0. Les deux licences ne se mélangent pas.
@@ -218,7 +218,8 @@ Le flux temps réel ne donne pas le nom des gares, et il travaille surtout en St
 - `trip_id`, la circulation confirmée, sinon rien
 - `passengers`, l'effectif. En mode serpent c'est l'effectif portes fermées : c'est le nombre saisi, pas le total reconstruit. La reconstruction reste dans `legs`.
 - `reliability`, entier de 0 à 100
-- `pseudo`, facultatif, texte libre court. Pas un compte, pas un droit.
+- `pseudo`, facultatif, texte libre court. Pas un compte, pas un droit. Il reste ce que le CSV publie, y compris quand la personne a un compte : le compte en a un aussi, mais il ne sort pas.
+- `compte_id`, facultatif, ajouté par la phase 9. Un identifiant de compte, ou rien. Il rattache un relevé à son auteur dans l'application, et **n'est jamais exporté** : le CSV est un jeu ouvert, republicisé chaque nuit, et y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent. La migration l'ajoute par `ALTER TABLE`, donc les relevés antérieurs gardent `NULL` : ils comptent dans les données et pas au classement.
 - `comment`, facultatif, texte libre court. C'est la partie qui explique un comptage atypique : train précédent supprimé, car de substitution, forte charge. Il est publié dans le CSV, donc lu par ceux qui réutilisent les données, et affiché dans l'admin.
 - `standing`, `seats_free`, `imbalance`, optionnels
 - `legs`, le profil du serpent, en JSON. La suite ordonnée des arrêts avec l'effectif de départ puis montées et descentes. Effectif suivant = effectif + montées − descentes.
@@ -241,7 +242,8 @@ On ne stocke pas de position GPS.
 
 ## 6. Hors périmètre pour l'instant
 
-- Comptes, mots de passe, OAuth.
+- Mots de passe, et tout ce qui en dépend : OAuth, fournisseurs externes d'identité. Le compte de la phase 9 passe par un lien envoyé par email, donc il n'y a ni mot de passe à choisir ni à oublier. Il n'y a pas non plus de fournisseur d'identité : le dépôt est personnel, et un compte qui se connecte chez quelqu'un d'autre n'est plus un compte du projet.
+- Messagerie : aucune notification, aucun récapitulatif, aucune relance. Le compte n'écrit pas à personne.
 - Estimation annuelle de voyageurs et de voyageurs.kilomètres.
 - Comparaison de lignes, agrégats région ou agglomération.
 - Géométrie réelle des lignes.
@@ -551,23 +553,260 @@ Une limite, dite : le filtre ligne a bien sa clause `trip_id IN (...)`, et
 elle est maintenant vérifiée avec une vraie base d'horaires — voir la suite
 plus bas. La page `/ligne`, qui utilise la même lecture, l'est aussi.
 
+### Phase 9 — Compte facultatif, et un classement qui récompense l'utilité
+
+La phase 8 a rendu les données lisibles. Celle-ci s'adresse à celui qui les
+produit, pour qu'il en produise davantage et qu'il sache ce que son comptage a
+apporté.
+
+Trois règles gouvernent toute la phase, et chacune a déjà coûté une décision
+ailleurs dans ce document :
+
+- **Le compte reste facultatif à 100 %.** Aucun écran ne le demande, aucune
+  saisie ne le réclame, aucun formulaire ne le bloque. `POST /api/sessions`
+  accepte une requête sans cookie et sans jeton, comme aujourd'hui, et c'est le
+  chemin par défaut. Le §3 disait « pas de compte pour contribuer » : la
+  phrase est amendée, pas abandonnée — on peut contribuer sans compte, et c'est
+  encore le cas le plus simple.
+- **Le classement mesure l'utilité, pas le volume.** Un point par relevé
+  récompense un comptable qui revient compter le même train vide dix fois, et
+  c'est le pire comportement possible pour un jeu de données qui sert à
+  estimer une charge. Le score suit donc la couverture, et sa calibration se
+  mesure sur la base réelle au lieu d'être choisie dans une intuition.
+- **`compte_id` ne sort jamais dans le CSV.** Le CSV est un jeu de données
+  ouvert, en Licence Ouverte 2.0, republié chaque nuit sur data.gouv.fr. Y
+  écrire un identifiant de compte stable et durable produirait une donnée
+  personnelle lisible par tous, ce que ni le pseudo ni la Licence Ouverte ne
+  demandent. Le compte vit dans l'application, le pseudo continue de signer
+  le relevé dans le CSV.
+
+#### Vague 1 — HTTPS, parce que le lien magique ne peut pas attendre
+
+Un lien de connexion est un mot de passe qui voyage en clair dans une boîte
+mail. Le servir en HTTP sur le VPS OVH le rend lisible à tout relais du chemin.
+Ce n'est pas une amélioration du déploiement, c'est une condition de la phase.
+
+Le domaine est chez OVH, donc le certificat vient de là aussi :
+
+- `comptages.<domaine>` en A sur l'IP du VPS, et Caddy devant le conteneur
+- le conteneur n'écoute que sur la boucle de l'hôte : `ports: - "127.0.0.1:8000:8000"`
+- Caddy reste **hors** du `compose.yaml`. Le compose reste « un service, un
+  volume, pas de base séparée, pas de worker » ; ajouter Caddy dedans ferait
+  du reverse proxy une dépendance du déploiement, et le README promet le
+  contraire
+- `COMPTAGEFER_HTTPS=1` dans le `.env` du VPS. Une variable, pas une
+  détection : la détection par en-tête `X-Forwarded-Proto` fait confiance au
+  premier qui parle, et un `secure` sur cookie activé à tort casse la session
+  chez un installation locale en `http://10.x`
+
+Ce que la vague ne change pas : une installation sans cette variable continue
+de fonctionner en HTTP, avec un cookie sans `secure`. C'est l'état d'aujourd'hui.
+
+#### Vague 2 — Le compte, sans score
+
+Le compte sert d'abord à deux choses concrètes : rattacher ses relevés à lui, et
+pouvoir les signaler. Le classement vient après, parce qu'un score sans
+historique n'a rien à montrer.
+
+**Tables.** Deux nouvelles, dans `app.db` — pas un fichier de plus :
+
+- `compte(id, pseudo, email, jeton, expire, cree_le, dernier_voir)` — le
+  `jeton` est le **SHA-256** du lien, jamais le lien. Un jeton à usage unique,
+  expiré au bout de 15 minutes
+- `session(jeton, compte_id, ouverte, expire)` — en base, et non dans un
+  dictionnaire en mémoire comme `admin_sessions`. Un dictionnaire perd les
+  sessions au redémarrage du conteneur, donc chaque déploiement déconnecte
+  tout le monde ; et il grossit sans borne, ce que l'audit a relevé sur
+  `app.py`
+- `saisie.compte_id`, une colonne nullable
+
+Une seule connexion pour tout le monde, dans `app.db` : un compte référence ses
+relevés, et deux fichiers SQLite signifieraient deux connexions et une
+transaction qui ne couvre pas les deux. Le sauvegarder reste « copier
+`./data` », ce qui est déjà la consigne.
+
+**Ce que le compte donne, exactement.**
+
+- l'accès à son historique, `/compte`, avec ses relevés et les corridors qu'il
+  a couverts
+- le signalement d'un de ses relevés, avec un motif libre. Un signalement
+  n'efface rien et ne modifie rien : il crée une ligne que l'admin voit dans
+  `/admin`, à côté des relevés, avec son motif. `/admin` reste derrière
+  `ADMIN_TOKEN`, un jeton unique, pas une administration par compte
+- rien d'autre. Pas de droit sur les données des autres, pas de modification du
+  CSV depuis l'interface, pas de suppression
+
+**Ce que le compte ne donne pas, et qu'il faut écrire parce que c'est
+invisible :** être connecté ouvre le droit de dire « ce relevé n'est pas le
+mien », pas le droit de le retirer. Un signalement n'est pas une suppression
+différée.
+
+**La saisie hors ligne et le compte.** Le payload en file ne transporte que ce
+que le navigateur a sous la main, et le cookie part avec le `POST` au moment
+de l'envoi. Donc :
+
+- un comptage fait hors ligne **connecté** est rattaché au compte, parce que la
+  session est encore ouverte au moment où la file se vide
+- un comptage fait hors ligne **déconnecté**, puis envoyé après connexion, est
+  rattaché au compte ouvert à cet instant. C'est un cas rare et il va dans le
+  bon sens : la personne qui a envoyé le relevé est le compte connecté
+- un comptage fait hors ligne, puis envoyé alors que la session a expiré, est
+  anonyme. Il est compté dans les données et absent du classement, et la page
+  `/compte` le dit
+
+Ce comportement est mesuré par un test qui vide la file à deux moments
+différents. Il est dans la liste parce qu'il est contre-intuitif : il dépend
+de l'heure d'envoi, pas de l'heure du comptage.
+
+**Le rythme des envois.** `/compte/connexion` envoie un email à la demande. Sans
+limite, c'est une pompe à email depuis le domaine de Balraj, et OVH coupe le
+domaine — ce qui tuerait l'envoi pour tout le monde, pas seulement pour
+l'abuseur. Donc : un envoi par adresse toutes les minutes, cinq par heure et par
+adresse IP, et le compteur vit en mémoire. Un compteur en base serait écrit à
+chaque tentative, y compris de la part de quelqu'un qui essaie d'y écrire
+beaucoup.
+
+**La suppression du compte.** Elle n'est pas dans l'interface. Une
+suppression de compte détache ses relevés — `compte_id` à `NULL`, le pseudo
+conservé — et ne les supprime pas. Tant que ce geste n'est pas outillé, il
+reste une action d'admin, et c'est écrit ici comme une limite et non comme un
+choix de confort.
+
+#### Vague 3 — Le score, et sa calibration
+
+**Ce que le score récompense**, dans l'ordre d'importance :
+
+- **un corridor qu'aucun relevé ne portait.** Le point le plus élevé, et le
+  premier. C'est un relevé qui ajoute une paire origine-destination à la base
+- **un corridor qui n'a pas été vu depuis longtemps.** Un corridor vu la semaine
+  dernière vaut un relevé, pas une découverte. La fenêtre se mesure
+- **une capacité maîtrisée.** Composition et périmètre connus rendent le chiffre
+  interprétable, et le projet le dit déjà à la saisie. C'est un bonus, pas un
+  critère d'admission
+- **la fidélité déclarée** ne rapporte rien. Elle est déclarée par celui qui
+  compte, donc elle est manipulable par construction, et la mettre au score
+  ferait monter tout le monde à 100. Elle reste une information affichée
+- **un relevé redondant** ne rapporte rien de plus. Le même origine-destination
+  par la même personne dans la même journée rapporte une fois
+
+**Ce que le score ne peut pas faire.** Un seul compte par personne n'est pas
+vérifiable : rien dans un lien magique ne distingue deux personnes qui partagent
+une boîte. Le frein n'est donc pas l'identité, c'est la formule — un spammeur
+qui crée dix comptes pour dix points perd plus de temps qu'il n'en gagne, et il
+pollue le classement des autres, ce que l'admin voit dans `/admin`. C'est une
+limite assumée, écrite ici et pas découverte dans six mois.
+
+**La calibration se mesure.** Les coefficients ne sont pas choisis dans ce
+document. Une fonction de score unique, paramétrée, produit une distribution
+sur la base réelle du VPS — l'ordre de grandeur connu est 6 000 relevés sur
+90 × 37 gares — et la distribution décide des coefficients. Trois questions,
+chacune avec sa mesure :
+
+- combien de points pour un corridor inédit, en vérifiant qu'un tiers des
+  points d'un bon compteur vient de l'inédit, pas du volume
+- combien de points au-delà, pour que le classement récompense la constance, sans
+  que le jour de pic ait un classement « juste » — et un tel classement se décide
+  à la mesure ou pas du tout
+- la fenêtre de « pas vu depuis », en jours, en regardant la base : si
+  presque tous les corridors ont été vus dans les 30 derniers jours, une
+  fenêtre à 30 jours ne distingue rien
+
+Le score se calcule à la lecture, dans une requête SQL sur `saisie` filtrée par
+`compte_id`. Il n'est **pas** stocké en colonne : un score en base devient
+faux dès que la formule change, et il faudrait le recalculer — donc le migrer —
+à chaque réglage. Une vue SQL, ou une fonction Python au-dessus d'une requête,
+et la formule reste un calcul.
+
+**La page.** `/classement`, dans le chrome existant, donc lisible sur téléphone.
+Elle affiche, par compte : les points, le nombre de relevés, le nombre de
+paires distinctes, et le dernier relevé. Le pseudo est affiché, il est déjà
+libre. Le classement se lit sans JavaScript, comme `/comptages` : les points se
+calculent côté serveur.
+
+Trois choses que le tri impose, parce qu'elles sont vraies aussi pour
+`/comptages` :
+
+- **une liste vide s'annonce.** Un classement sans compte dit qu'il n'y en a pas
+  encore, et propose de compter. Il ne sort pas vide
+- **le score a un dénominateur.** « 34 points sur 12 relevés », jamais « 34
+  points ». C'est le §9 appliqué à un jeu
+- **la page dit ce qu'elle classe.** Les coefficients, en clair, avec la
+  mesure qui les a choisis. Un classement dont on ne connaît pas la règle est
+  une page de Vanity
+
+#### Ce que la vague ne fait pas
+
+- **Pas de points pour le serpent** mieux que pour le comptage unique. Le
+  serpent donne un profil, pas une charge plus fiable : ce sont deux
+  granularités du même chiffre. Le distinguer au score récompenserait la
+  saisie longue sur le train, ce qui est une contrainte et pas une qualité
+- **Pas de badge, pas de niveau, pas de série.** Ce sont des mécaniques de jeu,
+  pas des informations sur les données. Elles ajoutent un « j'ai compté 47
+  fois » qui ne veut rien dire sur le réseau
+- **Pas de rang privé.** Le classement est public. Un classement privé
+  n'intéresse personne et coûte une page
+
+#### Fichiers
+
+Chaque vague nomme ses fichiers avant d'écrire la première ligne, mais la phase
+se lit d'un bloc d'abord.
+
+- `comptagefer/app.py` — `compte` et `session` créées au démarrage, routes `/compte`, `/compte/connexion`, `/compte/deconnecter`, `/classement`, et la colonne `compte_id` sur `saisie`
+- `comptagefer/compte.py` — le nouveau module : jeton, session, envoi du lien, score. Un module et non quinze fonctions dans `app.py`, qui est déjà à 2 279 lignes
+- `comptagefer/affichage.py` — `/compte` et `/classement` entrent dans `NAVIGATION`, donc dans le chrome et le test de tutoiement
+- `compose.yaml` et `.env.example` — `COMPTAGEFER_HTTPS`, `COMPTAGEFER_EMAIL`, `COMPTAGEFER_EMAIL_PASSWORD`, et le serveur SMTP
+- `README.md` — chaque variable du compose y est décrite, sinon `test_compose_doc.py` échoue, et il a raison d'échouer
+
+Trois tests s'appliquent sans qu'on les pense, et le plan les nomme pour ne pas
+les découvrir en CI :
+
+- `test_compose_doc.py` exige que toute variable du compose soit dans le README
+  **et** dans `.env.example`
+- `test_form.py` exige qu'aucune page ne parle à la 2e personne. « Vous avez
+  envoyé un email », pas « Tu as reçu un lien »
+- la liste de pages du workflow `docker-test.yml` doit gagner `/compte` et
+  `/classement`, sinon la page peut être morte en production et verte en CI
+
+#### Vérification
+
+Une phase se termine par quelque chose de déployable, donc chaque vague a la
+sienne :
+
+- **HTTPS** : le lien de connexion en HTTPS répond et le même lien en HTTP est
+  refusé. Un cookie `secure` posé sur une installation en `http://10.x` casse la
+  session, et ce test existe parce que ce serait un bug de configuration, pas de
+  code
+- **compte** : un relevé posté sans cookie est enregistré, compté dans les
+  données et absent du classement. Un relevé posté avec une session ouverte est
+  rattaché. C'est le test qui tient la promesse « 100 % facultatif »
+- **score** : un corridor inédit vaut plus qu'un corridor vu la veille, un
+  corridor redondant du même jour ne vaut rien de plus, et la fiabilité déclarée
+  ne change pas le score. Sur une base réelle, la distribution est jointe au
+  message de la PR
+- **classement** : il s'affiche dans Chromium, sur téléphone comme sur écran
+  large, il dit son dénominateur, il annonce une liste vide, et il se lit sans
+  JavaScript
+
 ### Ensuite, dans cet ordre
 
 1. Géométries de lignes, si les segments droits ne suffisent plus. Jointure OSM, ou GTFS régionaux qui ont un `shapes.txt`.
 2. Autres GTFS : cars d'AOM, TER non SNCF. Leur temps réel viendra avec, sur le même poller, seulement s'il existe un flux.
 3. Méthode d'estimation annuelle, écrite avant d'être codée. Jours types, biais de qui compte, seuil minimal de comptages, voyageurs.kilomètres. Le chiffre affiche toujours son dénominateur. Une suppression conservée ne devient pas, à elle seule, un report chiffré.
 4. Comparaison de lignes et agrégats géographiques.
-5. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton.
+5. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton. **Fait, c'est la phase 9** — déclenché par l'historique : rattacher ses relevés à soi est ce qui manquait, et le signalement d'un relevé est la modération qui ne tenait pas dans `ADMIN_TOKEN`.
 
 ## 8. Décisions
 
 1. Fermée. La file d'attente hors ligne passe avant la carte. La carte sert à lire, pas à saisir.
-2. Fermée. Pseudo facultatif. Pas de compte.
+2. Rouverte, et refermée par la phase 9. Pseudo facultatif, et pas de compte. Un compte existe maintenant : il est facultatif comme le pseudo, il donne un historique et un classement, et il n'ouvre aucun droit sur les données des autres. Ce qui reste fermé, c'est le mot de passe — la connexion passe par un lien envoyé par email.
 3. Fermée. Pas de marque institutionnelle, pour le moment.
 4. Fermée. La v1 s'arrête au GTFS et au GTFS-RT nationaux SNCF. Cars TER SNCF inclus, cars d'AOM et opérateurs non SNCF exclus.
 5. Fermée. Licence Ouverte 2.0 pour les comptages partagés. GPL-3.0 pour le code.
 6. Fermée. L'hébergeur est celui qui lance le conteneur. Il définit `ADMIN_TOKEN` à côté de Compose, et administre avec ce jeton.
 7. Fermée. On choisit son train dans une liste de 4 heures centrée sur maintenant, annotée par le temps réel. À la sélection, on fige ce train, le précédent et le suivant.
+8. Ouverte, phase 9. Le compte est facultatif à 100 %, et il se connecte par un lien envoyé par email — pas de mot de passe, pas de fournisseur d'identité. Un lien de connexion est un mot de passe qui voyage en clair dans une boîte mail : le servir en HTTP le rend lisible à tout relais, donc HTTPS est une condition de la phase et pas une amélioration du déploiement.
+9. Ouverte, phase 9. Le classement récompense l'utilité, pas le volume. Un point par relevé récompenserait quelqu'un qui revient compter le même train vide dix fois. Les coefficients se calibrent sur la base réelle, pas dans une intuition.
+10. Ouverte, phase 9. `compte_id` ne sort jamais dans le CSV. Le jeu est ouvert et republicisé chaque nuit ; y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent.
 
 ## 9. Ce qui n'est pas une promesse
 
