@@ -345,6 +345,18 @@ La carte sert à voir les résultats, pas à saisir.
 - recherche par nom — **fait**, c'est `/rechercher`, un seul champ pour une gare ou une ligne
 - page ligne : liste brute, ou invitation à contribuer s'il n'y a rien — **fait**, c'est `/ligne`
 
+#### La lecture sur un écran large
+
+Sept pages recopient chacune leur mise en page, et sept fois le même `max-width: 32rem`. Le mobile y est bon — le formulaire se fait au pouce, dans un train — mais `/comptages` sur un écran large, c'était une colonne de 512 px centrée, avec la moitié de la hauteur en vide.
+
+Le chrome est donc écrit une fois, dans `comptagefer/affichage.py` : en-tête, navigation, pied, et une media query qui ouvre la lecture à 72 rem au-delà de 48 rem. Trois décisions valent d'être écrites ici, parce qu'elles ne se devinent pas dans le CSS :
+
+- **Une page, deux lectures.** La liste existe en cartes et en tableau, dans le même HTML : les cartes sur un téléphone, le tableau sur grand écran, l'un retiré du rendu quand l'autre s'affiche. Les faire coexister ferait lire chaque relevé deux fois. Le tableau ajoute ce qui manquait : date, fiabilité, tri par en-tête. Le tri est un paramètre d'URL (`?tri=&sens=`) et non un état navigateur : une liste triée se partage et se teste, et il n'y a pas de JavaScript dans une page dont le JavaScript n'est jamais exécuté par la suite de tests.
+- **Un relevé sans valeur sort en dernier, dans les deux sens.** Un « train signalé » n'a pas d'effectif : trié décroissant, il remonterait en tête et se lirait comme le relevé le plus chargé. `reverse=True` portant sur un « la valeur manque » booléen fait exactement ça, donc ils sont retirés, triés, puis remis à la fin.
+- **Ce qui est dans la base est sur la page.** `created_at`, `reliability`, `comment`, `standing`, `seats_free`, `imbalance` sortaient dans le CSV sans qu'un lecteur du site puisse les voir. La date est en heure de Paris, pas en ISO UTC.
+
+La carte prend la hauteur de l'écran sur grand écran, la liste des tracés passe à côté. La page ligne lit ses arrêts et ses comptages côte à côte. C'est une media query, pas une refonte : rien n'a été ajouté au-delà de 48 rem, et le téléphone ne change pas.
+
 Deux faits de la source ont décidé la forme de la page ligne, et il vaut mieux les écrire ici qu'un jour dans un ticket :
 
 - **Les noms de ligne ne sont pas uniques.** Le GTFS national compte 725 lignes pour 423 noms courts : `C13` désigne six lignes différentes, `INCONNU` cinquante-trois. Une URL construite sur le nom court ouvrirait donc une page au hasard. Tout ce qui identifie une ligne passe par le `route_id`, et le titre affiché porte toujours le nom long, parce que « C13 » ne veut rien dire pour quelqu'un qui ne connaît pas la numérotation SNCF.

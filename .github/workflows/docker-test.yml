@@ -66,6 +66,17 @@ jobs:
             test "$code" = "200" || { echo "echec sur $chemin"; exit 1; }
           done
 
+      - name: Verifier le tri de la liste
+        run: |
+          # Le tri est un parametre d'URL : s'il cesse de repondre, la page
+          # des comptages perd sa seule facon de se trier, et rien d'autre ne
+          # le remarque. Un parametre erronee doit rester lisible aussi.
+          for requete in "?tri=passengers&sens=asc" "?tri=date&sens=desc" "?tri=bidon&sens=zzz"; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000/comptages$requete")
+            echo "/comptages$requete -> $code"
+            test "$code" = "200" || { echo "echec sur le tri $requete"; exit 1; }
+          done
+
       - name: Verifier que la publication est inactive sans identifiants
         run: |
           # Le conteneur de test n'a pas de cle data.gouv. Il doit le dire

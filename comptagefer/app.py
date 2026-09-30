@@ -15,10 +15,12 @@ from html import escape
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
+from comptagefer.affichage import chrome
 from comptagefer.carte import counted_features, map_page as carte_page
 from comptagefer.offer import nearest_stops, search_stops, trips_serving
 from comptagefer.timetable import (
@@ -277,8 +279,16 @@ def create_app(
         return _list_saisies(database)
 
     @app.get("/comptages", response_class=HTMLResponse)
-    def comptages() -> str:
-        return _reading_page(_list_saisies(database))
+    def comptages(tri: str = Query("", max_length=20), sens: str = Query("", max_length=4)) -> str:
+        """La liste des comptages, la plus récente d'abord.
+
+        Le tri et le sens sont des paramètres d'URL et non un état côté
+        navigateur : une liste triée se partage, se met en signet et se
+        teste. Le défaut est le plus récent d'abord, parce qu'une liste
+        dont le bas est le plus récent oblige à faire défiler toute la
+        page pour voir ce qui vient d'arriver.
+        """
+        return _reading_page(_list_saisies(database), tri=tri, sens=sens)
 
     @app.get("/carte", response_class=HTMLResponse)
     def carte() -> str:
@@ -1043,7 +1053,13 @@ def _saisie_dicts(rows: list) -> list[dict]:
 
 
 def _line_page(ligne: dict, rows: list[dict], arrets: list[dict]) -> str:
-    """La page d'une ligne : ses arrêts, ses comptages, ou une invitation."""
+    """La page d'une ligne : ses arrêts, ses comptages, ou une invitation.
+
+    Sur un écran large, les arrêts et les comptages se lisent côte à côte : la
+    colonne de gauche dit où la ligne va, celle de droite ce qu'on y a
+    compté. Empilés sur un téléphone, ils se lisent dans l'ordre, ce qui est
+    le bon ordre là-bas.
+    """
     titre = escape(ligne["titre"])
     mode = {"train": "train", "car": "car", "tramway": "tramway"}.get(ligne.get("mode") or "", "")
 
@@ -1055,7 +1071,10 @@ def _line_page(ligne: dict, rows: list[dict], arrets: list[dict]) -> str:
         liste_arrets = "<p>Les arrêts de cette ligne ne sont pas dans l'horaire importé.</p>"
 
     if rows:
-        corps = _reading_cards(rows)
+        # La page ligne n'a pas de tableau : ses comptages sont déjà dans le
+        # contexte d'une ligne et de ses arrêts, et deux colonnes de cartes
+        # se lisent mieux qu'un tableau qui perdrait le trajet complet.
+        corps = f"<div class='grille'>{_reading_cards(rows)}</div>"
     else:
         # Pas de carte blanche : l'invitation à compter est la page, et la
         # liste des arrêts est déjà ce qu'il faut pour savoir où monter. Le
@@ -1071,39 +1090,30 @@ def _line_page(ligne: dict, rows: list[dict], arrets: list[dict]) -> str:
             "</div>"
         )
 
-    return f"""<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{titre} — ComptagesFer</title>
-<style>
-  body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
-  main {{ max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
-  .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
-  a {{ color: #1c1915; }}
-  .mode {{ font-size: 0.85rem; color: #5c554b; text-transform: uppercase; letter-spacing: 0.04em; }}
-  ol.stops {{ padding-left: 1.2rem; }}
-  ol.stops li {{ margin: 0.25rem 0; }}
-  .status {{ font-size: 0.85rem; color: #5c554b; }}
-  a.bouton {{ display: inline-block; background: #1c1915; color: #fff; text-decoration: none;
-              padding: 0.7rem 1.1rem; border-radius: 0.6rem; font-weight: 600; }}
-</style>
-</head>
-<body>
-<main>
-  <h1>{titre}</h1>
-  {f"<p class='mode'>{mode}</p>" if mode else ""}
-  <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
-  <p><a href="/rechercher">Rechercher</a> · <a href="/carte">Carte</a> · <a href="/comptages">Tous les comptages</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
-  <h2>Arrêts</h2>
-  {liste_arrets}
-  <h2>Comptages</h2>
-  {corps}
-</main>
-</body>
-</html>
-"""
+    ligne_mode = f"<p class='mode'>{mode}</p>" if mode else ""
+    contenu = (
+        f"{ligne_mode}"
+        "<div class='colonnes'>"
+        f"<section><h2>Arrêts</h2>{liste_arrets}</section>"
+        f"<section><h2>Comptages</h2>{corps}</section>"
+        "</div>"
+    )
+    return chrome(
+        ligne["titre"],
+        contenu,
+        actif="",
+        extra_css="""
+  .mode { font-size: 0.85rem; color: var(--gris); text-transform: uppercase; letter-spacing: 0.04em; }
+  ol.stops { padding-left: 1.2rem; }
+  ol.stops li { margin: 0.25rem 0; }
+  @media (min-width: 48rem) {
+    /* Deux colonnes dès qu'il y a de la place : sur une page ligne, le
+       rapport arrêts/comptages se lit côte à côte, ce qu'une colonne
+       unique interdit. */
+    .colonnes { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 1.6rem; }
+  }
+""",
+    )
 
 
 def _link(href: str, text: str) -> str:
@@ -1116,29 +1126,7 @@ def _plain_reading_page(titre: str, corps: str) -> str:
     Elle garde les mentions et la navigation, sinon on pourrait atterrir sur une
     page qui ne dit ni ce que sont ces chiffres, ni comment revenir.
     """
-    return f"""<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(titre)} — ComptagesFer</title>
-<style>
-  body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
-  main {{ max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
-  .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
-  a {{ color: #1c1915; }}
-</style>
-</head>
-<body>
-<main>
-  <h1>{escape(titre)}</h1>
-  <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
-  <p>{_link("/rechercher", "Rechercher")} · {_link("/carte", "Carte")} · {_link("/comptages", "Comptages")} · {_link("/", "Compter")} · {_link("/methode", "Méthode")}</p>
-  <div class="card"><p>{corps}</p></div>
-</main>
-</body>
-</html>
-"""
+    return chrome(titre, f"<div class='card'><p>{corps}</p></div>")
 
 
 def _search_page(query: str, stops_database: Path, timetable: Path) -> str:
@@ -1174,47 +1162,44 @@ def _search_page(query: str, stops_database: Path, timetable: Path) -> str:
                 + "</ul>"
             )
         if not morceaux:
-            corps_morceaux = (
+            corps = (
                 "<div class='card'><p>Rien pour cette recherche.</p>"
                 "<p>Les gares viennent du GTFS national. Les lignes aussi, "
                 "mais seulement si l'import a été refait depuis la dernière mise à jour.</p></div>"
             )
         else:
-            corps_morceaux = "".join(morceaux)
-        corps = corps_morceaux
+            # Le conteneur existe même avec une seule des deux listes : la
+            # grille doit savoir qu'il y a deux enfants possibles, sinon une
+            # recherche qui ne trouve que des lignes les étire sur toute la
+            # largeur.
+            corps = f"<div class='resultats'>{''.join(morceaux)}</div>"
 
-    return f"""<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rechercher — ComptagesFer</title>
-<style>
-  body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
-  main {{ max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
-  .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
-  a {{ color: #1c1915; }}
-  input {{ width: 100%; box-sizing: border-box; font: inherit; padding: 0.7rem; border-radius: 0.6rem;
-           border: 1px solid #b9b2a6; background: #fff; }}
-  ul.stops {{ list-style: none; padding: 0; }}
-  ul.stops li {{ background: #fff; border-radius: 0.6rem; padding: 0.6rem 0.8rem; margin: 0.3rem 0; }}
-</style>
-</head>
-<body>
-<main>
-  <h1>Rechercher</h1>
-  <form action="/rechercher" method="get">
-    <label for="q">Gare ou ligne</label>
-    <input id="q" type="search" name="q" enterkeyhint="search" autocomplete="off"
-           value="{escape(requete)}" placeholder="Lyon, C13, Bourg-en-Bresse">
-    <button type="submit">Chercher</button>
-  </form>
-  {corps}
-  <p><a href="/comptages">Comptages</a> · <a href="/carte">Carte</a> · <a href="/rechercher">Rechercher</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
-</main>
-</body>
-</html>
-"""
+    form = (
+        "<form action='/rechercher' method='get'>"
+        "<label for='q'>Gare ou ligne</label>"
+        "<input id='q' type='search' name='q' enterkeyhint='search' autocomplete='off'"
+        f" value='{escape(requete, quote=True)}' placeholder='Lyon, C13, Bourg-en-Bresse'>"
+        "<button type='submit'>Chercher</button>"
+        "</form>"
+    )
+    return chrome(
+        "Rechercher",
+        form + corps,
+        actif="/rechercher",
+        extra_css="""
+  input[type="search"] { width: 100%; box-sizing: border-box; font: inherit; padding: 0.7rem;
+                         border-radius: 0.6rem; border: 1px solid #b9b2a6; background: #fff; }
+  button { font: inherit; padding: 0.7rem 1rem; border: 0; border-radius: 0.6rem;
+           background: var(--encre); color: #fff; margin-top: 0.4rem; }
+  ul.stops { list-style: none; padding: 0; }
+  ul.stops li { background: #fff; border-radius: 0.6rem; padding: 0.6rem 0.8rem; margin: 0.3rem 0; }
+  @media (min-width: 48rem) {
+    /* Deux colonnes : gares d'un côté, lignes de l'autre. Sur un téléphone
+       les deux listes s'empilent, et c'est la bonne lecture. */
+    .resultats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; }
+  }
+""",
+    )
 
 
 def _lignes_disponibles(timetable: Path) -> bool:
@@ -1246,57 +1231,351 @@ def _materiel_texte(row: dict) -> str:
     return " · ".join(parties)
 
 
+def _date_fr(created_at: object) -> str:
+    """`created_at` en date française, lisible sans ambiguïté.
+
+    La colonne est un ISO UTC, donc lisible mais pas naturel : «
+    2026-09-30T13:04:11+00:00 » ne se lit pas d'un coup d'œil, et « 30/09 »
+    seul non plus puisque deux comptages le même jour n'ont pas la même
+    heure. On convertit en Europe/Paris, parce qu'un comptage se fait à
+    l'heure locale, et on garde le jour et l'heure.
+
+    Une date illisible ne s'affiche pas : une saisie sans date n'est pas
+    une saisie qui s'est passée hier, elle est une saisie dont on ignore
+    quand elle a eu lieu, et l'écrire le dit.
+    """
+    if not isinstance(created_at, str) or not created_at:
+        return "date inconnue"
+    try:
+        moment = datetime.fromisoformat(created_at)
+    except ValueError:
+        return "date inconnue"
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(ZoneInfo("Europe/Paris"))
+    return moment.strftime("%d/%m/%Y à %H:%M")
+
+
+def _indicateur_texte(valeur: object, unite: str) -> str:
+    """Une pastille d'indicateur, ou rien du tout.
+
+    Un relevé sans indicateur ne laisse pas de pastille vide : « debout —
+    » se lit comme une information perdue, alors que c'est un choix de
+    celui qui a compté.
+
+    L'unité n'est pas échappée : ce sont des constantes du module, écrites
+    ici, jamais rien qui vienne d'un navigateur. Les échapper produirait
+    « d&#x27;écart » dans la page et dans le CSV, pour rien.
+    """
+    if valeur is None:
+        return ""
+    return f"<span class='pastille'>{escape(str(valeur))} {unite}</span>"
+
+
+def _passagers_texte(row: dict) -> str:
+    """L'effectif, ou la mention de son absence.
+
+    Un « train signalé » n'a pas d'effectif parce qu'il n'a pas été compté :
+    écrire « sans effectif » le dit, un tiret pourrait se lire comme un
+    zéro.
+    """
+    if row.get("passengers") is None:
+        return "sans effectif"
+    return escape(str(row["passengers"]))
+
+
+def _pastilles(row: dict) -> str:
+    """Les indicateurs de charge, en pastilles.
+
+    Debout, places libres et écart de charge sont déjà dans le CSV et déjà
+    dans la base. Ils n'étaient sur aucune page de lecture : la donnée
+    sortait sans qu'un lecteur du site puisse la voir, ce qui la rendait
+    inexploitable pour qui n'a pas téléchargé le fichier.
+    """
+    morceaux = [
+        _indicateur_texte(row.get("standing"), "debout"),
+        _indicateur_texte(row.get("seats_free"), "% de places libres"),
+        _indicateur_texte(row.get("imbalance"), "% d'écart de charge"),
+    ]
+    retenus = [m for m in morceaux if m]
+    return f"<p class='pastilles'>{''.join(retenus)}</p>" if retenus else ""
+
+
+def _commentaire(row: dict) -> str:
+    """Le commentaire de celui qui a compté.
+
+    Il est publié dans le CSV et /methode le dit, mais la page de lecture ne
+    l'affichait pas : le champ existait pour le lecteur du fichier et pas
+    pour celui du site. Or c'est le commentaire qui explique une charge
+    atypique — un car de substitution, un train supprimé — et une charge
+    sans explication se lit comme une erreur de comptage.
+    """
+    texte = (row.get("comment") or "").strip()
+    if not texte:
+        return ""
+    return f"<p class='commentaire'>{escape(texte)}</p>"
+
+
+def _fiabilite_texte(row: dict) -> str:
+    """La fiabilité du compte, lisible en un mot.
+
+    La saisie demande un pourcentage entre 0 et 100. « 70 % » ne dit rien
+    à un lecteur qui ne connaît pas l'échelle ; l'adjectif le dit. Les deux
+    sont affichés, l'adjectif d'abord : c'est lui qu'on compare d'un relevé
+    à l'autre.
+    """
+    valeur = row.get("reliability")
+    if not isinstance(valeur, int):
+        return ""
+    if valeur >= 80:
+        mot = "fiable"
+    elif valeur >= 50:
+        mot = "moyen"
+    else:
+        mot = "incertain"
+    return f"{mot} ({valeur} %)"
+
+
+def _photo_phrase(row: dict) -> str:
+    """La photo du temps réel, en une ligne lisible.
+
+    Les cinq voisins sont dans la base et dans le CSV. Écrits en prose au
+    milieu d'une carte, ils prenaient la moitié de la place pour dire
+    « TER à l'heure · TER à l'heure · TER en retard · … » : cinq fois la
+    même information, dans le désordre de la saisie. Ils passent en
+    dessous, en un paragraphe, ce qui est la place d'une information de
+    contexte et pas d'un titre.
+    """
+    snapshot = row.get("snapshot")
+    morceaux = [
+        _photo_label(snapshot, "precedent"),
+        _photo_label(snapshot, "precedent_meme_type"),
+        _photo_label(snapshot, "courant"),
+        _photo_label(snapshot, "suivant"),
+        _photo_label(snapshot, "suivant_meme_type"),
+    ]
+    retenus = [m for m in morceaux if m]
+    if not retenus:
+        return "aucune photo du temps réel"
+    return " · ".join(retenus)
+
+
+def _mode_texte(kind: object) -> str:
+    """Ce que le relevé est, en un mot.
+
+    Trois natures, pas deux : `serpent` et `count` sont des comptages,
+    `missing` est un train signalé — un relevé de l'offre qui manque, pas
+    une charge mesurée. Dire « unique » d'un train signalé le faisait
+    passer pour un comptage, et c'est le défaut que /methode interdit par
+    tout ailleurs.
+    """
+    return {"serpent": "serpent", "count": "unique"}.get(str(kind or ""), "signalé")
+
+
+def _card_tete(row: dict) -> str:
+    """Le bloc commun à la carte et à la ligne du tableau : OD, effectif,
+    auteur, mode. C'est l'identité d'un comptage, donc elle est écrite une
+    fois — une carte et une ligne qui divergent sur le nombre affiché
+    seraient deux chiffres pour un relevé.
+    """
+    who = escape(row["pseudo"]) if row["pseudo"] else "anonyme"
+    origin = escape(row["origin_name"] or "")
+    destination = escape(row["destination_name"] or "")
+    # Un train signalé n'a pas d'effectif : écrire « sans effectif voyageurs »
+    # serait un faux pluriel et une fausse unité.
+    if row.get("passengers") is None:
+        return f"<strong>{origin} → {destination}</strong><p>{_mode_texte(row.get('kind'))} · {who}</p>"
+    return (
+        f"<strong>{origin} → {destination}</strong>"
+        f"<p>{_passagers_texte(row)} voyageurs · {who} · {_mode_texte(row.get('kind'))}</p>"
+    )
+
+
 def _reading_cards(rows: list[dict]) -> str:
     cards = []
     for row in rows:
-        who = escape(row["pseudo"]) if row["pseudo"] else "anonyme"
-        origin = escape(row["origin_name"] or "")
-        destination = escape(row["destination_name"] or "")
-        passengers = "" if row["passengers"] is None else row["passengers"]
-        mode = "serpent" if row["kind"] == "serpent" else "unique"
         materiel = _materiel_texte(row)
         ligne_materiel = f"<p class='status'>{materiel}</p>" if materiel else ""
         cards.append(
             "<article class='card'>"
-            f"<strong>{origin} → {destination}</strong>"
-            f"<p>{passengers} voyageurs · {who} · {mode}</p>"
-            f"{ligne_materiel}"
-            f"{_legs_text(row.get('legs'))}"
-            f"<p class='status'>précédent {_photo_label(row['snapshot'], 'precedent')} · "
-            f"même type {_photo_label(row['snapshot'], 'precedent_meme_type')} · "
-            f"choisi {_photo_label(row['snapshot'], 'courant')} · "
-            f"suivant {_photo_label(row['snapshot'], 'suivant')} · "
-            f"même type {_photo_label(row['snapshot'], 'suivant_meme_type')}</p>"
-            "</article>"
+            + _card_tete(row)
+            + f"<p class='status'>{_date_fr(row.get('created_at'))}</p>"
+            + ligne_materiel
+            + _pastilles(row)
+            + _legs_text(row.get("legs"))
+            + _commentaire(row)
+            + f"<p class='status'>{_photo_phrase(row)}</p>"
+            + "</article>"
         )
-    return "\n".join(cards) or "<p>Aucun comptage pour l'instant.</p>"
+    return "".join(cards) or "<p>Aucun comptage pour l'instant.</p>"
 
 
-def _reading_page(rows: list[dict]) -> str:
-    body = _reading_cards(rows)
-    return f"""<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Comptages</title>
-<style>
-  body {{ margin: 0; font: 18px/1.35 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
-  main {{ max-width: 32rem; margin: 0 auto; padding: 1rem; }}
-  .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
-  a {{ color: #1c1915; }}
-</style>
-</head>
-<body>
-<main>
-  <h1>Comptages</h1>
-  <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
-  <p><a href="/rechercher">Rechercher</a> · <a href="/carte">Voir la carte</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
-  {body}
-</main>
-</body>
-</html>
-"""
+def _trier(rows: list[dict], tri: str, sens: str) -> list[dict]:
+    """L'ordre de la liste, à partir de l'URL.
+
+    Le tri se fait en Python et non dans la requête : `_list_saisies` rend
+    aussi le CSV publié, et l'ordre du fichier exporté ne doit pas dépendre
+    d'un paramètre d'affichage d'une page web.
+
+    Une clé inconnue retombe sur la date au lieu de lever : une URL reçoit
+    des fautes de frappe, et une page d'erreur pour un `tri=voyageurs` mal
+    orthographié est une page perdue.
+    """
+    ranges = {
+        "date": lambda r: r.get("created_at") or "",
+        "passengers": lambda r: r.get("passengers") or 0,
+        "reliability": lambda r: r.get("reliability") or 0,
+        "pseudo": lambda r: (r.get("pseudo") or "").lower(),
+        "trajet": lambda r: f"{r.get('origin_name') or ''} {r.get('destination_name') or ''}".lower(),
+        "materiel": lambda r: _materiel_texte(r).lower(),
+    }
+    cle = tri if tri in ranges else "date"
+    # Sans paramètre de tri, l'ordre est le plus récent d'abord. Un tri
+    # demandé sans sens part en croissant : un nom commence par A.
+    decroissant = sens == "desc" or (not sens and not tri)
+    tries = sorted(rows, key=ranges[cle], reverse=decroissant)
+    if cle == "date":
+        # La date est toujours renseignée : rien à remettre en fin de liste.
+        return tries
+    # Les relevés sans valeur pour la clé triée vont en dernier dans les DEUX
+    # sens. Un `reverse=True` qui porterait sur un « la valeur manque »
+    # booléen les remonterait en tête du tri décroissant, et un train signalé
+    # sans effectif se lirait comme le relevé le plus chargé — ce qu'il n'est
+    # pas. Ils sont donc retirés, triés, puis remis à la fin.
+    sans = [r for r in tries if r.get(cle) is None]
+    avec = [r for r in tries if r.get(cle) is not None]
+    return avec + sans
+
+
+def _reading_table(rows: list[dict], tri: str, sens: str) -> str:
+    """La liste en tableau, pour un écran large.
+
+    Le tableau est la même donnée que les cartes, pas une autre : il rend
+    la même liste, et il n'apparaît qu'au-dessus de 48 rem. Sur un
+    téléphone la feuille de style le retire du rendu.
+
+    Chaque en-tête de colonne est un lien : le tri est une URL, donc il se
+    partage et il se teste, et il n'y a pas de JavaScript dans une page
+    dont le JavaScript n'est jamais exécuté par la suite de tests.
+    """
+    if not rows:
+        return ""
+    colonnes = (
+        ("date", "Date"),
+        ("trajet", "Trajet"),
+        ("passengers", "Voyageurs"),
+        ("materiel", "Matériel"),
+        ("reliability", "Fiabilité"),
+        ("pseudo", "Par"),
+    )
+    entetes = []
+    for cle, titre in colonnes:
+        if cle == tri and sens:
+            # Recliquer sur la colonne active inverse le sens. Le lien doit
+            # viser l'état OPPOSÉ à celui qu'on regarde : un lien vers
+            # l'état courant ne se distingue pas d'un lien mort, et
+            # l'utilisateur qui reclique pour « l'inverser » ne voit rien
+            # se passer.
+            if sens == "desc":
+                cible = "&sens=asc"
+                marque = " ▾"
+            else:
+                cible = "&sens=desc"
+                marque = " ▴"
+            lien = f"<a href='/comptages?tri={cle}{cible}'>{titre}{marque}</a>"
+        else:
+            # Sans tri actif, un nom commence par A et un effectif du plus
+            # petit au plus grand : c'est le sens qui sert à comparer.
+            lien = f"<a href='/comptages?tri={cle}&sens=asc'>{titre}</a>"
+        entetes.append(f"<th>{lien}</th>")
+
+    corps = []
+    vide = '<span class="vide">non précisé</span>'
+    for row in rows:
+        materiel = _materiel_texte(row) or vide
+        fiabilite = _fiabilite_texte(row) or vide
+        pseudo = escape(row["pseudo"]) if row["pseudo"] else vide
+        moment = escape(_date_fr(row.get("created_at")))
+        trajet = f"{escape(row['origin_name'] or '')} → {escape(row['destination_name'] or '')}"
+        cellules = [
+            f"<td class='nombre'>{moment}</td>",
+            f"<td>{trajet}</td>",
+            # Le train signalé n'a pas d'effectif : la colonne dit son
+            # mode, pas un nombre à côté d'un vide.
+            f"<td class='nombre'>{_mode_texte(row.get('kind')) if row.get('passengers') is None else _passagers_texte(row)}</td>",
+            f"<td>{materiel}</td>",
+            f"<td>{fiabilite}</td>",
+            f"<td>{pseudo}</td>",
+        ]
+        corps.append("<tr>" + "".join(cellules) + "</tr>")
+
+    return (
+        "<table class='tableau'>"
+        "<caption>Les mêmes comptages, en tableau. Un en-tête de colonne trie la liste.</caption>"
+        f"<thead><tr>{''.join(entetes)}</tr></thead>"
+        f"<tbody>{''.join(corps)}</tbody>"
+        "</table>"
+    )
+
+
+def _resume(rows: list[dict]) -> str:
+    """Le décompte en tête de liste.
+
+    Une liste de comptages sans dire combien elle en contient oblige le
+    lecteur à la faire défiler pour le savoir. Le décompte indique aussi la
+    période, ce qui répond à la question que personne ne formule mais que
+    tout le monde se pose en tombant sur une page de relevés : « jusqu'à
+    quand ? ».
+
+    Rien n'est annoncé quand la liste est vide : « 0 comptage, du 01/01 au
+    01/01 » serait une période inventée.
+    """
+    if not rows:
+        return ""
+    dates = sorted(
+        r["created_at"] for r in rows if isinstance(r.get("created_at"), str) and r["created_at"]
+    )
+    plural = "s" if len(rows) > 1 else ""
+    if not dates:
+        return f"<p class='status'>{len(rows)} comptage{plural}, sans date.</p>"
+    debut = _date_fr(dates[0]).split(" à ")[0]
+    fin = _date_fr(dates[-1]).split(" à ")[0]
+    return f"<p class='status'>{len(rows)} comptage{plural} du {debut} au {fin}.</p>"
+
+
+def _reading_page(rows: list[dict], tri: str = "", sens: str = "") -> str:
+    """La liste des comptages, la plus récente d'abord.
+
+    Le défaut est l'ordre décroissant sur la date. L'ordre croissant
+    initial venait de l'ordre d'insertion en base, ce qui est un détail de
+    stockage et pas un choix de lecture : le plus récent d'abord est ce
+    qu'on veut voir en arrivant sur la page.
+    """
+    tries = _trier(rows, tri, sens)
+    corps = (
+        f"{_resume(rows)}"
+        f"<p><a class='bouton' href='/api/export.csv'>Télécharger le CSV</a></p>"
+        f"<div class='cartes'>{_reading_cards(tries)}</div>"
+        f"{_reading_table(tries, tri, sens)}"
+    )
+    return chrome(
+        "Comptages",
+        corps,
+        actif="/comptages",
+        extra_css="""
+  .pastilles { margin: 0.3rem 0 0.4rem; }
+  .pastille { display: inline-block; background: #f0ece2; border: 1px solid var(--bord);
+              border-radius: 1rem; padding: 0.1rem 0.55rem; margin: 0.15rem 0.3rem 0.15rem 0;
+              font-size: 0.82rem; color: var(--gris); }
+  .commentaire { border-left: 3px solid var(--bord); padding-left: 0.6rem; margin: 0.5rem 0;
+                 font-size: 0.95rem; }
+  @media (min-width: 48rem) {
+    /* Le tableau remplace les cartes, il ne s'ajoute pas à elles : sans
+       cette ligne, un lecteur sur grand écran verrait la liste deux fois,
+       une fois en cartes et une fois en tableau. */
+    .cartes { display: none; }
+  }
+""",
+    )
 
 
 def _method_page() -> str:
@@ -1306,32 +1585,12 @@ def _method_page() -> str:
     estimation. Tant qu'elle n'existe pas, on ne publie que du brut, et
     c'est délibéré : un effectif saisi par un voyageur n'est pas une
     fréquentation, et un échantillon de passionnés n'est pas un sondage.
-    """
-    return """<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Méthode — ComptagesFer</title>
-<style>
-  body { margin: 0; font: 18px/1.5 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }
-  main { max-width: 34rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
-  h1 { margin-bottom: 0.2rem; }
-  h2 { margin-top: 2rem; font-size: 1.15rem; }
-  h3 { margin-top: 1.4rem; font-size: 1rem; }
-  .lead { font-weight: 600; }
-  ul { padding-left: 1.2rem; }
-  li { margin: 0.35rem 0; }
-  a { color: #1c1915; }
-  .note { background: #fff; border-radius: 0.8rem; padding: 0.8rem 1rem; margin: 1rem 0; }
-  footer { margin-top: 2.5rem; font-size: 0.85rem; color: #5c554b; }
-</style>
-</head>
-<body>
-<main>
 
-<h1>Méthode</h1>
-<p class="mode">Ce que l'outil fait, et comment lire un comptage.</p>
+    Le texte est une chaîne constante et le reste vient du chrome commun :
+    une page de lecture qui recopie sa propre mise en page diverge, et
+    celle-ci serait la première à diverger puisque c'est la plus longue.
+    """
+    corps = """<p class="mode">Ce que l'outil fait, et comment lire un comptage.</p>
 
 <p>Bienvenue sur ComptagesFer. Ce site permet de contribuer à la connaissance
 des flux ferroviaires (+ certains cars TER) en France, y compris sur les trains
@@ -1480,16 +1739,30 @@ de l'application est sous <strong>GPL-3.0</strong>. Les deux ne se mélangent
 pas&nbsp;: les chiffres que vous exportez relèvent de la première, le logiciel
 qui les affiche de la seconde.</p>
 
-<footer>
-<p>Cette page décrit ce que l'outil fait aujourd'hui. Elle sera mise à jour
-chaque fois qu'une règle change.</p>
-<p><a href="/comptages">Voir les comptages</a> · <a href="/rechercher">Rechercher</a> · <a href="/carte">Carte</a> · <a href="/api/export.csv">Télécharger le CSV</a> · <a href="/">Compter</a></p>
-</footer>
-
-</main>
-</body>
-</html>
+<p class="status">Cette page décrit ce que l'outil fait aujourd'hui. Elle sera mise
+à jour chaque fois qu'une règle change.</p>
 """
+    return chrome(
+        "Méthode",
+        corps,
+        actif="/methode",
+        mention="",
+        extra_css="""
+  h2 { margin-top: 2rem; }
+  h3 { margin-top: 1.4rem; font-size: 1rem; }
+  .mode { color: var(--gris); margin: 0 0 1rem; }
+  .lead { font-weight: 600; }
+  ul { padding-left: 1.2rem; }
+  li { margin: 0.35rem 0; }
+  .note { background: #fff; border-radius: 0.8rem; padding: 0.8rem 1rem; margin: 1rem 0; }
+  @media (min-width: 48rem) {
+    /* Un texte de méthode se lit en 72 rem sans effort, mais deux colonnes
+       le rendent pénible : on garde la colonne de lecture et on élargit
+       seulement la gouttière. La largeur utile reste celle d'un livre. */
+    main { max-width: 46rem; }
+  }
+""",
+    )
 
 
 def _export_csv(rows: list[dict]) -> str:

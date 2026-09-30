@@ -18,6 +18,8 @@ import json
 from html import escape
 from pathlib import Path
 
+from comptagefer.affichage import chrome
+
 LEAFLET_JS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
 LEAFLET_CSS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
 # Fond de plan. Les tuiles raster officielles d'OpenStreetMap ne demandent
@@ -182,41 +184,42 @@ def map_page(features: list[dict], total: int) -> str:
     `features` est sérialisé dans la page plutôt que relu après coup : le pied
     annonce le nombre de la base entière, et la liste des tracés reste
     lisible même si le navigateur n'a pas pu charger Leaflet.
+
+    Sur un écran large, la carte passe en pleine hauteur et la liste des
+    tracés se place à côté, pas en dessous : c'est la seule page du site où
+    la surface disponible est ce qui manque, et un cadre de 22 rem au milieu
+    d'un écran de 1080 px est la définition d'un espace perdu. Le téléphone
+    garde la pile, parce que c'est là qu'on la fait défiler.
     """
-    return f"""<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Carte — ComptagesFer</title>
-<link rel="stylesheet" href="{LEAFLET_CSS}">
-<style>
-  body {{ margin: 0; font: 18px/1.4 system-ui, sans-serif; background: #f4f1ea; color: #1c1915; }}
-  main {{ max-width: 40rem; margin: 0 auto; padding: 1rem 1rem 3rem; }}
-  #carte {{ height: 22rem; border-radius: 0.8rem; background: #fff; }}
-  .note {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem 1rem; margin: 1rem 0; }}
-  a {{ color: #1c1915; }}
-  ol {{ padding-left: 1.2rem; }}
-  li {{ margin: 0.4rem 0; }}
-  .pied {{ font-size: 0.85rem; color: #5c554b; }}
-</style>
-</head>
-<body>
-<main>
-  <h1>Carte</h1>
-  <p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>
-  <p><a href="/comptages">Voir la liste</a> · <a href="/rechercher">Rechercher</a> · <a href="/">Compter</a> · <a href="/methode">Méthode</a></p>
-  {_NOTE}
-  {_corps(features)}
-  <p id="carte-pied" class="pied">{_pied(total, features)}</p>
-</main>
-<script src="{LEAFLET_JS}"></script>
-<script>
-{_script(features)}
-</script>
-</body>
-</html>
-"""
+    return chrome(
+        "Carte",
+        f"<p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>"
+        f"{_NOTE}"
+        f"{_corps(features)}"
+        f"<p id='carte-pied' class='pied'>{_pied(total, features)}</p>",
+        actif="/carte",
+        extra_css="""
+  #carte { height: 22rem; border-radius: 0.8rem; background: #fff; }
+  .note { background: #fff; border-radius: 0.8rem; padding: 0.8rem 1rem; margin: 1rem 0; }
+  ol { padding-left: 1.2rem; }
+  li { margin: 0.4rem 0; }
+  .pied { font-size: 0.85rem; color: var(--gris); }
+  @media (min-width: 48rem) {
+    /* La carte prend la hauteur de l'écran et la liste devient un panneau
+       latéral. La grille est déclarée ici et pas sur `.corps` : la liste
+       disparaît au-delà de 30 tracés, et une colonne vide sur un écran
+       large ferait de la place perdue. */
+    #carte { height: calc(100vh - 13rem); min-height: 28rem; }
+    .traces { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); gap: 1.2rem;
+              align-items: start; }
+    .traces ol { max-height: calc(100vh - 16rem); overflow-y: auto; background: #fff;
+                 border-radius: 0.8rem; padding: 0.8rem 0.8rem 0.8rem 2rem; }
+  }
+""",
+        extra_head=f'<link rel="stylesheet" href="{LEAFLET_CSS}">',
+        extra_script=f'<script src="{LEAFLET_JS}"></script>\n<script>\n{_script(features)}\n</script>',
+        mention="",
+    )
 
 
 def _pied(total: int, features: list[dict]) -> str:
@@ -258,7 +261,10 @@ def _corps(features: list[dict]) -> str:
         # Les noms sont déjà échappés par counted_features.
         lignes.append(f"<li>{profil} · {nombre} · {feature['kind_fr']} · {who}</li>")
     liste = "<ol>" + "".join(lignes) + "</ol>" if len(lignes) <= 30 else ""
-    return "<div id='carte'></div>" + liste
+    # Le conteneur `traces` porte la grille du grand écran. Il entoure la
+    # carte comme la liste : sur un téléphone il ne fait rien, sur un large
+    # écran il met la liste à côté au lieu de sous le cadre.
+    return "<div class='traces'><div id='carte'></div>" + liste + "</div>"
 
 
 # La limite du segment droit est une propriété du réseau de données, pas un

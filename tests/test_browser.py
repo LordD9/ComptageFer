@@ -171,6 +171,40 @@ def _sessions(site: str) -> list[dict]:
         return json.load(response)
 
 
+def _poster_releve(site: str, jeton: str, nom: str, effectif: int) -> None:
+    """Un relevé écrit hors du navigateur.
+
+    Passer par le formulaire pour chaque relevé afin d'en préparer la
+    lecture à l'écran serait lent, et transformerait un test de mise en
+    page en test de saisie. On écrit donc directement, et on ne teste ici
+    que ce qui se voit.
+    """
+    photo = {
+        "precedent": None,
+        "courant": {"trip_id": "1_F:TER:1234", "status": "SCHEDULED", "delay_seconds": 0},
+        "suivant": None,
+    }
+    corps = {
+        "client_id": jeton,
+        "origin_stop_id": "StopArea:Lyon",
+        "destination_stop_id": "StopArea:Vienne",
+        "origin_name": nom,
+        "destination_name": "Vienne",
+        "trip_id": "1_F:TER:1234",
+        "passengers": effectif,
+        "reliability": 70,
+        "pseudo": "railfan",
+        "snapshot": photo,
+    }
+    requete = urllib.request.Request(
+        site + "/api/sessions",
+        data=json.dumps(corps).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(requete) as response:
+        assert response.status == 200
+
+
 def _fill_count(page, value: int) -> None:
     """Remplit le nombre exact comme un utilisateur : on tape dans le champ."""
     field = page.locator("#passengers")
@@ -530,6 +564,73 @@ def test_the_method_page_is_readable_and_honest(page, site):
         "Licences",
     ):
         assert titres.count(titre) == 1, f"section absente ou dupliquée : {titre!r} dans {titres}"
+
+
+def test_the_list_switches_between_cards_and_table(page, site):
+    """Une seule lecture à l'écran, jamais les deux.
+
+    Le tableau est écrit dans la même page que les cartes parce qu'elles
+    sont la même liste. Ce qui les sépare, c'est la feuille de style, et
+    elle n'est jamais exécutée par pytest : sans ce test, une media query
+    cassée laisserait la page afficher ses sept relevés deux fois sur un
+    écran large, sans qu'aucune suite ne le remarque.
+
+    Les deux lectures sont donc vérifiées sur un vrai moteur, dans les
+    deux sens, et le téléphone est vérifié aussi : c'est la cible, et une
+    correction pour le grand écran ne doit pas la casser.
+    """
+    _poster_releve(site, "bascule-1", "Lyon", 40)
+    _poster_releve(site, "bascule-2", "Vienne", 90)
+
+    def visible(page, selecteur: str) -> bool:
+        return page.locator(selecteur).first.is_visible()
+
+    # Téléphone : les cartes, et rien d'autre.
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(site + "/comptages")
+    assert visible(page, ".cartes"), "les cartes sont la lecture du téléphone"
+    assert not visible(page, "table.tableau"), "le tableau n'a pas sa place sur un téléphone"
+
+    # Grand écran : le tableau, et rien d'autre.
+    page.set_viewport_size({"width": 1500, "height": 1000})
+    page.goto(site + "/comptages")
+    assert visible(page, "table.tableau"), "le grand écran lit en tableau"
+    assert not visible(page, ".cartes"), (
+        "les cartes ne doivent pas rester au-dessus du tableau : "
+        "le lecteur verrait chaque relevé deux fois"
+    )
+    assert page.locator("table.tableau tbody tr").count() == 2
+
+    # Et l'inverse du tri par colonne, réel, sur le même moteur.
+    valeurs_avant = page.locator("table.tableau tbody tr td:nth-child(3)").all_text_contents()
+    page.click("table.tableau thead th:nth-child(3) a")
+    page.wait_for_selector("table.tableau tbody tr")
+    assert "tri=passengers" in page.url, "le tri doit être une URL, pas un état navigateur"
+    valeurs_apres = page.locator("table.tableau tbody tr td:nth-child(3)").all_text_contents()
+    assert valeurs_avant != valeurs_apres, "cliquer sur la colonne doit changer l'ordre"
+
+
+def test_the_header_navigates_from_every_reading_page(page, site):
+    """Un en-tête commun doit être un en-tête commun.
+
+    Cinq pages, cinq fois le même bandeau : c'est la seule chose qui permet
+    à un lecteur de savoir qu'il est ailleurs dans le site. Si une page
+    garde son ancien paragraphe de liens, elle perd le repère sans qu'aucun
+    test de contenu ne s'en aperçoive.
+    """
+    for chemin in ("/comptages", "/carte", "/rechercher", "/methode", "/ligne?ligne=R-TER-1"):
+        page.goto(site + chemin)
+        entete = page.locator("header.site")
+        assert entete.count() == 1, f"{chemin} n'a pas l'en-tête commun"
+        # Chaque destination est là. `/` apparaît deux fois, et c'est
+        # voulu : la marque du site et le lien « Compter » mènent au même
+        # formulaire, et on ne retire pas le nom du site de sa propre page.
+        for cible in ("/comptages", "/carte", "/rechercher", "/methode"):
+            assert entete.locator(f'a[href="{cible}"]').count() == 1, (
+                f"{chemin} : le lien {cible} manque dans l'en-tête, ou y est en double"
+            )
+        assert entete.locator('a[href="/"]').count() == 2, chemin
+        assert entete.is_visible(), chemin
 
 
 def test_the_reading_page_links_to_the_method(page, site):
