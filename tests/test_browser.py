@@ -1100,26 +1100,48 @@ def test_the_load_snake_is_reachable(page, site):
 
 FAKE_LEAFLET = """
 window.L = {};
-const dessines = { segments: [], points: [], vues: [] };
+const dessines = { segments: [], points: [], vues: [], styles: [], carte: null };
 window.dessines = dessines;
 function latLng(lat, lon) { return { lat: lat, lon: lon }; }
 latLng.extend = function (autre) { return { extend: function () { return autre; } }; };
 window.L.map = function (id) {
   dessines.vues.push(id);
-  return {
+  const carte = {
     setView: function () {},
-    fitBounds: function (bornes) { dessines.bornes = bornes; },
+    fitBounds: function (bornes) { dessines.bornes = bornes; carte.zoomSurBornes = true; },
     invalidateSize: function () {},
     addTo: function () { return null; },
+    on: function (nom, fn) { (carte.handlers = carte.handlers || {})[nom] = fn; },
   };
+  dessines.carte = carte;
+  return carte;
 };
 window.L.latLng = latLng;
-window.L.latLngBounds = function (un, deux) { return { extend: function () { return un; } }; };
+// `extend` renvoie un objet qui rend la main, et qui doit donc porter `pad`
+// comme le neuf : c'est la chaîne que Leaflet renvoie en vrai. Sans lui, la
+// sélection d'un tracé échouerait sur `pad is not a function` et le test
+// vérifierait une erreur de script au lieu du comportement.
+window.L.latLngBounds = function (un, deux) {
+  const bornes = { _bornes: [un, deux], pad: function () { return this; } };
+  bornes.extend = function () { return bornes; };
+  return bornes;
+};
 window.L.layerGroup = function () { return { addTo: function () { return null; } }; };
 window.L.tileLayer = function (url) { return { url: url, addTo: function () { return null; } }; };
 window.L.polyline = function (points, options) {
   dessines.segments.push({ points: points, options: options });
-  return { addTo: function () { return null; } };
+  // `addTo` rend la main sur l'objet lui-même, comme Leaflet : la page range
+  // ce qu'elle reçoit pour pouvoir le surligner plus tard. Renvoyer `null`
+  // ici ferait échouer la synchronisation en silence, et le test vérifierait
+  // l'absence d'erreur plutôt que l'absence d'effet.
+  return {
+    options: options,
+    setStyle: function (extra) {
+      Object.assign(this.options, extra);
+      dessines.styles.push(Object.assign({}, extra));
+    },
+    addTo: function () { return this; },
+  };
 };
 window.L.circleMarker = function (point, options) {
   dessines.points.push({ point: point, options: options });
@@ -1205,6 +1227,177 @@ def test_the_map_page_has_no_horizontal_overflow(page, site):
         "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
     )
     assert debord <= 0, f"la page déborde de {debord}px"
+
+
+# --- la liste et la carte se suivent ----------------------------------------
+#
+# La vague 3. Ces tests sont sur un vrai moteur parce que c'est la seule façon
+# d'exercer un `mouseenter`, un `aria-pressed` et un `hidden` : la page
+# répond 200 et le HTML est correct même quand aucun des trois ne fait rien.
+
+def _deux_comptages(site: str) -> None:
+    """Deux corridors distincts, pour que la synchronisation ait deux cibles.
+
+    Un seul tracé ne permettrait pas de vérifier que le survol éteint *les
+    autres* : c'est l'erreur classique d'une synchronisation qui allume tout.
+    """
+    _ecrire_releve(site, "synchro-1", "Lyon", "Vienne", 40)
+    _ecrire_releve(site, "synchro-2", "Vienne", "Valence", 90)
+
+
+def test_hovering_a_line_lights_up_its_track(page, site):
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.route("**/*.png", lambda route: route.abort())
+    page.goto(site + "/carte")
+    page.wait_for_function("() => window.dessines && window.dessines.segments.length === 2")
+    assert _console_errors(page) == [], f"erreur JS : {_console_errors(page)}"
+
+    page.hover(".ligne[data-i='1']")
+    allumes = page.evaluate("() => window.dessines.segments[1].options")
+    eteintes = page.evaluate("() => window.dessines.segments[0].options")
+    assert allumes["weight"] > 4, "le tracé survolé doit s'épaissir"
+    assert allumes["opacity"] == 1
+    assert eteintes["opacity"] < 1, (
+        "les autres tracés doivent s'effacer : c'est ce qui dit lequel est survolé"
+    )
+
+
+def test_leaving_the_line_puts_the_tracks_back(page, site):
+    """Le survol est temporaire. Un tracé qui reste allumé ment sur la suite."""
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_function("() => window.dessines && window.dessines.segments.length === 2")
+
+    page.hover(".ligne[data-i='0']")
+    assert page.evaluate("() => window.dessines.segments[0].options.weight") > 4
+    # La souris part vers le titre de la page, hors de la liste.
+    page.hover("h1")
+    revenue = page.evaluate("() => window.dessines.segments[0].options.weight")
+    assert revenue == 4, f"le tracé doit revenir à son poids normal, il est à {revenue}"
+
+
+def test_clicking_a_line_opens_its_charge_curve(page, site):
+    _reach_form(page, site)
+    page.click("#plus10")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+
+    courbe = page.locator("figure.profil").first
+    assert not courbe.is_visible(), "aucune courbe ne s'ouvre toute seule"
+    page.click(".ligne[data-i='0']")
+    assert courbe.is_visible(), "le clic doit ouvrir la courbe de charge"
+    assert page.locator(".ligne[data-i='0']").get_attribute("aria-pressed") == "true"
+    # La courbe est bien celle du relevé choisi, pas un cadre vide.
+    assert courbe.locator("svg").count() == 1
+
+
+def test_clicking_a_second_line_closes_the_first(page, site):
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+
+    page.click(".ligne[data-i='0']")
+    assert page.locator("figure.profil").first.is_visible()
+    page.click(".ligne[data-i='1']")
+    visibles = page.locator("figure.profil:visible").count()
+    assert visibles == 1, (
+        f"deux courbes ouvertes à la fois ({visibles}) : la comparaison a son propre mode"
+    )
+
+
+def test_clicking_the_same_line_again_closes_it(page, site):
+    """Un bouton qui ne se referme pas oblige à recharger la page."""
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+
+    page.click(".ligne[data-i='0']")
+    assert page.locator("figure.profil:visible").count() == 1
+    page.click(".ligne[data-i='0']")
+    assert page.locator("figure.profil:visible").count() == 0
+    assert page.locator(".ligne[data-i='0']").get_attribute("aria-pressed") == "false"
+
+
+def test_the_keyboard_reaches_the_curve_too(page, site):
+    """Le clavier doit obtenir ce que la souris obtient.
+
+    Un bouton qui ne s'ouvre qu'au clic de souris est un bouton inaccessible,
+    et le test ne le verrait pas : il faudrait tryser au clavier pour s'en
+    apercevoir.
+    """
+    _deux_comptages(site)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+
+    page.focus(".ligne[data-i='0']")
+    page.keyboard.press("Enter")
+    assert page.locator("figure.profil:visible").count() == 1, (
+        "Entrée doit ouvrir la courbe : un bouton ne doit pas être une souris à lui seul"
+    )
+
+
+def test_the_list_still_works_without_leaflet(page, site):
+    """Sans la bibliothèque, la liste reste utilisable : survol et courbe.
+
+    Ce que la carte apporte — le déplacement au clic — disparaît, mais le
+    reste ne doit pas. La page qui répond 200 avec une liste morte est
+    exactement le défaut que les vagues 1 et 2 ont appris à traquer.
+    """
+    _deux_comptages(site)
+    _carte_sans_leaflet(page, site)
+    page.wait_for_selector("body")
+    assert _console_errors(page) == [], f"erreur JS sans Leaflet : {_console_errors(page)}"
+    assert "carte n'a pas pu se charger" in page.text_content("body")
+
+    page.click(".ligne[data-i='0']")
+    assert page.locator("figure.profil:visible").count() == 1, (
+        "la courbe de charge ne dépend pas de Leaflet : elle est dans la page"
+    )
+
+
+def test_the_charge_curve_survives_a_phone_layout(page, site):
+    """Sur un téléphone, la courbe doit être lisible et pas débordante.
+
+    C'est le défaut déjà rencontré deux fois dans cette PR : une vue retirée
+    sous 48 rem, une page qui répond 200 et n'affiche rien. Ici la courbe est
+    dans le flux, donc le risque est le débordement.
+    """
+    _deux_comptages(site)
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector(".ligne")
+    page.click(".ligne[data-i='0']")
+
+    courbe = page.locator("figure.profil:visible").first
+    assert courbe.is_visible(), "la courbe doit exister sur un téléphone aussi"
+    largeur = courbe.locator("svg").first.bounding_box()
+    assert largeur["width"] <= 390, f"la courbe déborde : {largeur['width']}px sur un écran de 390"
+
+
+def test_a_reported_train_stays_plain_text_on_the_map(page, site):
+    """Pas d'effectif, pas de bouton : la ligne reste du texte lisible.
+
+    Vérifié dans un vrai moteur, et pas seulement en pytest, parce qu'un
+    `<button>` sans gestionnaire est visible et cliquable : le lecteur
+    cliquerait et rien ne se passerait.
+    """
+    _ecrire_releve(site, "sans-effectif", "Lyon", "Vienne", None)
+    page.route("**/leaflet.js", lambda route: route.fulfill(status=200, body=FAKE_LEAFLET))
+    page.goto(site + "/carte")
+    page.wait_for_selector("body")
+    assert _console_errors(page) == []
+    assert page.locator(".ligne").count() == 0, "un train signalé n'a pas de courbe, donc pas de bouton"
+    assert "sans effectif" in page.text_content("body"), "mais il reste dans la liste, lisible"
 
 
 # --- la reprise du serpent après fermeture d'onglet -------------------------

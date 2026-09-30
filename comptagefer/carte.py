@@ -19,6 +19,7 @@ from html import escape
 from pathlib import Path
 
 from comptagefer.affichage import chrome
+from comptagefer.profil import profil_svg
 
 LEAFLET_JS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
 LEAFLET_CSS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -57,14 +58,26 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
     for row in rows:
         arretees = _trace(row)
         points = []
-        for stop_id, _name in arretees:
+        placables = []
+        for stop_id, name in arretees:
             place = places.get(stop_id)
             if place is not None:
                 points.append([place[1], place[0]])  # [lon, lat] comme le réseau
+                # Les deux versions sont gardées : `places` part dans le
+                # <script> et doit être échappé, `noms_bruts` part dans la
+                # courbe de charge, qui l'échappe de son côté. Échapper deux
+                # fois afficherait « R&amp;D » à l'écran.
+                placables.append(name or stop_id)
         if len(points) < 2:
             continue
         trace, droite = _trace_reseau(points, reseau)
         kind = row.get("kind") or "count"
+        # La charge est calculée en même temps que les points, parce que les
+        # deux portent la même liste d'arrêts. Les calculer séparément
+        # reviendrait à supposer que tout ce qu'on sait placer est aussi ce
+        # qu'on sait nommer sur la courbe, et c'est faux : une gare sans
+        # coordonnées a une valeur mais pas de place sur le parcours.
+        charge, incomplet = _charge(row, places)
         features.append(
             {
                 # client_id est échappé comme les autres : il vient du client et
@@ -79,15 +92,109 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
                 "origine": escape(str(row.get("origin_name") or arretees[0][1])),
                 "destination": escape(str(row.get("destination_name") or arretees[-1][1])),
                 "stops": [escape(str(name or stop_id)) for stop_id, name in arretees],
+                # `places` sont les arrêts qu'on sait poser, dans le même
+                # ordre que `points`. C'est ce qui nomme l'axe de la courbe :
+                # une gare sans coordonnées n'a pas de place sur le parcours,
+                # et lui en donner une ferait avancer la charge d'une gare.
+                "places": [escape(str(nom)) for nom in placables],
+                "noms_bruts": [str(nom) for nom in placables],
                 # `points` garde la position des arrêts, entiers compris : les
                 # marqueurs de gare doivent tomber sur la gare, pas sur le
                 # point de voie le plus proche.
                 "points": [[round(lat, 5), round(lon, 5)] for lon, lat in points],
                 "trace": [[round(lat, 5), round(lon, 5)] for lon, lat in trace],
                 "droite": droite,
+                # `charge` est la courbe à bord, arrêt par arrêt : la liste des
+                # effectifs, dans l'ordre des arrêts. Elle est calculée ici
+                # plutôt que dans le script, parce qu'une courbe qu'on ne peut
+                # pas vérifier par pytest est une courbe que personne ne
+                # relit. `incomplet` dit où elle s'arrête.
+                "charge": charge,
+                "incomplet": escape(str(incomplet)) if incomplet else "",
+                # Comme `noms_bruts` : la légende de la courbe échappe de son
+                # côté, donc elle a besoin du nom tel quel.
+                "incomplet_brut": str(incomplet) if incomplet else "",
             }
         )
     return features
+
+
+def _charge(row: dict, places: dict | None = None) -> tuple[list[int] | None, str | None]:
+    """La charge à bord, arrêt par arrêt, et l'arrêt où elle n'est plus connue.
+
+    Deux formes, parce que les deux modes de saisie ne mesurent pas la même
+    chose :
+
+    - **comptage unique** : un nombre, pour tout le trajet. La charge est
+      donc constante entre les deux gares — deux points de même valeur. Ce
+      n'est pas une interpolation, c'est ce que l'observation veut dire.
+    - **serpent** : des montées et des descentes à chaque arrêt, donc une
+      charge qui varie. On ne comble rien : une descente non relevée arrête
+      la courbe et nomme l'arrêt, plutôt que de tracer une valeur inventée.
+
+    Renvoie `(None, None)` quand il n'y a rien à dessiner : un train signalé
+    n'a pas d'effectif, et un serpent sans nombre à bord au départ n'a pas de
+    première valeur.
+
+    `places` est le stop_id -> position. Il n'est pas décoratif : sans lui,
+    la courbe garderait une valeur par arrêt de la saisie alors que le tracé
+    n'en a qu'un par arrêt **posable**. Les deux listes se décaleraient d'une
+    gare, et le maximum serait annoncé à la mauvaise station. Les montées et
+    descentes d'une gare non posable restent donc dans le calcul de la
+    charge — le train est bien passé par là — mais ne reçoivent pas de point.
+    """
+    kind = row.get("kind") or "count"
+    legs = row.get("legs")
+    if kind == "serpent" and isinstance(legs, list) and legs:
+        valeurs: list[int] = []
+        aboard = legs[0].get("onboard")
+        if not isinstance(aboard, int):
+            return None, None
+        # La valeur du premier arrêt n'a pas de point antérieur pour la
+        # qualifier : elle n'est notée que si l'arrêt est posable.
+        if _posable(legs[0], places):
+            valeurs.append(aboard)
+        for leg in legs[1:]:
+            boarded = leg.get("boarded")
+            alighted = leg.get("alighted")
+            # Une descente manquante, y compris à l'arrivée — le voyageur ne
+            # compte pas sa propre sortie — laisse la charge suivante inconnue.
+            # On s'arrête là et on le dit, plutôt que de faire comme si
+            # personne n'était descendu.
+            if not isinstance(boarded, int) or not isinstance(alighted, int):
+                # Aucun point ici. La dernière valeur connue est celle de
+                # l'arrêt précédent, et la répéter à cette gare dessinerait
+                # un palier — « rien ne s'est passé entre les deux » — alors
+                # qu'on vient précisément de dire qu'on n'en sait rien. La
+                # courbe s'arrête, et la légende nomme l'arrêt.
+                return valeurs, str(leg.get("stop_name") or "")
+            aboard = _a_bord(aboard, leg, alighted)
+            if _posable(leg, places):
+                valeurs.append(aboard)
+        return valeurs, None
+    passengers = row.get("passengers")
+    if isinstance(passengers, int):
+        return [passengers, passengers], None
+    return None, None
+
+
+def _posable(leg: dict, places: dict | None) -> bool:
+    """Cet arrêt a-t-il une place sur le parcours ?
+
+    Sans table de positions — le cas des tests de la fonction seule — on ne
+    filtre rien : mieux vaut une abscisse de trop qu'une courbe amputée.
+    """
+    return places is None or str(leg.get("stop_id") or "") in places
+
+
+def _a_bord(aboard: int, leg: dict, alighted: int) -> int:
+    """La charge à bord après cet arrêt : ce qui est monté moins ce qui descend.
+
+    Le dernier appelant possible n'arrive pas ici : quand une descente
+    manque, la fonction est court-circuitée plus haut, parce que le résultat
+    serait de toute façon faux.
+    """
+    return aboard - alighted + int(leg.get("boarded") or 0)
 
 
 def _reseau():
@@ -204,6 +311,20 @@ def map_page(features: list[dict], total: int) -> str:
   ol { padding-left: 1.2rem; }
   li { margin: 0.4rem 0; }
   .pied { font-size: 0.85rem; color: var(--gris); }
+  /* Le bouton, c'est toute la ligne du `<li>`, pas un titre au milieu d'un
+     texte : il porte la sélection et le profil, donc il doit être la cible
+     du clic et du clavier. Rien de visible ne change — le fond, la bordure
+     et la police reprennent ceux du texte. */
+  .ligne { display: block; width: 100%; text-align: left; background: none;
+           border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; }
+  .ligne:hover, .ligne:focus-visible { text-decoration: underline; }
+  .ligne[aria-pressed="true"] { font-weight: 700; }
+  .profil { margin-top: 0.5rem; }
+  .profil[hidden] { display: none; }
+  .profil svg { width: 100%; height: auto; display: block; }
+  .profil .repere { stroke: #e6e0d5; stroke-width: 1; }
+  .profil .axe { fill: var(--gris); font-size: 9px; }
+  .profil figcaption { color: var(--gris); font-size: 0.8rem; margin-top: 0.3rem; }
   @media (min-width: 48rem) {
     /* La carte prend la hauteur de l'écran et la liste devient un panneau
        latéral. La grille est déclarée ici et pas sur `.corps` : la liste
@@ -252,19 +373,84 @@ def _corps(features: list[dict]) -> str:
             "<a href='/'>Compter un train</a> pour qu'y apparaisse un segment.</p></div>"
         )
     lignes = []
-    for feature in features:
+    for index, feature in enumerate(features):
         profil = " → ".join(feature["stops"])
         who = feature["pseudo"] or "anonyme"
         nombre = (
             "sans effectif" if feature["passengers"] is None else f"{feature['passengers']} voyageurs"
         )
         # Les noms sont déjà échappés par counted_features.
-        lignes.append(f"<li>{profil} · {nombre} · {feature['kind_fr']} · {who}</li>")
+        texte = f"{profil} · {nombre} · {feature['kind_fr']} · {who}"
+        courbe = _profil(feature, index)
+        # Sans courbe, pas de bouton : un train signalé n'a pas d'effectif à
+        # dessiner, et un bouton qui n'ouvre rien est une promesse que la
+        # page ne tient pas. La ligne reste du texte, lisible comme avant.
+        if not courbe:
+            lignes.append(f"<li>{texte}</li>")
+            continue
+        # `data-i` est l'index dans FEATURES, donc le script retrouve le tracé
+        # sans réinventer de clé. Un `client_id` conviendrait mal : le même
+        # contributeur peut avoir compté plusieurs trains, et c'est le numéro
+        # d'ordre de la page qui fait la correspondance.
+        bouton = (
+            f'<button class="ligne" type="button" data-i="{index}" '
+            f'aria-pressed="false" aria-controls="profil-{index}">{texte}</button>'
+        )
+        lignes.append(f"<li>{bouton}{courbe}</li>")
     liste = "<ol>" + "".join(lignes) + "</ol>" if len(lignes) <= 30 else ""
     # Le conteneur `traces` porte la grille du grand écran. Il entoure la
     # carte comme la liste : sur un téléphone il ne fait rien, sur un large
     # écran il met la liste à côté au lieu de sous le cadre.
     return "<div class='traces'><div id='carte'></div>" + liste + "</div>"
+
+
+def _profil(feature: dict, index: int) -> str:
+    """La courbe de charge d'une saisie, ou rien.
+
+    Sans effectif — un train signalé, un serpent sans nombre à bord au
+    départ — il n'y a pas de courbe à dessiner. La ligne reste dans la liste
+    et le bouton n'est pas rendu : un bouton qui ne fait rien est une
+    promesse que la page ne tient pas.
+    """
+    charge = feature.get("charge")
+    if not charge:
+        return ""
+    # Les gares de la courbe sont celles qu'on sait poser, pas celles de la
+    # saisie : une gare sans coordonnées n'a pas de place sur le parcours, et
+    # lui garder une abscisse ferait avancer une courbe qui n'avance pas.
+    # `noms_bruts` et non `places` : la courbe échappe les noms elle-même.
+    noms = feature.get("noms_bruts") or feature["stops"]
+    incomplet = feature.get("incomplet_brut") or ""
+    legende = _legende(charge, noms, incomplet)
+    courbe = profil_svg(
+        charge,
+        [str(nom) for nom in noms[: len(charge)]],
+        feature["couleur"],
+        incomplet=incomplet,
+    )
+    return (
+        f'<figure class="profil" id="profil-{index}" hidden>'
+        f"{courbe}<figcaption>{legende}</figcaption></figure>"
+    )
+
+
+def _legende(charge: list[int], gares: list[str], incomplet: str) -> str:
+    """Ce que la courbe montre, en une phrase, avec son dénominateur.
+
+    Un graphique de charge sans nombre maximal n'est qu'une forme, et la
+    règle du projet est qu'aucun chiffre n'est affiché sans ce qu'il compte.
+
+    La phrase est échappée ici, une seule fois : les noms viennent de la base,
+    et `noms_bruts` n'a jamais vu `escape()`.
+    """
+    sommet = max(charge)
+    rang = charge.index(sommet)
+    where = gares[rang] if len(gares) > rang else ""
+    mot = "voyageur" if sommet == 1 else "voyageurs"
+    texte = f"Maximum {sommet} {mot}, à {where}." if where else f"Maximum {sommet} {mot}."
+    if incomplet:
+        texte += f" La courbe s'arrête à {incomplet} : les descentes suivantes n'ont pas été relevées."
+    return escape(texte)
 
 
 # La limite du segment droit est une propriété du réseau de données, pas un
@@ -288,6 +474,17 @@ const TILE_URL = __TILE_URL__;
 const TILE_ATTRIBUTION = __TILE_ATTRIBUTION__;
 const TILE_SUBDOMAINS = __TILE_SUBDOMAINS__;
 const TILE_MAX_ZOOM = __TILE_MAX_ZOOM__;
+// Les tracés dessinés, par index de FEATURES : c'est ce qui permet à la
+// liste d'allumer celui qu'elle affiche. Déclaré ici et pas dans `dessine`
+// parce que la liste est câblée avant que la carte soit peinte.
+//
+// Le nom est préfixé parce qu'une page classique partage la portée globale
+// avec les scripts qu'elle charge, et qu'un identifiant générique comme
+// `dessines` entre en collision avec le moindre nom de ce genre — ce qui tue
+// le script au chargement, donc toute la page, sans lever la moindre erreur
+// visible dans le HTML.
+let TRACES_DESSINES = [];
+let CARTE_COURANTE = null;
 
 function dessine() {
   const carte = L.map("carte", { scrollWheelZoom: false });
@@ -298,15 +495,22 @@ function dessine() {
   }).addTo(carte);
   const groupe = L.layerGroup().addTo(carte);
   let bornes = null;
+  // Les tracés dessinés, par index de FEATURES : c'est ce qui permet à la
+  // liste d'allumer celui qu'elle affiche. Sans ce tableau, le survol de la
+  // liste n'aurait rien à allumer.
+  TRACES_DESSINES = [];
+  CARTE_COURANTE = carte;
   for (const feature of FEATURES) {
     // Le tracé vient du réseau, il a beaucoup plus de points que les arrêts.
     // Les marqueurs, eux, restent sur les arrêts : le tracé ne doit pas
     // décaler la gare de 300 m vers la voie.
     const trace = feature.trace.map((point) => [point[0], point[1]]);
     const points = feature.points.map((point) => [point[0], point[1]]);
+    let ligne = null;
     if (trace.length > 1) {
-      L.polyline(trace, { color: feature.couleur, weight: 4, opacity: 0.7 }).addTo(groupe);
+      ligne = L.polyline(trace, { color: feature.couleur, weight: 4, opacity: 0.7 }).addTo(groupe);
     }
+    TRACES_DESSINES.push({ ligne: ligne, points: points, couleur: feature.couleur });
     for (let index = 0; index < points.length; index += 1) {
       const nombre = feature.passengers === null
         ? "signale, sans effectif"
@@ -336,6 +540,89 @@ function dessine() {
   carte.invalidateSize();
 }
 
+// --- la liste et la carte se suivent ----------------------------------------
+//
+// Deux gestes, deux portées. Le survol allume le tracé : c'est reversible,
+// c'est gratuit, et c'est ce qui relie la ligne qu'on lit au trait qu'on
+// voit. Le clic sélectionne : ça déplace la carte et ouvre la courbe de
+// charge, donc ça ne se fait pas au survol, qui passerait dix fois sur la
+// même ligne en descendant la liste.
+
+function allume(index) {
+  TRACES_DESSINES.forEach(function (dessin, rang) {
+    if (!dessin.ligne || !dessin.ligne.setStyle) return;
+    if (rang === index) {
+      dessin.ligne.setStyle({ weight: 8, opacity: 1 });
+    } else {
+      dessin.ligne.setStyle({ weight: 4, opacity: 0.25 });
+    }
+  });
+}
+
+function rendTout() {
+  allume(-1);
+}
+
+function selectionne(bouton) {
+  const index = Number(bouton.dataset.i);
+  const deja = bouton.getAttribute("aria-pressed") === "true";
+  // Un seul tracé sélectionné à la fois : deux courbes ouvertes, c'est une
+  // comparaison, et la comparaison a son propre mode (la vue par paire).
+  document.querySelectorAll(".ligne").forEach(function (autre) {
+    const courbe = document.getElementById(autre.getAttribute("aria-controls"));
+    autre.setAttribute("aria-pressed", "false");
+    if (courbe) courbe.hidden = true;
+  });
+  if (deja) {
+    rendTout();
+    return;
+  }
+  bouton.setAttribute("aria-pressed", "true");
+  const profil = document.getElementById(bouton.getAttribute("aria-controls"));
+  if (profil) profil.hidden = false;
+  allume(index);
+  // La carte suit la sélection : sans cela, cliquer une ligne ne change
+  // qu'une liste, et la moitié gauche de l'écran reste sur le même endroit.
+  const dessin = TRACES_DESSINES[index];
+  if (dessin && dessin.points.length > 1 && CARTE_COURANTE) {
+    let bornes = null;
+    dessin.points.forEach(function (point) {
+      const coin = L.latLng(point[0], point[1]);
+      bornes = bornes ? bornes.extend(coin) : L.latLngBounds(coin, coin);
+    });
+    CARTE_COURANTE.fitBounds(bornes.pad(0.2), { maxZoom: 11 });
+  }
+}
+
+function cableLaListe() {
+  const boutons = document.querySelectorAll(".ligne");
+  for (const bouton of boutons) {
+    // `mouseenter`/`mouseleave` plutôt que `mouseover` : en passant d'une
+    // ligne à l'autre par-dessus un enfant du bouton, `mouseover` se
+    // redéclencherait et le tracé clignoterait.
+    bouton.addEventListener("mouseenter", function () { allume(Number(bouton.dataset.i)); });
+    bouton.addEventListener("mouseleave", rendTout);
+    // Le focus clavier doit produire le même effet que le survol : sinon la
+    // liste reste grise au clavier alors qu'elle s'allume à la souris.
+    bouton.addEventListener("focus", function () { allume(Number(bouton.dataset.i)); });
+    bouton.addEventListener("blur", rendTout);
+    bouton.addEventListener("click", function () { selectionne(bouton); });
+  }
+  // Un clic dans le vide referme la sélection. Sans ça, après avoir choisi un
+  // tracé, il n'y a plus aucun geste pour revenir à la vue d'ensemble : il
+  // faudrait cliquer sur le même bouton, ce qu'on ne devine pas.
+  if (CARTE_COURANTE) {
+    CARTE_COURANTE.on("click", function () {
+      document.querySelectorAll(".ligne").forEach(function (autre) {
+        const courbe = document.getElementById(autre.getAttribute("aria-controls"));
+        autre.setAttribute("aria-pressed", "false");
+        if (courbe) courbe.hidden = true;
+      });
+      rendTout();
+    });
+  }
+}
+
 // Sur une carte vide, _corps ne rend pas de #carte : il n'y a rien à
 // dessiner, et le script n'a rien à dire non plus.
 const conteneur = document.getElementById("carte");
@@ -344,11 +631,16 @@ if (!conteneur) {
   // Rien à faire, la page d'invitation à compter suffit.
 } else if (typeof L === "undefined") {
   // Pas de bibliothèque, pas de cadre vide : la liste des tracés reste en place.
+  // Elle reste câblée : le survol et la courbe de charge n'ont rien à voir
+  // avec Leaflet, et la seule chose qui manque sans la bibliothèque est le
+  // déplacement de la carte au clic.
+  cableLaListe();
   conteneur.outerHTML = "<p class='note'>La carte n'a pas pu se charger : la bibliothèque de "
     + "carte vient d'un tiers, et le réseau n'a pas répondu. Les tracés listés ci-dessous, eux, "
     + "sont complets.</p>";
 } else {
   dessine();
+  cableLaListe();
 }
 """
 

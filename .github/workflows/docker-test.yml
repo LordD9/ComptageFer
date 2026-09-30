@@ -122,6 +122,32 @@ jobs:
           # Filtre et tri combines : les deux doivent survivre ensemble.
           verifier "?mode=unique&tri=passengers&sens=asc" "mode=unique"
 
+      - name: Verifier que la carte reste une page lisible
+        run: |
+          # /carte a gagne une synchronisation liste/carte et une courbe de
+          # charge. Sur un conteneur vide il n'y a ni trace ni courbe : ce que
+          # la page doit dire, c'est qu'il n'y a rien à placer, et proposer de
+          # compter. C'est le seul cas que curl peut attraper — le reste est
+          # couvert par les tests Chromium.
+          verifier_carte() {
+            corps=$(curl -sS http://127.0.0.1:8000/carte)
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/carte)
+            echo "/carte -> $code"
+            test "$code" = "200" || { echo "echec HTTP sur /carte"; exit 1; }
+            echo "$corps" | grep -q "Aucun comptage" || { echo "carte vide non annoncee"; exit 1; }
+            # Un bouton qui n'ouvre rien ne doit pas exister, et un conteneur
+            # vide non annonce : la page le doit dans les deux sens.
+            echo "$corps" | grep -q "Compter un train" || { echo "pas d'invitation a compter"; exit 1; }
+            # Pas de `grep && { exit 1; }` : sous `set -e`, un grep qui ne
+            # trouve rien — ce qu'on veut ici — ferait echouer l'etape.
+            if echo "$corps" | grep -q "aria-controls"; then
+              echo "bouton sans courbe sur une carte vide"
+              exit 1
+            fi
+            return 0
+          }
+          verifier_carte
+
       - name: Verifier que la publication est inactive sans identifiants
         run: |
           # Le conteneur de test n'a pas de cle data.gouv. Il doit le dire

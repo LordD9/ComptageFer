@@ -484,7 +484,35 @@ origine-destination ; `?page=` découpe. La pagination a été **mesurée** : à
 
 **Vague 3 — la liste et la carte se suivent, et la charge se dessine.**
 Synchronisation liste/carte et profil de charge en SVG, sans changement
-d'interface. **À faire.**
+d'interface. **Livrée**.
+
+Trois décisions, prises pendant la construction et non avant :
+
+- **Le survol allume, le clic sélectionne.** Le survol est réversible et
+  gratuit ; le clic déplace la carte et ouvre la courbe, ce qu'un survol
+  ferait dix fois en descendant la liste. Le clavier a les deux : `focus`
+  allume comme `mouseenter`, `Entrée` sélectionne comme le clic.
+- **Un comptage unique a aussi une courbe.** Il porte sur tout son
+  origine-destination, donc sa charge est constante entre les deux gares :
+  deux points de même valeur. Ce n'est pas une interpolation, c'est ce que
+  l'observation veut dire. Le graphe a donc le même sens pour les deux
+  modes, au lieu d'être un cas particulier à côté.
+- **Un train signalé n'a ni courbe ni bouton.** Un bouton qui n'ouvre rien
+  est une promesse que la page ne tient pas ; la ligne reste du texte.
+
+Une limite, dite : un serpent dont la dernière descente n'est pas relevée —
+le voyageur ne compte pas sa propre sortie — a une courbe qui s'arrête à
+l'avant-dernière gare, et la légende nomme l'arrêt où le compte s'arrête.
+Prolonger la courbe jusqu'à la dernière gare dessinerait un palier, « rien
+ne s'est passé », alors qu'on vient précisément de dire qu'on n'en sait rien.
+De même, une gare sans coordonnées est parcourue et comptée, mais n'a pas de
+place sur le graphique : ses montées et descentes entrent dans le calcul de
+la charge, et elle ne reçoit pas de point. Sans cette règle, la valeur de
+l'arrêt suivant se lirait à la mauvaise gare.
+
+La courbe est écrite par le serveur en Python (`comptagefer.profil`), pas en
+JavaScript : c'est le seul moyen qu'elle soit relue par pytest. Le `<desc>`
+porte les mêmes nombres que le dessin, pour un lecteur d'écran.
 
 Le champ « ligne » est un texte libre, pas une liste déroulante : le GTFS
 national attribue le même « C13 » à six lignes, donc une liste de noms courts
