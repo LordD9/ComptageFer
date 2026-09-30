@@ -25,9 +25,30 @@ PAGE = """<!doctype html>
   .hidden { display: none; }
   .status { font-size: 0.95rem; color: #5c564c; }
   .bad { color: #8a2b1b; }
-  .counter { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; }
+  .counter { position: relative; display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; }
   .counter button { flex: 1; min-height: 3.6rem; font-size: 1.1rem; }
   #count-display { flex: 0 0 6rem; font: 1.8rem/1 system-ui, sans-serif; text-align: center; }
+  .bulle {
+    position: absolute; z-index: 2; pointer-events: none; white-space: nowrap;
+    font: 700 1.3rem/1 system-ui, sans-serif; color: #1c1915; background: #fff;
+    border: 1px solid #c9c1b4; border-radius: 2rem; padding: 0.4rem 0.8rem;
+    transform: translateX(-50%); animation: bulle 900ms ease-out forwards;
+  }
+  .bulle.retour { background: #8a2b1b; border-color: #8a2b1b; color: #fff; }
+  @keyframes bulle {
+    0% { opacity: 0; transform: translateX(-50%) translateY(0) scale(0.7); }
+    25% { opacity: 1; transform: translateX(-50%) translateY(-0.7rem) scale(1.12); }
+    100% { opacity: 0; transform: translateX(-50%) translateY(-3.4rem) scale(0.9); }
+  }
+  #count-display.saut { animation: saut 240ms ease-out; }
+  @keyframes saut { 45% { transform: scale(1.3); } }
+  @media (prefers-reduced-motion: reduce) {
+    /* Le retour visuel reste, il ne bouge plus. On ne supprime pas le retour
+       visuel parce qu'on a coupé l'animation : c'est lui qui dit à l'usager que
+       l'appui est passé. */
+    .bulle { animation: none; opacity: 1; }
+    #count-display.saut { animation: none; }
+  }
 </style>
 </head>
 <body>
@@ -248,17 +269,64 @@ function signalerPlausibilite(valeur) {
   }
 }
 
-function updateCount(delta) {
-  state.passengers = Math.max(0, (state.passengers || 0) + delta);
+// Un appui doit se voir, sans regarder le total. Compter dans un train, c'est
+// regarder les voyageurs, pas l'écran : les yeux sont levés. Le total change,
+// mais entre deux appuis rapprochés rien ne dit que le second est passé, et un
+// doigt qui glisse sur un bouton ne change rien du tout. Une bulle qui monte du
+// bouton, comme le retour d'un message, ferme le délai entre le geste et sa
+// preuve.
+const DUREE_BULLE = 900;
+// Un comptage à la main, c'est des centaines d'appuis. Sans plafond, le DOM
+// accumule des marqueurs pendant tout le trajet — et le navigateur paie pour
+// des nœuds que personne ne verra. On garde les derniers : ce sont les seuls
+// que l'usager peut encore regarder.
+const BULLES_MAXI = 8;
+
+function bulle(delta, bouton) {
+  const zone = $("counter");
+  const boite = bouton.getBoundingClientRect();
+  const zone_boite = zone.getBoundingClientRect();
+  const marqueur = document.createElement("span");
+  marqueur.className = delta < 0 ? "bulle retour" : "bulle";
+  marqueur.textContent = (delta > 0 ? "+" : "−") + Math.abs(delta);
+  marqueur.style.left = (boite.left + boite.width / 2 - zone_boite.left) + "px";
+  marqueur.style.top = (boite.top - zone_boite.top) + "px";
+  // La bulle est décorative : le compteur porte déjà aria-live et annonce le
+  // total. Un lecteur d'écran qui lirait « +5 » puis « 15 » à chaque appui
+  // ferait doublon sur le geste.
+  marqueur.setAttribute("aria-hidden", "true");
+  zone.appendChild(marqueur);
+  marqueur.addEventListener("animationend", () => marqueur.remove(), { once: true });
+  // Le filet : une animation jamais démarrée (onglet en arrière-plan, motion
+  // réduit) ne renvoie pas animationend, et la bulle resterait à l'écran.
+  setTimeout(() => marqueur.remove(), DUREE_BULLE + 400);
+  for (const trop of zone.querySelectorAll(".bulle")) {
+    if (zone.querySelectorAll(".bulle").length > BULLES_MAXI) trop.remove();
+    else break;
+  }
+  const affiche = $("count-display");
+  affiche.classList.remove("saut");
+  // Reflow forcé : sans lecture intermédiaire, le navigateur voit la même
+  // classe re-posée et ne rejoue pas l'animation du tout.
+  void affiche.offsetWidth;
+  affiche.classList.add("saut");
+}
+
+function updateCount(delta, bouton) {
+  const avant = state.passengers || 0;
+  state.passengers = Math.max(0, avant + delta);
   $("count-display").textContent = state.passengers;
   $("passengers").value = state.passengers;
   signalerPlausibilite(state.passengers);
+  // Un −1 sur un compte déjà à zéro ne fait rien : on n'annonce pas un geste
+  // qui n'a rien changé, sinon l'usager croit pouvoir descendre sous zéro.
+  if (state.passengers !== avant && bouton) bulle(state.passengers - avant, bouton);
 }
 
-$("plus1").onclick = () => updateCount(1);
-$("plus5").onclick = () => updateCount(5);
-$("plus10").onclick = () => updateCount(10);
-$("minus").onclick = () => updateCount(-1);
+$("plus1").onclick = (e) => updateCount(1, e.currentTarget);
+$("plus5").onclick = (e) => updateCount(5, e.currentTarget);
+$("plus10").onclick = (e) => updateCount(10, e.currentTarget);
+$("minus").onclick = (e) => updateCount(-1, e.currentTarget);
 
 $("passengers").addEventListener("input", (e) => {
   const v = parseInt(e.target.value, 10);
