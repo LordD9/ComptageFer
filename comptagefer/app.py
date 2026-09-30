@@ -1681,6 +1681,25 @@ def _resume(affiches: list[dict], tranche: list[dict], total: int) -> str:
     return f"<p class='status'>{compte} du {debut} au {fin}.</p>"
 
 
+def _resume_paires(paires: list, tranche: list) -> str:
+    """Le décompte de la vue par paire, avec la même tranche que la liste.
+
+    « 200 paires sur 5 000 » et non « 200 paires » : sans l'écart, la
+    tranche se prend pour l'ensemble des corridors, qui est exactement la
+    faute que la pagination de la liste corrige. Même règle, même forme
+    que `_resume` — les deux décomptes sont le même décompte.
+    """
+    if not paires:
+        return ""
+    if len(paires) > len(tranche):
+        return (
+            f"<p class='status'>{len(tranche)} sur {len(paires)} paires de gares.</p>"
+        )
+    return (
+        f"<p class='status'>{len(paires)} paire{_pluriel(len(paires))} de gares.</p>"
+    )
+
+
 def _pluriel(nombre: int) -> str:
     return "s" if nombre > 1 else ""
 
@@ -1887,12 +1906,23 @@ def _tranche(tries: list[dict], page: int) -> list[dict]:
     `_pagination` : les deux doivent tomber d'accord, sinon un lien
     « page 99 » annoncé à l'écran mènerait à une page vide.
     """
-    if not tries:
+    return _couper(tries, page)
+
+
+def _couper(elements: list, page: int) -> list:
+    """Les `PAR_PAGE` éléments de cette page, après tri.
+
+    La règle ne dépend pas de ce qu'on découpe, donc une seule fonction
+    la porte pour la liste et pour la vue par paire. Deux fonctions qui
+    l'énoncent chacune finissent par divergir — et cette PR a déjà vu
+    deux tris diverger pour exactement cette raison.
+    """
+    if not elements:
         return []
-    pages = max(1, -(-len(tries) // PAR_PAGE))
+    pages = max(1, -(-len(elements) // PAR_PAGE))
     courante = min(max(1, page), pages)
     debut = (courante - 1) * PAR_PAGE
-    return tries[debut : debut + PAR_PAGE]
+    return elements[debut : debut + PAR_PAGE]
 
 
 def _pagination(filtres: Filtres, tri: str, sens: str, vue: str, page: int, total: int) -> str:
@@ -1971,15 +2001,18 @@ def _reading_page(
         # d'effet — `par_paire` perd l'ordre — mais le laisser croire en
         # donnerait l'illusion que les deux tris coopèrent.
         paires = trier_paires(par_paire(rows), tri, sens)
-        contenu = _paires_table(paires, tri, sens, filtres)
-        if not contenu:
-            contenu = _filtre_vide(filtres)
-        # Pas de pagination ici, et c'est délibéré : il y a au moins
-        # autant de paires que de relevés, donc bien moins de lignes, et
-        # annoncer « page 2 sur 3 » sur une vue qui affiche tout
-        # mentirait sur ce qu'il reste à voir.
-        pagination = ""
-        resume = f"<p class='status'>{len(paires)} paire{_pluriel(len(paires))} de gares.</p>"
+        # La vue par paire se pagine au même seuil que la liste. J'avais
+        # écrit le contraire, en arguant qu'il y a au plus autant de
+        # paires que de relevés : la mesure le refute. Sur 6 000 relevés
+        # répartis sur 90 × 37 gares, la vue par paire rendait 0,60 Mo et
+        # 148 ms — six fois le poids d'une page de liste. Elle est donc
+        # coupée comme elle, au même seuil.
+        tranche = _couper(paires, page)
+        contenu = _paires_table(tranche, tri, sens, filtres)
+        if not tranche:
+            contenu = _filtre_vide(filtres) or contenu
+        pagination = _pagination(filtres, tri, sens, "paire", page, len(paires))
+        resume = _resume_paires(paires, tranche)
     else:
         tries = _trier(rows, tri, sens)
         tranche = _tranche(tries, page)

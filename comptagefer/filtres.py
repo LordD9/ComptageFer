@@ -249,15 +249,6 @@ class Paire:
     premier: str = ""
     dernier: str = ""
 
-    @property
-    def intervalle(self) -> str:
-        """L'amplitude, écrite en une chaîne ou en « aucune mesure »."""
-        if self.minimum is None:
-            return "aucun effectif relevé"
-        if self.minimum == self.maximum:
-            return f"toujours {self.minimum}"
-        return f"de {self.minimum} à {self.maximum}"
-
 
 def _nom(row: dict, cle: str) -> str:
     valeur = (row.get(cle) or "").strip()

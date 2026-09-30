@@ -331,6 +331,46 @@ def test_the_filter_form_keeps_the_paired_view(tmp_path):
     assert "<input type='hidden' name='vue' value='paire'>" in page
 
 
+def test_the_paired_view_is_cut_into_pages_too(tmp_path):
+    """La vue par paire se pagine, et la mesure l'impose.
+
+    J'avais écrit l'inverse dans un commentaire et dans la doc : « il y
+    a au plus autant de paires que de relevés, donc la vue est plus
+    légère ». La mesure l'a refuté — sur 6 000 relevés, la vue par paire
+    rendait 0,60 Mo contre 0,09 Mo pour une page de liste. Le nombre de
+    paires croît avec la base au même rythme que le nombre de relevés, et
+    chaque ligne y porte deux colonnes de plus.
+
+    Ce test existe pour que cette pagination ne soit pas retirée un jour
+    comme une redondance.
+    """
+    client = TestClient(create_app(tmp_path))
+    # Chaque relevé a sa propre paire : c'est le pire cas, celui où
+    # « autant de paires que de relevés » se réalise.
+    for i in range(PAR_PAGE + 5):
+        _poster(
+            client,
+            client_id=f"u{i}",
+            passengers=i,
+            on=f"Origine {i}",
+            dn=f"Destination {i}",
+        )
+
+    page = client.get("/comptages?vue=paire").text
+
+    assert f"{PAR_PAGE} sur {PAR_PAGE + 5}" in _corps(page)
+    assert "Page 1 sur 2" in _corps(page)
+    assert len(_lignes(page)) == PAR_PAGE
+    assert len(_lignes(client.get("/comptages?vue=paire&page=2").text)) == 5
+
+    # Le lien de page doit rester dans la vue par paire : sans `vue=paire`
+    # dans l'URL, le lecteur clique sur « page suivante » et retombe sur
+    # la liste, qui est une autre page pour le même sujet.
+    suivant = re.search(r"""href=["']([^"']*)["']\s+rel=["']next["']""", page)
+    assert suivant is not None
+    assert "vue=paire" in suivant.group(1), "le lien de page perd la vue"
+
+
 def test_the_line_filter_uses_the_trip_and_not_the_station_pair(tmp_path):
     """Le filtre ligne passe par le trip, comme la page `/ligne`.
 
