@@ -95,10 +95,18 @@ jobs:
               echo "echec : '$attendu' absent pour $requete"; exit 1; }
           }
           # La vue par paire regroupe et compte les corridors. Le
-          # conteneur est vide, donc on verifie la bascule et le decompte
-          # « 0 paire » plutot qu'un contenu qui n'existe pas encore.
+          # conteneur de test demarre vide, donc il n'y a ni corridors ni
+          # decompte a verifier : ce qui compte ici est que la vue
+          # reponde et se distingue de la liste. « 0 paire » ne
+          # s'affiche pas — une liste vide ne s'annonce pas — et c'est
+          # volontaire, donc on ne l'attend pas.
           verifier "?vue=paire" "Voir la liste des relevés"
-          verifier "?vue=paire&tri=moyenne&sens=desc" "0 paire de gares"
+          # Le tri des paires ne doit ni casser ni perdre l'etat. Sur une
+          # base vide, la vue ne dit rien de plus que son lien de retour —
+          # c'est ce lien qui est verifiable : il doit ramener a la liste
+          # en gardant le tri demande.
+          verifier "?vue=paire&tri=moyenne&sens=desc" \
+                   "href='/comptages?tri=moyenne&sens=desc'>Voir la liste"
           # Un filtre mode applique doit se lire dans la page.
           verifier "?mode=unique" "mode unique"
           # Un parametre illisible doit etre ecarte ET dit. Le texte
