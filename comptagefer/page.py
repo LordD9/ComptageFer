@@ -71,7 +71,7 @@ PAGE = """<!doctype html>
   </section>
   <section id="train-step" class="hidden">
     <div class="chip"><span id="od-chip"></span><button class="ghost" id="change-od" type="button">Changer</button></div>
-    <p class="hint">Trains des deux heures avant et après, TER, car, Intercités et TGV. Le retard et la suppression viennent du flux. Sinon le train est seulement programmé.</p>
+    <p class="hint">Trains des deux heures avant et après&nbsp;: TER, car, Intercités, TGV, et les trains franciliens (RER, ligne U). Le retard et la suppression viennent du flux, quand le réseau les publie&nbsp;: les trains franciliens n'ont pas de flux temps réel ici, ils sont donc toujours « programmé ».</p>
     <div id="trains" class="choices"></div>
     <button class="ghost" id="missing" type="button">Mon train n'est pas dans la liste</button>
   </section>
