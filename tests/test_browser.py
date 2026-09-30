@@ -638,6 +638,126 @@ def test_the_count_appears_on_the_reading_page(page, site):
     assert "10" in page.text_content("body")
 
 
+# --- le matériel roulant et la composition ------------------------------------
+
+
+def _open_materiel(page) -> None:
+    """Ouvre le second <details> de #form-step, comme un utilisateur."""
+    page.click("#form-step details:nth-of-type(2) summary")
+
+
+def test_the_material_reaches_the_database(page, site):
+    """La partie avancée n'est utile que si ce qu'on y met arrive à la base."""
+    _reach_form(page, site)
+    page.click("#plus10")
+    _open_materiel(page)
+    page.fill("#materiel", "Z 20500")
+    page.select_option("#composition", "UM3")
+    page.select_option("#perimetre", "voiture")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    row = _sessions(site)[0]
+    assert row["materiel"] == "Z 20500"
+    assert row["composition"] == "UM3"
+    assert row["perimetre"] == "voiture"
+
+
+def test_the_advanced_block_is_reachable_by_its_label(page, site):
+    """Un <details> sans nom n'est pas une partie avancée, c'est un tiroir."""
+    _reach_form(page, site)
+    resume = page.locator("#form-step details:nth-of-type(2) summary").text_content()
+    assert "matériel" in resume.lower()
+    assert "composition" in resume.lower()
+
+
+def test_a_composition_without_a_perimetre_is_caught_before_sending(page, site):
+    """L'avertissement vient avant l'envoi, pas en 422 après.
+
+    Le comptage est fait dans le train : l'usager est encore là pour corriger.
+    Un refus serveur arrive après coup, quand il est déjà remonté dans son
+    siège.
+    """
+    _reach_form(page, site)
+    page.click("#plus10")
+    _open_materiel(page)
+    page.select_option("#composition", "UM3")
+    assert page.locator("#materiel-note").is_visible()
+    page.click("#send")
+    page.wait_for_selector("#error:not(:empty)")
+    assert _sessions(site) == [], "le comptage est parti alors qu'il était incohérent"
+    assert page.locator("#form-step:not(.hidden)").count() == 1, "on a quitté le formulaire"
+
+
+def test_the_whole_unit_of_a_us_is_refused_before_sending(page, site):
+    """Une US est une voiture : « toute la rame » n'y a pas de sens.
+
+    Le laisser passer produirait 180 voyageurs pour une rame d'un nombre de
+    voitures indéfini.
+    """
+    _reach_form(page, site)
+    page.click("#plus10")
+    _open_materiel(page)
+    page.select_option("#composition", "US")
+    page.select_option("#perimetre", "um")
+    assert page.locator("#materiel-note").is_visible()
+    page.click("#send")
+    page.wait_for_selector("#error:not(:empty)")
+    assert _sessions(site) == []
+
+
+def test_the_note_disappears_once_the_choice_is_coherent(page, site):
+    """Un avertissement qui reste après correction fait douter de l'envoi."""
+    _reach_form(page, site)
+    _open_materiel(page)
+    page.select_option("#composition", "UM3")
+    assert page.locator("#materiel-note").is_visible()
+    page.select_option("#perimetre", "um")
+    assert page.locator("#materiel-note").is_hidden()
+
+
+def test_the_material_stays_optional_on_the_way(page, site):
+    """Ne pas savoir sous quel numéro on a compté ne doit pas bloquer l'envoi."""
+    _reach_form(page, site)
+    page.click("#plus10")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+    row = _sessions(site)[0]
+    assert row["passengers"] == 10
+    assert row["composition"] is None and row["perimetre"] is None
+
+
+def test_the_material_is_visible_on_the_reading_page(page, site):
+    """Une donnée qu'on ne peut relire nulle part ne sera pas exploitée."""
+    _reach_form(page, site)
+    page.click("#plus10")
+    _open_materiel(page)
+    page.fill("#materiel", "Z 20500")
+    page.select_option("#composition", "UM3")
+    page.select_option("#perimetre", "voiture")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+    page.goto(site + "/comptages")
+    corps = page.text_content("body")
+    assert "Z 20500" in corps
+    assert "UM3" in corps
+    assert "une voiture" in corps
+
+
+def test_a_count_without_material_shows_no_empty_line(page, site):
+    """Une ligne vide se lit comme une information manquante.
+
+    Ce serait un relevé sans matériel — un choix de l'usager — présenté comme
+    une donnée perdue.
+    """
+    _reach_form(page, site)
+    page.click("#plus10")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+    page.goto(site + "/comptages")
+    assert "UM" not in page.text_content("body")
+
+
 # --- hors ligne -------------------------------------------------------------
 
 

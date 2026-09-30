@@ -83,11 +83,30 @@ SCHEMA_SAISIE = (
     ("standing", "INTEGER"),
     ("seats_free", "INTEGER"),
     ("imbalance", "INTEGER"),
+    ("materiel", "TEXT"),
+    ("composition", "TEXT"),
+    ("perimetre", "TEXT"),
     ("snapshot", "TEXT"),
     ("created_at", "TEXT NOT NULL"),
     ("legs", "TEXT"),
     ("trajet", "TEXT"),
 )
+
+# Ce que « composition » veut dire, et pourquoi c'est une liste fermée.
+#
+# Une US est une seule voiture ; une UM2, deux ; une UM3, trois. Ce n'est pas
+# une convention de saisie : c'est ce qui décide si un effectif se lit par
+# voiture ou par rame. Un champ libre accepterait « UM2 (ramesihat) » et
+# « deux voitures », et le lecteur du CSV ne saurait plus dire si 180 voyageurs
+# se multiplient par 2. Une liste fermée rend la donnée calculable, ou absente.
+COMPOSITIONS = {"US": 1, "UM2": 2, "UM3": 3}
+
+# Ce que l'effectif de la saisie compte : une voiture, ou la rame entière.
+# Un train francilien peut être une UM3, et celui qui compte peut être monté
+# dans une seule voiture. Sans cette distinction, 180 voyageurs dans une voiture
+# d'une UM3 et 180 dans les trois sont le même relevé — et c'est précisément la
+# différence qui donne la charge à l'échelle de la rame.
+PERIMETRES = {"voiture", "um"}
 
 
 def _clef_par_genre(connection: sqlite3.Connection) -> None:
@@ -146,6 +165,15 @@ def create_app(
             connection.execute("ALTER TABLE saisie ADD COLUMN legs TEXT")
         if "trajet" not in columns:
             connection.execute("ALTER TABLE saisie ADD COLUMN trajet TEXT")
+        # Trois colonnes du même changement, ajoutées dans le même `if` : une
+        # base qui en a une mais pas les autres ne peut pas exister par un
+        # chemin normal, et scinder le test donnerait l'illusion que chacune
+        # est indépendante alors qu'elles ne le sont pas. La liste de recopie
+        # n'a pas besoin d'être touchée : `_clef_par_genre` la tire de
+        # `SCHEMA_SAISIE` par nom, et c'est exactement pour ça qu'elle existe.
+        if not {"materiel", "composition", "perimetre"} <= columns:
+            for nom in ("materiel", "composition", "perimetre"):
+                connection.execute(f"ALTER TABLE saisie ADD COLUMN {nom} TEXT")
         _clef_par_genre(connection)
 
     timetable = data_dir / "timetable.db"
@@ -572,6 +600,48 @@ def _publication_panel(publication: dict) -> str:
     )
 
 
+def _materiel(body: dict) -> tuple[str | None, str | None, str | None]:
+    """Le matériel roulant, sa composition, et ce que l'effectif compte.
+
+    Les trois vont ensemble : « Z 20500 » seul ne dit rien de l'échelle, et une
+    composition seule ne dit pas si l'usager a compté une voiture ou les trois.
+    Pris séparément, ils sont inexploitables ; ensemble, l'effectif devient
+    comparable d'une rame à l'autre.
+
+    Le trio est facultatif, mais cohérent ou rien. Une composition sans
+    périmètre se contredit : dire « UM3 » en ne disant pas ce qu'on a compté
+    laisse croire qu'on a compté la rame, ce qui est faux deux fois sur trois
+    pour un Francilien. Et un périmètre sans composition n'a pas d'échelle. On
+    refuse donc le mélange, parce qu'un CSV où la moitié des lignes a un
+    périmètre et l'autre non se lit comme une absence d'information alors que
+    c'est une information fausse.
+    """
+    composition = str(body.get("composition") or "").strip().upper()
+    perimetre = str(body.get("perimetre") or "").strip().lower()
+    if composition and composition not in COMPOSITIONS:
+        raise HTTPException(
+            status_code=422,
+            detail="composition inconnue : US, UM2 ou UM3",
+        )
+    if perimetre and perimetre not in PERIMETRES:
+        raise HTTPException(status_code=422, detail="périmètre inconnu : voiture ou um")
+    if bool(composition) != bool(perimetre):
+        raise HTTPException(
+            status_code=422,
+            detail="composition et périmètre vont ensemble : l'un sans l'autre n'est pas exploitable",
+        )
+    # Une US, c'est une voiture. Demander si l'on a compté une voiture ou la
+    # rame n'a pas de sens, et accepter « UM / voiture » sur une US rendrait
+    # l'effectif indéfini.
+    if composition == "US" and perimetre == "um":
+        raise HTTPException(
+            status_code=422,
+            detail="une US est une seule voiture : le périmètre « um » ne s'y applique pas",
+        )
+    materiel = str(body.get("materiel") or "").strip()[:40]
+    return materiel or None, composition or None, perimetre or None
+
+
 def _save_saisie(
     database: Path,
     body: dict,
@@ -602,6 +672,7 @@ def _save_saisie(
     standing = _indicator(body.get("standing"))
     seats_free = _indicator(body.get("seats_free"))
     imbalance = _indicator(body.get("imbalance"))
+    materiel, composition, perimetre = _materiel(body)
     snapshot = body.get("snapshot")
     snapshot_text = json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None
     if snapshot_text and len(snapshot_text) > 20_000:
@@ -622,9 +693,10 @@ def _save_saisie(
             """
             INSERT INTO saisie (
                 client_id, origin_stop_id, destination_stop_id, origin_name, destination_name, trip_id,
-                passengers, reliability, pseudo, comment, standing, seats_free, imbalance, snapshot, legs, trajet, kind, created_at
+                passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
+                materiel, composition, perimetre, snapshot, legs, trajet, kind, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 client_id,
@@ -640,6 +712,9 @@ def _save_saisie(
                 standing,
                 seats_free,
                 imbalance,
+                materiel,
+                composition,
+                perimetre,
                 snapshot_text,
                 legs_text,
                 trajet_text,
@@ -739,6 +814,7 @@ def _list_saisies(database: Path) -> list[dict]:
             """
             SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
                    trip_id, passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
+                   materiel, composition, perimetre,
                    snapshot, kind, created_at, legs, trajet
             FROM saisie
             ORDER BY created_at
@@ -746,7 +822,7 @@ def _list_saisies(database: Path) -> list[dict]:
         ).fetchall()
     listed = []
     for row in rows:
-        snapshot = json.loads(row[13]) if row[13] else None
+        snapshot = json.loads(row[16]) if row[16] else None
         listed.append(
             {
                 "client_id": row[0],
@@ -765,13 +841,16 @@ def _list_saisies(database: Path) -> list[dict]:
                 "standing": row[10],
                 "seats_free": row[11],
                 "imbalance": row[12],
+                "materiel": row[13],
+                "composition": row[14],
+                "perimetre": row[15],
                 "snapshot": snapshot,
-                "kind": row[14],
-                "created_at": row[15],
-                "legs": json.loads(row[16]) if row[16] else None,
+                "kind": row[17],
+                "created_at": row[18],
+                "legs": json.loads(row[19]) if row[19] else None,
                 # Le trajet figé au moment du comptage, pas relu au moment de la
                 # lecture : c'est tout l'intérêt. Voir `_freeze_trajet`.
-                "trajet": json.loads(row[17]) if row[17] else None,
+                "trajet": json.loads(row[20]) if row[20] else None,
             }
         )
     return listed
@@ -840,6 +919,7 @@ def _saisies_de_ligne(database: Path, timetable: Path, route_id: str) -> list[di
             f"""
             SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
                    trip_id, passengers, reliability, pseudo, standing, seats_free, imbalance,
+                   materiel, composition, perimetre,
                    snapshot, kind, created_at, legs
             FROM saisie
             WHERE trip_id IN ({marques}) AND kind IN ('count', 'serpent')
@@ -867,10 +947,13 @@ def _saisie_dicts(rows: list) -> list[dict]:
                 "standing": row[9],
                 "seats_free": row[10],
                 "imbalance": row[11],
-                "snapshot": json.loads(row[12]) if row[12] else None,
-                "kind": row[13],
-                "created_at": row[14],
-                "legs": json.loads(row[15]) if row[15] else None,
+                "materiel": row[12],
+                "composition": row[13],
+                "perimetre": row[14],
+                "snapshot": json.loads(row[15]) if row[15] else None,
+                "kind": row[16],
+                "created_at": row[17],
+                "legs": json.loads(row[18]) if row[18] else None,
             }
         )
     return listed
@@ -1057,6 +1140,29 @@ def _lignes_disponibles(timetable: Path) -> bool:
     return timetable.exists() and _has_lines(timetable)
 
 
+def _materiel_texte(row: dict) -> str:
+    """Le matériel, sa composition et le périmètre, en une phrase lisible.
+
+    « UM3, compté sur une voiture » est plus clair que trois cases vides pour
+    celui qui relit un comptage sur une page ligne. Rien ne s'affiche quand les
+    trois sont absents : un relevé sans matériel ne doit pas laisser une ligne
+    vide qui ressemble à une information manquante alors que c'est un choix.
+    """
+    composition = row.get("composition") or ""
+    perimetre = row.get("perimetre") or ""
+    materiel = row.get("materiel") or ""
+    if not composition and not perimetre:
+        return ""
+    parties = []
+    if materiel:
+        parties.append(escape(materiel))
+    if composition:
+        etendue = {"voiture": "compté sur une voiture", "um": "compté sur toute la rame"}.get(perimetre)
+        label = f"{escape(composition)}" + (f", {etendue}" if etendue else "")
+        parties.append(label)
+    return " · ".join(parties)
+
+
 def _reading_cards(rows: list[dict]) -> str:
     cards = []
     for row in rows:
@@ -1065,10 +1171,13 @@ def _reading_cards(rows: list[dict]) -> str:
         destination = escape(row["destination_name"] or "")
         passengers = "" if row["passengers"] is None else row["passengers"]
         mode = "serpent" if row["kind"] == "serpent" else "unique"
+        materiel = _materiel_texte(row)
+        ligne_materiel = f"<p class='status'>{materiel}</p>" if materiel else ""
         cards.append(
             "<article class='card'>"
             f"<strong>{origin} → {destination}</strong>"
             f"<p>{passengers} voyageurs · {who} · {mode}</p>"
+            f"{ligne_materiel}"
             f"{_legs_text(row.get('legs'))}"
             f"<p class='status'>précédent {_photo_label(row['snapshot'], 'precedent')} · "
             f"même type {_photo_label(row['snapshot'], 'precedent_meme_type')} · "
