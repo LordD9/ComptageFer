@@ -22,6 +22,8 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from comptagefer.affichage import chrome
 from comptagefer.carte import counted_features, map_page as carte_page
+from comptagefer import compte as compte_module
+from comptagefer.compte import COOKIE_COMPTE, compte_de_session, preparer as preparer_compte
 from comptagefer.filtres import (
     PAR_PAGE,
     Filtres,
@@ -210,7 +212,14 @@ def create_app(
         if not {"materiel", "composition", "perimetre"} <= columns:
             for nom in ("materiel", "composition", "perimetre"):
                 connection.execute(f"ALTER TABLE saisie ADD COLUMN {nom} TEXT")
+        # `compte_id` vient de la phase 9 et n'est pas dans `SCHEMA_SAISIE` :
+        # cette liste sert aussi à la copie de migration de `_clef_par_genre`,
+        # et une colonne qui n'y est pas disparaît au passage. D'où l'ordre :
+        # la clé d'abord, la colonne du compte ensuite. C'est le piège que la
+        # migration de `trajet` avait déjà pris, et le corriger à l'envers
+        # casserait toute base déjà migrée.
         _clef_par_genre(connection)
+        preparer_compte(connection)
 
     timetable = data_dir / "timetable.db"
     stops_database = data_dir / "stops.db"
@@ -421,15 +430,168 @@ def create_app(
         return _admin_list(_list_saisies(database), publication.publish_now())
 
     @app.post("/api/sessions")
-    def sessions(body: dict) -> dict:
+    def sessions(request: Request, body: dict) -> dict:
         kind = "serpent" if body.get("kind") == "serpent" else "count"
         return _save_saisie(
-            database, body, kind=kind, timetable=timetable, stops_database=stops_database
+            database,
+            body,
+            kind=kind,
+            timetable=timetable,
+            stops_database=stops_database,
+            # Le compte vient du cookie et jamais du corps de la requête : un
+            # `compte_id` envoyé par le navigateur serait une valeur que le
+            # client choisit, donc un relevé qu'on s'attribue. Un cookie
+            # inconnu — un navigateur qui garde une session close, une
+            # tentative forgée — donne `None`, et le relevé est enregistré
+            # sans compte. Compter reste le chemin par défaut.
+            compte_id=_compte_de_cookie(request),
         )
 
     @app.post("/api/missing")
-    def missing(body: dict) -> dict:
-        return _save_saisie(database, body, kind="missing")
+    def missing(request: Request, body: dict) -> dict:
+        return _save_saisie(database, body, kind="missing", compte_id=_compte_de_cookie(request))
+
+    def _compte_de_cookie(request: Request) -> str | None:
+        """Le compte du cookie de session, ou `None`.
+
+        La lecture touche la base à chaque `POST`, donc une connexion à chaque
+        comptage. Sur le volume du projet c'est indolore, et c'est le prix d'un
+        `compte_id` qui ne peut pas être fourni par le client : le cookie est la
+        seule preuve, et la base est la seule qui sache si la session est
+        encore ouverte.
+        """
+        jeton = request.cookies.get(COOKIE_COMPTE, "")
+        if not jeton:
+            return None
+        try:
+            return compte_de_session(database, jeton)
+        except sqlite3.DatabaseError:
+            # Une base verrouillée ou absente ne doit pas faire perdre un
+            # comptage déjà fait dans le train. Le relevé part sans compte.
+            return None
+
+    @app.get("/compte", response_class=HTMLResponse)
+    def compte_page(request: Request) -> str:
+        """Trois états, et trois pages : le compte créé, l'historique, ou rien.
+
+        Sans session, la page propose la création et la connexion. Il n'y a pas
+        d'adresse email à demander, donc il n'y a rien à divulguer dans une
+        réponse : la page ne dépend pas de l'existence d'un compte.
+        """
+        identifiant = _compte_de_cookie(request)
+        if identifiant is not None:
+            return _compte_historique(identifiant)
+        secret_neuf = request.query_params.get("secret-neuf", "")
+        return _compte_acces(secret_neuf)
+
+    @app.post("/compte/creer")
+    def compte_creer(pseudo: str = Form("")) -> HTMLResponse:
+        """Un compte, son secret affiché une seule fois, et une session ouverte.
+
+        La session est ouverte tout de suite : demander un secret à quelqu'un
+        pour qu'il se connecte dans la foulée serait lui faire recopier un
+        caractère pour rien.
+
+        Le secret voyage dans la `location` du `303` parce qu'un `POST` ne peut
+        pas afficher une page : le serveur doit d'abord renvoyer le navigateur
+        ailleurs. La page d'arrivée le rend, et `/compte` ne le rend plus jamais.
+        """
+        identifiant, secret = compte_module.creer_compte(database, pseudo.strip())
+        jeton, expire = compte_module.ouvrir_session(database, identifiant)
+        reponse = HTMLResponse(status_code=303, headers={"location": "/compte?secret-neuf=" + secret})
+        # Le cookie est posé sur `reponse`, et `reponse` est ce qui part. Le
+        # poser sur un autre objet et renvoyer celui-ci serait perdu — c'est pour
+        # ça que la réponse est construite ici et pas dans le décorateur.
+        compte_module.poser_cookie(reponse, jeton, expire)
+        return reponse
+
+    @app.post("/compte/se-connecter")
+    def compte_se_connecter(secret: str = Form("")) -> HTMLResponse:
+        """Un secret ouvre une session, ou rien.
+
+        Le secret va dans le corps du `POST` et jamais dans l'URL : une URL finit
+        dans l'historique du navigateur, dans un journal de serveur et dans
+        l'en-tête `Referer` de la page suivante. Le `303` renvoie ensuite sur
+        `/compte`, où plus rien du secret ne figure dans la barre d'adresse.
+        """
+        reponse = HTMLResponse(status_code=303, headers={"location": "/compte"})
+        identifiant = None
+        if secret.strip():
+            try:
+                identifiant = compte_module.compte_de_secret(database, secret)
+            except sqlite3.DatabaseError:
+                # Une base verrouillée ne doit pas faire croire à un mauvais
+                # secret : le dire serait inventer un verdict sur le compte.
+                identifiant = None
+        if identifiant is not None:
+            jeton, expire = compte_module.ouvrir_session(database, identifiant)
+            compte_module.poser_cookie(reponse, jeton, expire)
+        return reponse
+
+    @app.post("/compte/deconnecter", response_class=HTMLResponse)
+    def compte_deconnecter(request: Request, response: Response) -> str:
+        response.status_code = 303
+        response.headers["location"] = "/compte"
+        # La fermeture prend le jeton du cookie et non l'identifiant : c'est
+        # la ligne de `session` qu'il faut supprimer, et elle est addressée par
+        # son jeton. Un cookie absent n'a rien à fermer.
+        compte_module.fermer_session(database, request.cookies.get(COOKIE_COMPTE, ""))
+        compte_module.retirer_cookie(response)
+        return response
+
+    @app.get("/classement", response_class=HTMLResponse)
+    def classement() -> str:
+        return _classement_page(_classement(database))
+
+    def _compte_historique(identifiant: str) -> str:
+        """Les relevés de la personne, et le bouton qui la déconnecte.
+
+        La liste est tronquée par `releves_de`, et le total est compté à part :
+        déduire le total de la liste rendue ferait dire « 200 relevés » à une
+        personne qui en a 4 000.
+        """
+        releves = compte_module.releves_de(database, identifiant)
+        total = compte_module.nombre_de_releves(database, identifiant)
+        pluriel = "" if total == 1 else "s"
+        if not releves:
+            corps = (
+                "<h1>Vos releves</h1>"
+                "<p>Aucun releve n'est encore rattache a ce compte. "
+                "Comptage et serpent y sont rattaches automatiquement.</p>"
+                '<p><a class="bouton" href="/">Compter</a></p>'
+            )
+            return chrome("Votre compte", corps, actif="/compte")
+        cartes = []
+        for releve in releves:
+            effectif = releve["passengers"]
+            valeur = "—" if effectif is None else str(effectif)
+            titre = "Train signale" if releve["kind"] == "missing" else valeur + " voyageurs"
+            depart = escape(str(releve["origin_name"] or ""))
+            arrivee = escape(str(releve["destination_name"] or ""))
+            fiabilite = escape(str(releve["reliability"] or "—"))
+            cartes.append(
+                '<article class="carte">'
+                + "<h2>" + depart + " → " + arrivee + "</h2>"
+                + "<p>" + escape(titre) + "</p>"
+                + '<p class="mention">Fiabilité ' + fiabilite + "</p>"
+                + "</article>"
+            )
+        suite = (
+            "<p>Les " + str(total) + " plus recents sont montres.</p>"
+            if total > len(releves)
+            else ""
+        )
+        corps = (
+            "<h1>Vos releves</h1>"
+            + "<p>" + str(total) + " releve" + pluriel + " rattache" + pluriel
+            + " a ce compte.</p>"
+            + "".join(cartes)
+            + suite
+            + '<form method="post" action="/compte/deconnecter">'
+            + '<button class="ghost" type="submit">Se deconnecter</button>'
+            + "</form>"
+        )
+        return chrome("Votre compte", corps, actif="/compte")
 
     def admin_open(request: Request) -> bool:
         cookie = request.cookies.get("comptagefer_admin", "")
@@ -475,6 +637,205 @@ def create_app(
         return _admin_list(_list_saisies(database))
 
     return app
+
+
+def _classement(database: Path) -> list[dict]:
+    """Les comptes et leurs points, calculés à la lecture.
+
+    Le score n'est pas une colonne : il serait faux dès que la formule change,
+    et il faudrait le recalculer — donc le migrer. Une fonction de score, et la
+    base est lue à chaque page.
+
+    Les coefficients sont volontairement égaux. Ils ne sont pas calibrés : le
+    plan dit que ce sera fait sur la base réelle, et mettre des nombres choisis
+    à l'avance ferait de cette page une illustration du score plutôt que le
+    score. Voir `docs/projet.md`, phase 9.
+    """
+    with sqlite3.connect(database) as connection:
+        lignes = connection.execute(
+            """
+            SELECT c.id, c.pseudo, COUNT(*), COUNT(DISTINCT s.origin_stop_id || '>' || s.destination_stop_id)
+            FROM compte c JOIN saisie s ON s.compte_id = c.id
+            GROUP BY c.id, c.pseudo
+            ORDER BY COUNT(*) DESC, c.pseudo ASC
+            """
+        ).fetchall()
+    return [
+        {
+            # Jamais l'identifiant en repli : `/classement` est une page
+            # publique, et y écrire l'id d'un compte dont le pseudo est vide
+            # serait la fuite la plus facile du projet — celle qu'on ne verrait
+            # qu'en ouvrant la page avec un compte sans pseudo.
+            "pseudo": pseudo or "compte sans pseudo",
+            "releves": releves,
+            "paires": paires,
+        }
+        for identifiant, pseudo, releves, paires in lignes
+    ]
+
+
+def _champ(nom: str, libelle: str, attributs: str) -> str:
+    """Un champ étiqueté, pour les deux formulaires de `/compte`.
+
+    Les deux sont écrits ici plutôt qu'écrits deux fois dans les pages : un
+    `label` sans `for`, ou un `id` qui ne correspond pas, est le genre de faute
+    que rien ne relit et que seul un navigateur signale.
+    """
+    return (
+        f'<label for="{nom}">{escape(libelle)}</label>'
+        f'<input id="{nom}" name="{nom}" {attributs}>'
+    )
+
+
+def _bouton(texte: str, action: str) -> str:
+    """Un `POST` avec son bouton. La méthode est explicite sur le formulaire."""
+    return (
+        f'<form method="post" action="{action}">'
+        f'<button type="submit">{escape(texte)}</button>'
+        "</form>"
+    )
+
+
+def _compte_acces(secret_neuf: str = "") -> str:
+    """Créer un compte, ou s’y reconnecter. Aucun email, aucun mot de passe.
+
+    Les deux gestes sont sur la même page parce qu’une personne qui revient ne
+    sait pas encore si elle a un compte : lui faire choisir à l’avance serait lui
+    demander de le savoir.
+    """
+    if secret_neuf:
+        return _compte_secret(secret_neuf)
+    corps = (
+        "<h1>Votre compte</h1>"
+        "<p>Le compte est facultatif : compter n’en demande pas. Il sert à "
+        "retrouver vos relevés, et à apparaître au classement.</p>"
+        "<h2>Revenir</h2>"
+        + _champ(
+            "secret",
+            "Votre secret",
+            'type="text" required autocomplete="off" autocapitalize="none" '
+            'spellcheck="false"',
+        )
+        + _bouton("Ouvrir mon compte", "/compte/se-connecter")
+        + "<h2>En créer un</h2>"
+        + _champ(
+            "pseudo",
+            "Votre pseudo",
+            'type="text" maxlength="40" autocomplete="nickname"',
+        )
+        + _bouton("Créer mon compte", "/compte/creer")
+        + '<p class="mention">Aucune adresse email n’est demandée ni conservée. '
+        "Vous obtenez un secret que vous gardez : c’est lui qui ouvre votre "
+        "compte. Le perdre, c’est perdre le compte.</p>"
+    )
+    return chrome("Votre compte", corps, actif="/compte")
+
+
+def _compte_secret(secret: str) -> str:
+    """Le secret, une fois, avec le bouton qui le copie.
+
+    Deux règles dans cette page, et elles se contredisent assez pour qu’il faille
+    les écrire.
+
+    La page **doit** rester utilisable sans le bouton : l’API presse-papiers peut
+    être refusée, et une personne qui ne peut pas récupérer son compte parce
+    qu’un bouton ne marche pas a perdu son compte. Donc le secret est dans un
+    `<code>` sélectionnable, et le bouton n’est qu’un confort.
+
+    Le bouton **ne doit pas** se taire quand il échoue : il bascule en
+    « sélectionner », et il écrit ce qu’il a fait dans la page. Une alerte
+    disparaît, et le doute de ne pas avoir copié reste.
+
+    Le secret passe aussi par l’URL après la création, parce qu’un `303` doit
+    viser une adresse. Il ne reste dans la barre que le temps d’un aller-retour,
+    et la page porte `noindex`. C’est un compromis assumé, écrit ici pour qu’il ne
+    soit pas redécouvert plus tard comme un défaut.
+    """
+    echappe = escape(secret)
+    corps = (
+        "<h1>Votre secret</h1>"
+        '<p class="mention">Il ne sera plus jamais affiché. Copiez-le, puis '
+        "gardez-le : c’est lui qui rouvre votre compte.</p>"
+        + '<p><code id="secret-texte">'
+        + echappe
+        + "</code> "
+        + '<button id="copier-secret" type="button" data-secret="'
+        + echappe
+        + '">Copier</button> '
+        + '<span id="copie-retour" role="status"></span></p>'
+        "<h2>Comment le garder</h2>"
+        "<p>Une note dans votre gestionnaire de mots de passe. Pas sur un papier "
+        "qui traîne, et surtout pas dans un email que vous renverriez à cet "
+        "outil.</p>"
+        '<p><a class="bouton" href="/compte">J’ai copié mon secret</a></p>'
+    )
+    return chrome(
+        "Votre secret",
+        corps,
+        actif="/compte",
+        extra_script=_SCRIPT_COPIER,
+        extra_head='<meta name="robots" content="noindex">',
+    )
+
+
+# Le bouton de copie. Deux lignes de logique, une garde pour l'absence, et un
+# repli : si l'API refuse — page non sécurisée, vieux navigateur, permission
+# refusée — le secret est sélectionné et le dit. Le repli n'est pas un détail
+# cosmétique : sur une installation en `http://10.x`, `navigator.clipboard` est
+# absent, et un bouton sans repli serait un bouton mort sur le Pi d'origine.
+_SCRIPT_COPIER = """
+(function () {
+  var texte = document.getElementById("secret-texte");
+  var bouton = document.getElementById("copier-secret");
+  var retour = document.getElementById("copie-retour");
+  if (!texte || !bouton || !retour) return;
+  function selectionner() {
+    var plage = document.createRange();
+    plage.selectNodeContents(texte);
+    var choix = window.getSelection();
+    choix.removeAllRanges();
+    choix.addRange(plage);
+    retour.textContent = "Sélectionné : copiez-le avec Ctrl+C.";
+  }
+  bouton.onclick = function () {
+    if (!navigator.clipboard) { selectionner(); return; }
+    navigator.clipboard.writeText(bouton.dataset.secret).then(
+      function () { retour.textContent = "Secret copié."; },
+      selectionner
+    );
+  };
+})();
+"""
+
+
+def _classement_page(lignes: list[dict]) -> str:
+    if not lignes:
+        corps = (
+            "<h1>Classement</h1>"
+            "<p>Personne n'a encore de compte. Le classement se remplira avec "
+            "les relevés rattachés à un compte — les relevés anonymes comptent "
+            "dans les données et n'apparaissent pas ici.</p>"
+            f'<p><a class="bouton" href="/">Compter</a></p>'
+        )
+        return chrome("Classement", corps, actif="/classement")
+    # Le dénominateur est annoncé, comme sur `/comptages` : une liste tronquée
+    # qui ne dit pas ce qu'elle tronque se prend pour l'ensemble.
+    cartes = []
+    for ligne in lignes:
+        cartes.append(
+            '<article class="carte">'
+            f"<h2>{escape(ligne['pseudo'])}</h2>"
+            f"<p>{ligne['releves']} relevé{'' if ligne['releves'] == 1 else 's'}"
+            f", {ligne['paires']} paire{'' if ligne['paires'] == 1 else 's'} de gares</p>"
+            "</article>"
+        )
+    corps = (
+        "<h1>Classement</h1>"
+        f"<p>{len(cartes)} compte{'' if len(cartes) == 1 else 's'} "
+        "avec des relevés rattachés.</p>"
+        + "".join(cartes)
+    )
+    return chrome("Classement", corps, actif="/classement")
 
 
 def create_production_app() -> FastAPI:
@@ -791,6 +1152,7 @@ def _save_saisie(
     kind: str,
     timetable: Path | None = None,
     stops_database: Path | None = None,
+    compte_id: str | None = None,
 ) -> dict:
     client_id = str(body.get("client_id") or "")
     origin = str(body.get("origin_stop_id") or "")
@@ -837,9 +1199,9 @@ def _save_saisie(
             INSERT INTO saisie (
                 client_id, origin_stop_id, destination_stop_id, origin_name, destination_name, trip_id,
                 passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
-                materiel, composition, perimetre, snapshot, legs, trajet, kind, created_at
+                materiel, composition, perimetre, snapshot, legs, trajet, kind, created_at, compte_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 client_id,
@@ -863,6 +1225,7 @@ def _save_saisie(
                 trajet_text,
                 kind,
                 datetime.now(timezone.utc).isoformat(),
+                compte_id,
             ),
         )
     return {"client_id": client_id, "kind": kind, "stored": True}
