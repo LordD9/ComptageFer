@@ -502,6 +502,13 @@ function renderSnake() {
     pseudoInput.type = "text";
     pseudoInput.maxLength = 40;
     pseudoInput.autocomplete = "nickname";
+    // Le pseudo du compte est pré-rempli dans le champ du comptage unique,
+    // par le serveur. Le serpent le recopie : sans cette ligne, le pseudo
+    // serait rempli pour un comptage unique et absent pour un serpent, donc
+    // présent une fois sur deux — et le champ du serpent est vide au
+    // moment où la personne ne s'y attend pas le moins, à la fin d'un
+    // relevé de dix arrêts.
+    if ($("pseudo").value) pseudoInput.value = $("pseudo").value;
     const comment = document.createElement("label");
     comment.htmlFor = "snake-comment";
     comment.textContent = "Commentaire, publié dans le CSV";
@@ -774,3 +781,41 @@ $("again").onclick = () => location.reload();
 </body>
 </html>
 """
+
+# Le champ pseudo du comptage unique, tel qu'il est écrit dans `PAGE`. La
+# substitution se fait sur cette chaîne exacte : un `id` qui change ne peut
+# pas produire une page silencieusement sans pseudo, parce que le remplacement
+# ne trouve plus rien et que `page_avec_pseudo` le voit.
+_CHAMP_PSEUDO = '<input id="pseudo" type="text" maxlength="40" autocomplete="nickname">'
+
+
+def page_avec_pseudo(pseudo: str) -> str:
+    """`PAGE` avec le pseudo de la session déjà rempli.
+
+    Le comptage unique a un champ pseudo dans le HTML ; le serpent le crée
+    en JavaScript, au moment où l'on arrive au dernier arrêt. Les deux
+    reçoivent la même valeur par défaut, sinon le pseudo serait rempli pour
+    un comptage unique et absent pour un serpent — donc présent une fois
+    sur deux, ce qui est la pire des deux réponses. Le serpent lit le champ
+    du comptage unique, qui porte donc la valeur.
+
+    La valeur est **échappée** : elle vient de la base, donc d'une donnée,
+    et `docs/regles.md` § 1 est sans exception sur ce point. Un pseudo
+    contenant une double quote fermerait l'attribut et injecterait du HTML
+    sur la page de comptage, qui est la page la plus visitée du site.
+
+    Le remplacement est compté : un `PAGE` modifié sans que le champ soit
+    trouvé doit lever, pas rendre une page qui a l'air pré-remplie et qui
+    ne l'est pas — le défaut que ce correctif corrige, ailleurs.
+    """
+    from html import escape
+
+    if not pseudo:
+        return PAGE
+    remplacement = (
+        '<input id="pseudo" type="text" maxlength="40" autocomplete="nickname"'
+        f' value="{escape(pseudo[:40], quote=True)}">'
+    )
+    if _CHAMP_PSEUDO not in PAGE:
+        raise ValueError("le champ pseudo a changé de forme : page_avec_pseudo ne sait plus le remplir")
+    return PAGE.replace(_CHAMP_PSEUDO, remplacement)

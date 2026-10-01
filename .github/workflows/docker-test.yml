@@ -63,10 +63,15 @@ jobs:
           # `/compte` et `/classement` sont dans cette liste depuis la phase 9.
           # Ils repondent sans session — `/compte` propose la creation et la
           # connexion, `/classement` dit qu'il n'y a personne — donc `curl` peut
-          # les vérifier sur un conteneur vide. C'est exactement ce qu'un 200 ne
+          # les verifier sur un conteneur vide. C'est exactement ce qu'un 200 ne
           # prouve pas en general : ces deux pages ont un etat « rien » qui doit
           # s'afficher, et c'est ce que le contenu verifie ci-dessous.
-          for chemin in / /comptages /carte /rechercher /methode /offline.js /api/publish /compte /classement; do
+          # `/releve` et `/gare` sont dans la liste depuis le 1er octobre 2026 :
+          # `/gare` sans identifiant demande quelle gare, `/releve` sans releve dit
+          # qu'il n'existe pas. Les deux repondent sur un conteneur vide, donc
+          # ils se verifient ici — et c'est cette liste qui aurait attrape la
+          # recherche qui trouvait une gare sans lien pour y aller.
+          for chemin in / /comptages /carte /rechercher /methode /offline.js /api/publish /compte /classement /releve /gare; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000$chemin")
             echo "$chemin -> $code"
             test "$code" = "200" || { echo "echec sur $chemin"; exit 1; }
