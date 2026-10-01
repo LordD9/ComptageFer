@@ -8,6 +8,8 @@ services:
       COMPTAGEFER_DATA: /data
       # Jeton d'administration. Sans valeur, /admin refuse toute connexion.
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # 1 derrière un proxy HTTPS ; vide ou 0 pour les essais locaux HTTP.
+      COMPTAGEFER_HTTPS: ${COMPTAGEFER_HTTPS:-0}
       # Publication du CSV sur data.gouv.fr. Les deux premières variables
       # activent la fonctionnalité ; sans elles, l'application démarre quand
       # même et le dit sur /api/publish. Les valeurs vivent dans .env, jamais

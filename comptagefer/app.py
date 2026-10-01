@@ -59,6 +59,7 @@ from comptagefer.rt import (
     cache_status,
     poll_once,
 )
+from comptagefer.securite import https_actif, origine_autorisee
 
 STOPS_URL = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip"
 
@@ -237,7 +238,40 @@ def create_app(
     timetable = data_dir / "timetable.db"
     stops_database = data_dir / "stops.db"
 
+    https_actif()  # Valider la configuration avant de servir des cookies.
     app = FastAPI(title="ComptagesFer")
+
+    def page_privee(request: Request) -> bool:
+        return any(
+            request.url.path == prefixe or request.url.path.startswith(prefixe + "/")
+            for prefixe in ("/compte", "/admin")
+        )
+
+    def confidentialite(reponse: Response) -> None:
+        reponse.headers["Cache-Control"] = "no-store"
+        # no-referrer sur les formulaires rend Origin opaque (« null ») dans
+        # Chromium. La page du secret, sans formulaire, l'impose elle-même.
+        reponse.headers.setdefault("Referrer-Policy", "same-origin")
+        reponse.headers["X-Frame-Options"] = "DENY"
+        reponse.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+
+    @app.exception_handler(Exception)
+    async def erreur_interne(request: Request, exc: Exception) -> Response:
+        # Les erreurs non interceptées sont rendues hors du middleware HTTP.
+        reponse = PlainTextResponse("erreur interne", status_code=500)
+        if page_privee(request):
+            confidentialite(reponse)
+        return reponse
+
+    @app.middleware("http")
+    async def proteger_comptes(request: Request, call_next):
+        if request.method == "POST" and not origine_autorisee(request):
+            reponse = PlainTextResponse("origine refusée", status_code=403)
+        else:
+            reponse = await call_next(request)
+        if page_privee(request):
+            confidentialite(reponse)
+        return reponse
     # Exposée pour que l'exploitation puisse lire l'état sans passer par la
     # route, et pour qu'un test injecte un opener sans dupliquer le câblage.
     app.state.publication = publication
@@ -485,41 +519,22 @@ def create_app(
 
     @app.get("/compte", response_class=HTMLResponse)
     def compte_page(request: Request) -> str:
-        """Quatre états, et quatre pages : le compte créé, l'historique, ou rien.
-
-        Sans session, la page propose la création et la connexion. Il n'y a pas
-        d'adresse email à demander, donc il n'y a rien à divulguer dans une
-        réponse : la page ne dépend pas de l'existence d'un compte.
-
-        **La session ouverte ne masque pas le secret neuf.** La création pose le
-        cookie *et* renvoie sur `/compte?secret-neuf=…` ; si l'état « session
-        ouverte » était traité en premier, la personne qui arrive sur cette URL
-        verrait son historique et **jamais son secret**. Le compte serait perdu
-        avant d'avoir pu le garder, et il n'y a personne à qui le demander — c'est
-        précisément ce que le retrait de l'email veut dire.
-
-        Le secret passe donc avant l'historique. Il ne reste dans l'URL que le temps
-        d'un aller-retour, et la page porte `noindex`.
-        """
-        secret_neuf = request.query_params.get("secret-neuf", "")
-        if secret_neuf:
-            return _compte_secret(secret_neuf)
+        """L'historique ou les formulaires ; un GET ne rend jamais de secret."""
         identifiant = _compte_de_cookie(request)
         if identifiant is not None:
             return _compte_historique(identifiant)
         return _compte_acces()
 
     @app.post("/compte/creer")
-    def compte_creer(pseudo: str = Form("")) -> HTMLResponse:
+    def compte_creer(request: Request, pseudo: str = Form("")) -> HTMLResponse:
         """Un compte, son secret affiché une seule fois, et une session ouverte.
 
         La session est ouverte tout de suite : demander un secret à quelqu'un
         pour qu'il se connecte dans la foulée serait lui faire recopier un
         caractère pour rien.
 
-        Le secret voyage dans la `location` du `303` parce qu'un `POST` ne peut
-        pas afficher une page : le serveur doit d'abord renvoyer le navigateur
-        ailleurs. La page d'arrivée le rend, et `/compte` ne le rend plus jamais.
+        Le POST rend directement la page : une redirection contenant le secret
+        le divulguait dans l'historique, les journaux et les Referer.
 
         Le pseudo est exigé ici, et pas seulement par le `required` du champ. Un
         `POST` peut être envoyé sans navigateur — un `curl`, un script — et la
@@ -531,9 +546,23 @@ def create_app(
         pseudo = pseudo.strip()
         if not pseudo:
             raise HTTPException(status_code=422, detail="un pseudo est requis")
-        identifiant, secret = compte_module.creer_compte(database, pseudo)
-        jeton, expire = compte_module.ouvrir_session(database, identifiant)
-        reponse = HTMLResponse(status_code=303, headers={"location": "/compte?secret-neuf=" + secret})
+        try:
+            jeton, expire, secret = compte_module.creer_compte_et_session(
+                database, pseudo, request.cookies.get(COOKIE_COMPTE, "")
+            )
+        except compte_module.QuotaCreationAtteint:
+            raise HTTPException(
+                status_code=429,
+                detail="trop de créations de comptes ; réessayez plus tard",
+                headers={"Retry-After": "3600"},
+            ) from None
+        except sqlite3.DatabaseError:
+            raise HTTPException(
+                status_code=503, detail="création temporairement indisponible"
+            ) from None
+        reponse = HTMLResponse(
+            _compte_secret(secret), headers={"Referrer-Policy": "no-referrer"}
+        )
         # Le cookie est posé sur `reponse`, et `reponse` est ce qui part. Le
         # poser sur un autre objet et renvoyer celui-ci serait perdu — c'est pour
         # ça que la réponse est construite ici et pas dans le décorateur.
@@ -541,7 +570,7 @@ def create_app(
         return reponse
 
     @app.post("/compte/se-connecter")
-    def compte_se_connecter(secret: str = Form("")) -> HTMLResponse:
+    def compte_se_connecter(request: Request, secret: str = Form("")) -> HTMLResponse:
         """Un secret ouvre une session, ou rien.
 
         Le secret va dans le corps du `POST` et jamais dans l'URL : une URL finit
@@ -555,11 +584,18 @@ def create_app(
             try:
                 identifiant = compte_module.compte_de_secret(database, secret)
             except sqlite3.DatabaseError:
-                # Une base verrouillée ne doit pas faire croire à un mauvais
-                # secret : le dire serait inventer un verdict sur le compte.
-                identifiant = None
+                raise HTTPException(
+                    status_code=503, detail="connexion temporairement indisponible"
+                ) from None
         if identifiant is not None:
-            jeton, expire = compte_module.ouvrir_session(database, identifiant)
+            try:
+                jeton, expire = compte_module.ouvrir_session(
+                    database, identifiant, request.cookies.get(COOKIE_COMPTE, "")
+                )
+            except sqlite3.DatabaseError:
+                raise HTTPException(
+                    status_code=503, detail="connexion temporairement indisponible"
+                ) from None
             compte_module.poser_cookie(reponse, jeton, expire)
         return reponse
 
@@ -728,6 +764,7 @@ def create_app(
             cookie,
             httponly=True,
             samesite="lax",
+            secure=https_actif(),
             max_age=SESSION_SECONDS,
             path="/",
         )
@@ -886,10 +923,8 @@ def _compte_secret(secret: str) -> str:
     « sélectionner », et il écrit ce qu’il a fait dans la page. Une alerte
     disparaît, et le doute de ne pas avoir copié reste.
 
-    Le secret passe aussi par l’URL après la création, parce qu’un `303` doit
-    viser une adresse. Il ne reste dans la barre que le temps d’un aller-retour,
-    et la page porte `noindex`. C’est un compromis assumé, écrit ici pour qu’il ne
-    soit pas redécouvert plus tard comme un défaut.
+    Le secret reste dans le corps de la réponse au POST de création, jamais
+    dans une URL ni dans un cookie. Aucun GET ne peut le réafficher.
     """
     echappe = escape(secret)
     corps = (
