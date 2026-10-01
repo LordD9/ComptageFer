@@ -19,8 +19,8 @@ colonne vide prévue pour être remplie est une colonne qui se remplira.
 
 **Le secret est affiché une fois.** `/compte` tire 24 caractères, groupes de 4
 pour être recopiés sans faute, et ne les rend qu'à la création. En base il n'y
-a que son SHA-256. La comparaison est en temps constant, donc un secret d'un
-autre compte n'ouvre rien et ne se distingue pas par un temps de réponse.
+a que son SHA-256, recherché par index. Un secret d'un autre compte n'ouvre
+pas celui-ci ; le pseudo ne décide jamais de l'identité.
 Perdre le secret, c'est perdre le compte : il n'y a pas d'adresse à qui écrire.
 C'est assumé, et écrit dans le plan.
 
@@ -33,14 +33,15 @@ qui le lit, parce qu'il n'a pas d'état propre.
 """
 
 import hashlib
-import hmac
-import os
 import secrets
 import sqlite3
 import time
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from starlette.responses import Response
+
+from comptagefer.securite import https_actif
 
 # Le nom du cookie qui porte la session. Il est dans ce module et nulle part
 # ailleurs : une constante écrite deux fois finit par diverger, et le symptôme
@@ -67,6 +68,16 @@ GROUPE = 4
 SESSION_SECONDES = 3600 * 24 * 30
 
 _LONGUEUR_JETON = 32
+
+# Plafond global sans conserver d'IP. La transaction rend le quota partagé
+# entre les requêtes concurrentes et il survit au redémarrage du serveur.
+CREATIONS_PAR_HEURE = 50
+# Dix appareils simultanés ; une connexion de plus remplace la plus ancienne.
+SESSIONS_PAR_COMPTE = 10
+
+
+class QuotaCreationAtteint(Exception):
+    """Le plafond horaire est atteint ; les comptes existants restent ouverts."""
 
 
 def hacher(secret: str) -> str:
@@ -158,6 +169,12 @@ def creer_schema(connection: sqlite3.Connection) -> None:
         ON signalement (saisie_client_id, saisie_kind, compte_id)
         """
     )
+    connection.execute("CREATE INDEX IF NOT EXISTS compte_secret ON compte (secret)")
+    connection.execute("CREATE INDEX IF NOT EXISTS compte_creation ON compte (cree_le)")
+    connection.execute("CREATE INDEX IF NOT EXISTS session_expire ON session (expire)")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS session_compte ON session (compte_id, ouverte)"
+    )
 
 
 def _ajouter_compte_id(connection: sqlite3.Connection) -> None:
@@ -203,15 +220,47 @@ def creer_compte(database: Path, pseudo: str) -> tuple[str, str]:
     serait inatteignable. La forme stockée est donc la seule qui compte, et elle
     est calculée par `normaliser` — la même fonction que la connexion.
     """
+    with _transaction(database) as connection:
+        return _creer_compte(connection, pseudo)
+
+
+@contextmanager
+def _transaction(database: Path):
+    """Une écriture sérialisée, validée en entier ou annulée, puis fermée."""
+    with closing(sqlite3.connect(database)) as connection, connection:
+        creer_schema(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        yield connection
+
+
+def _creer_compte(connection: sqlite3.Connection, pseudo: str) -> tuple[str, str]:
     identifiant = jeton_compte()
     secret = generer_secret()
-    with sqlite3.connect(database) as connection:
-        creer_schema(connection)
-        connection.execute(
-            "INSERT INTO compte (id, pseudo, secret, cree_le) VALUES (?, ?, ?, ?)",
-            (identifiant, pseudo[:40], hacher(normaliser(secret)), time.time()),
-        )
+    maintenant = time.time()
+    nombre = connection.execute(
+        "SELECT COUNT(*) FROM compte WHERE cree_le > ?", (maintenant - 3600,)
+    ).fetchone()[0]
+    if nombre >= CREATIONS_PAR_HEURE:
+        raise QuotaCreationAtteint
+    connection.execute(
+        "INSERT INTO compte (id, pseudo, secret, cree_le) VALUES (?, ?, ?, ?)",
+        (identifiant, pseudo[:40], hacher(normaliser(secret)), maintenant),
+    )
     return identifiant, secret
+
+
+def creer_compte_et_session(
+    database: Path, pseudo: str, ancien_jeton: str = ""
+) -> tuple[str, float, str]:
+    """Créer, ouvrir et remplacer dans la même transaction.
+
+    Si l'ouverture ou la révocation échoue, aucun compte inaccessible ne reste
+    en base et l'ancienne session reste utilisable.
+    """
+    with _transaction(database) as connection:
+        identifiant, secret = _creer_compte(connection, pseudo)
+        jeton, expire = _ouvrir_session(connection, identifiant, ancien_jeton)
+    return jeton, expire, secret
 
 
 def normaliser(secret: str) -> str:
@@ -229,28 +278,23 @@ def normaliser(secret: str) -> str:
 
 
 def compte_de_secret(database: Path, secret: str) -> str | None:
-    """Le compte qu'un secret ouvre, ou `None`.
+    """Chercher le condensat complet d'un secret aléatoire, pas ses préfixes.
 
-    La lecture ne se fait pas par un `WHERE secret = ?` suivi d'un test de
-    nullité : cela compare en base et non en temps constant. Le `SELECT` ramène
-    tous les hachages et la comparaison se fait ici, avec `compare_digest`. Sur
-    quelques dizaines de comptes le coût est le même ; ce qui est protégé est le
-    principe, pas une mesure — et il est écrit là parce qu'un `WHERE` serait plus
-    court et passerait les tests sans rien changer.
+    Le parcours de tous les comptes coûtait O(N) à toute tentative anonyme et
+    s'arrêtait au premier succès : il n'était pas en temps constant. L'index
+    porte sur le SHA-256, jamais sur le secret en clair.
     """
-    if not secret:
+    if len(secret) > 100:
         return None
-    recherche = hacher(normaliser(secret))
-    trouve = None
+    canonique = normaliser(secret)
+    if len(canonique) != LONGUEUR_SECRET or any(c not in ALPHABET for c in canonique):
+        return None
     with sqlite3.connect(database) as connection:
         creer_schema(connection)
-        for identifiant, stocke in connection.execute("SELECT id, secret FROM compte"):
-            if stocke is None:
-                continue
-            if hmac.compare_digest(stocke, recherche):
-                trouve = str(identifiant)
-                break
-    return trouve
+        row = connection.execute(
+            "SELECT id FROM compte WHERE secret = ? LIMIT 1", (hacher(canonique),)
+        ).fetchone()
+    return None if row is None else str(row[0])
 
 
 def pseudo_de(database: Path, identifiant: str) -> str:
@@ -261,7 +305,9 @@ def pseudo_de(database: Path, identifiant: str) -> str:
     return "" if row is None else str(row[0])
 
 
-def ouvrir_session(database: Path, identifiant: str) -> tuple[str, float]:
+def ouvrir_session(
+    database: Path, identifiant: str, ancien_jeton: str = ""
+) -> tuple[str, float]:
     """Une session, et son expiration.
 
     Renvoie le jeton en clair — il va dans le cookie et nulle part ailleurs — et
@@ -269,15 +315,31 @@ def ouvrir_session(database: Path, identifiant: str) -> tuple[str, float]:
     même valeur que la ligne en base. Les deux venir de deux endroits, c'est la
     session qui expire dans le cookie mais pas en base, ou l'inverse.
     """
+    with _transaction(database) as connection:
+        return _ouvrir_session(connection, identifiant, ancien_jeton)
+
+
+def _ouvrir_session(
+    connection: sqlite3.Connection, identifiant: str, ancien_jeton: str
+) -> tuple[str, float]:
     jeton = secrets.token_urlsafe(_LONGUEUR_JETON)
     maintenant = time.time()
     expire = maintenant + SESSION_SECONDES
-    with sqlite3.connect(database) as connection:
-        creer_schema(connection)
-        connection.execute(
-            "INSERT INTO session (jeton, compte_id, ouverte, expire) VALUES (?, ?, ?, ?)",
-            (hacher(jeton), identifiant, maintenant, expire),
-        )
+    connection.execute("DELETE FROM session WHERE expire <= ?", (maintenant,))
+    # Remplacer avant le plafond : remplacer l'appareil le plus récent ne
+    # doit pas déconnecter aussi le plus ancien, ni échouer à moitié.
+    if ancien_jeton:
+        connection.execute("DELETE FROM session WHERE jeton = ?", (hacher(ancien_jeton),))
+    connection.execute(
+        "INSERT INTO session (jeton, compte_id, ouverte, expire) VALUES (?, ?, ?, ?)",
+        (hacher(jeton), identifiant, maintenant, expire),
+    )
+    connection.execute(
+        "DELETE FROM session WHERE jeton IN ("
+        "SELECT jeton FROM session WHERE compte_id = ? "
+        "ORDER BY ouverte DESC, rowid DESC LIMIT -1 OFFSET ?)",
+        (identifiant, SESSIONS_PAR_COMPTE),
+    )
     return jeton, expire
 
 
@@ -295,11 +357,13 @@ def compte_de_session(database: Path, jeton: str) -> str | None:
     with sqlite3.connect(database) as connection:
         creer_schema(connection)
         row = connection.execute(
-            "SELECT compte_id, expire FROM session WHERE jeton = ?", (hacher(jeton),)
+            "SELECT session.compte_id, session.expire FROM session "
+            "JOIN compte ON compte.id = session.compte_id WHERE session.jeton = ?",
+            (hacher(jeton),),
         ).fetchone()
         if row is None:
             return None
-        if row[1] < maintenant:
+        if row[1] <= maintenant:
             connection.execute(
                 "DELETE FROM session WHERE jeton = ?", (hacher(jeton),)
             )
@@ -330,14 +394,16 @@ def poser_cookie(response: Response, jeton: str, expire: float) -> None:
         jeton,
         httponly=True,
         samesite="lax",
-        secure=bool(os.environ.get("COMPTAGEFER_HTTPS")),
+        secure=https_actif(),
         max_age=int(max(0, expire - time.time())),
         path="/",
     )
 
 
 def retirer_cookie(response: Response) -> None:
-    response.delete_cookie(COOKIE_COMPTE, path="/")
+    response.delete_cookie(
+        COOKIE_COMPTE, path="/", secure=https_actif(), httponly=True, samesite="lax"
+    )
 
 
 def nombre_de_releves(database: Path, identifiant: str) -> int:

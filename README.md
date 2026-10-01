@@ -46,6 +46,8 @@ services:
       COMPTAGEFER_DATA: /data
       # Jeton d'administration. Sans valeur, /admin refuse toute connexion.
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # 1 derrière un proxy HTTPS ; vide ou 0 pour les essais locaux HTTP.
+      COMPTAGEFER_HTTPS: ${COMPTAGEFER_HTTPS:-0}
       # Publication du CSV sur data.gouv.fr. Les deux premières variables
       # activent la fonctionnalité ; sans elles, l'application démarre quand
       # même et le dit sur /api/publish. Les valeurs vivent dans .env, jamais
@@ -155,6 +157,13 @@ collez pas cette sortie dans un ticket ou un message.
 
 - `ADMIN_TOKEN` — le jeton qui ouvre `/admin`. Vide, l'admin est fermé et
   rien ne s'y inscrit. Indispensable dès qu'un tiers atteint le conteneur.
+- `COMPTAGEFER_HTTPS` — `1` pour une adresse publique HTTPS. Active `Secure`
+  sur les cookies de compte **et d'administration**. La déconnexion du compte
+  supprime son cookie avec les mêmes attributs. Il n'existe pas de route de
+  déconnexion admin : sa session expire au bout d'une heure.
+  Vide ou `0` : cookies sans `Secure`, pour les essais HTTP locaux seulement.
+  Toute autre valeur fait échouer le démarrage, plutôt que de masquer une faute
+  de configuration. La variable ne fournit ni TLS, ni certificat, ni redirection.
 - `DATAGOUV_API_KEY` — la clé personnelle data.gouv.fr, sur
   https://www.data.gouv.fr/account/api. Avec `DATAGOUV_DATASET_ID`, elle
   active la publication automatique. Jamais dans l'image, jamais commité.
@@ -171,6 +180,47 @@ quand même, elle dit seulement que la publication est inactive.
 
 `./data` est le seul volume : les bases, l'import GTFS et l'état de
 publication. Le sauvegarder, c'est copier ce dossier.
+
+### HTTPS et comptes utilisateurs
+
+En production, servir le site avec un reverse proxy HTTPS (Caddy, Nginx…),
+hors de ce compose. Il doit rediriger HTTP vers HTTPS, préserver le `Host`
+public et ne pas exposer le port HTTP du conteneur à Internet. Si le proxy est
+sur le même hôte, remplacer la ligne des ports par
+`- "127.0.0.1:8000:8000"`. Limiter aussi la taille et la fréquence des requêtes
+au proxy. Ne jamais journaliser les corps des formulaires ni les cookies.
+
+Écrire `COMPTAGEFER_HTTPS=1` dans `.env`, puis `docker compose up -d` pour
+recréer le conteneur. `docker compose restart` ne recharge pas l'environnement.
+Le proxy peut parler HTTP au conteneur : la variable désigne le transport
+**public**, pas ce lien interne. Les en-têtes `X-Forwarded-Host` et
+`X-Forwarded-Proto` ne suffisent pas à activer les cookies sécurisés.
+
+Vérifier dans le navigateur, à l'adresse **HTTPS** : après création ou connexion,
+le cookie `comptagefer_compte` a `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/` ;
+idem pour `comptagefer_admin` après connexion admin. La session du compte doit
+tenir à la navigation et disparaître après déconnexion. Si `COMPTAGEFER_HTTPS=1` est posé
+sur une adresse HTTP, le navigateur peut refuser de renvoyer le cookie : le
+correctif est HTTPS, pas la désactivation de `Secure` en production.
+
+Le compte reste facultatif. La création affiche le secret **dans la réponse au
+POST**, jamais dans une URL, et les pages compte/admin portent `Cache-Control:
+no-store`, une politique de référent limitée à la même origine (aucun référent
+sur la page du secret) et une interdiction d'encadrement.
+Les POST d'une origine étrangère sont refusés, y compris depuis un sous-domaine.
+Les clients directs sans en-têtes d'origine restent acceptés ; ces contrôles ne
+remplacent pas l'authentification ni la limitation au proxy.
+
+La création est plafonnée globalement à 50 comptes par heure glissante, sans
+stocker d'IP : au-delà, réponse `429` avec `Retry-After`, mais les reconnexions
+restent ouvertes. C'est une borne anti-abus provisoire, pas un chiffre calibré.
+Une session dure 30 jours ; dix sessions simultanées par compte au maximum,
+puis la plus ancienne est fermée. Reconnexion ou nouveau compte dans le même
+navigateur révoque son ancienne session. Garder le secret dans un gestionnaire
+de mots de passe : sans lui ni session, il n'y a pas de récupération.
+
+L'[audit de sécurité et l'étude passkeys](docs/securite-comptes.md) détaillent
+les garanties, les limites et le coût d'un remplacement du secret par WebAuthn.
 
 ## Publier les comptages sur data.gouv.fr
 
