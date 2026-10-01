@@ -578,10 +578,10 @@ def test_un_compte_avec_un_pseudo_valide_est_toujours_cree(tmp_path):
 
     assert client.post(
         "/compte/creer", data={"pseudo": "romain"}, follow_redirects=False
-    ).status_code == 303
+    ).status_code == 200
     assert client.post(
         "/compte/creer", data={"pseudo": long_pseudo}, follow_redirects=False
-    ).status_code == 303
+    ).status_code == 200
 
     with sqlite3.connect(tmp_path / "app.db") as connection:
         pseudos = [row[0] for row in connection.execute("SELECT pseudo FROM compte")]

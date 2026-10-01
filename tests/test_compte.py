@@ -150,7 +150,7 @@ def test_le_secret_est_affiche_une_seule_fois_puis_plus_jamais(tmp_path):
     cree = client.post(
         "/compte/creer", data={"pseudo": "romain"}, follow_redirects=False
     )
-    assert cree.status_code == 303
+    assert cree.status_code == 200
 
     # Le cookie est posé par la création : c'est ce qui fait qu'on arrive
     # connecté, donc `/compte` ne redemande rien.
@@ -269,13 +269,15 @@ def test_le_secret_de_la_page_est_donne_tel_quel_par_la_connexion(tmp_path):
 
     C'est le test de bout en bout du parcours, et il ferme le trou que les deux
     précédents ouvrent : ils travaillent sur le module, celui-ci travaille sur la
-    page, où le secret transite dans une URL avant d'être renvoyé par un formulaire.
+    page, où le secret reste dans le corps du POST avant d'être renvoyé par un formulaire.
     """
     client = _client(tmp_path)
     cree = client.post(
         "/compte/creer", data={"pseudo": "romain"}, follow_redirects=False
     )
-    secret = cree.headers["location"].split("secret-neuf=")[1]
+    match = re.search(r'<code id="secret-texte">([^<]+)</code>', cree.text)
+    assert match is not None
+    secret = match[1]
 
     client.cookies.clear()
     _post(client, client_id="compte-prive")
@@ -329,7 +331,7 @@ def test_une_base_existante_gagne_la_table_compte_sans_echouer(tmp_path):
         "/compte/creer", data={"pseudo": "romain"}, follow_redirects=False
     )
 
-    assert cree.status_code == 303
+    assert cree.status_code == 200
 
 
 # --- La non-fuite : la property qui protège les gens ----------------------

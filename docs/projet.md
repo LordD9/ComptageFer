@@ -2,7 +2,7 @@
 
 Outil collaboratif pour compter la fréquentation des TER en France, puis rendre ces comptages publics, lisibles et réutilisables.
 
-**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 commencée — les vagues 2 et 3 sont écrites : le compte par secret long, le rattachement des relevés, le signalement, `/compte`, et le score avec son classement et son outil de calibration. Restent la vague 1 (HTTPS), le test Chromium de la page du secret, et la calibration des coefficients sur la base réelle, qui ne peut pas se faire sans elle ; le détail est dans « Ce qui reste » plus bas. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
+**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 commencée — les vagues 2 et 3 sont écrites : compte par secret long, rattachement, signalement, historique, score et classement. Les parcours Chromium de compte sont couverts. L'audit a corrigé les défauts de confidentialité, d'origine, de cookies et de sessions ; la variable HTTPS est câblée et documentée. Restent la vérification HTTPS sur le déploiement réel et la calibration des coefficients sur sa base ; les passkeys sont étudiées, non implémentées. Le détail est dans « Ce qui reste » plus bas. Ce document reste la source de vérité : quand le code et le plan divergent, le plan est corrigé dans le même changement.
 
 **Source du besoin :** cahier des charges « ComptagesFer » (présentation de trois diapositives).
 
@@ -664,20 +664,18 @@ un service dont le compte ne sert qu'à retrouver ses relevés et à figurer au
 classement, c'est le bon rapport effort/bénéfice — et surtout, il n'y a rien à
 voler qui identifie quelqu'un.
 
-**Ce qui sera fait plus tard, et pourquoi c'est la bonne réponse.** Une
-**passkey WebAuthn** : le serveur ne stocke qu'une clé publique, la clé privée ne
-quitte jamais l'appareil, et la synchronisation iCloud comme Google Password
-Manager est chiffrée de bout en bout. Aucun secret stocké, aucune adresse email,
-et la résistance au hameçonnage vient du navigateur lui-même. C'est exactement la
-propriété que le secret long n'a pas.
+**Option étudiée, pas implémentée : les passkeys WebAuthn.** Le serveur conserve
+des clés publiques et des identifiants de credential, pas les clés privées ni
+la biométrie. Les passkeys peuvent être synchronisées par le gestionnaire de
+l'utilisateur ; « la clé ne quitte jamais l'appareil » serait donc faux.
+La signature est liée à l'origine et au RP ID : le secret long n'offre pas
+cette résistance au hameçonnage.
 
-Elle n'est pas dans la phase 9 pour une raison mesurable, pas par principe : une
-passkey se crée et se vérifie en JavaScript, et la page `/compte` est aujourd'hui
-du HTML sans script. Le projet a une règle — « pas de JavaScript dans une page
-dont le JavaScript n'est jamais exécuté par la suite de tests » — donc l'ajouter
-exigerait d'abord un test Chromium qui traverse la création d'une passkey, avec
-une authentificateur simulé. C'est faisable, et c'est un travail à part. La note
-est dans le §6 pour qu'on la retrouve quand le reste de la phase sera livré.
+La page `/compte` a déjà du JavaScript de copie exercé dans Chromium. Ce n'est
+plus le blocage : il faut maintenant tester la cérémonie WebAuthn complète
+avec un authentificateur virtuel, les défis à usage unique, la migration et la
+perte d'appareil. L'[étude détaillée](securite-comptes.md#passkeys--complexité-et-périmètre)
+estime l'effort et distingue la connexion du cookie de session, qui resterait.
 
 #### Vague 1 — HTTPS
 
@@ -731,17 +729,17 @@ historique n'a rien à montrer.
 tard : c'est la première règle de la phase. Une colonne vide prévue pour être
 remplie plus tard est une colonne qui se remplira.
 
-Le secret est comparé en `hmac.compare_digest`, pas avec `==`. Comparer un
-hachage de secret avec `==` se voit sur le temps de réponse, et même si ce
-n'est pas exploitable ici — le secret est long et aléatoire — c'est une
-habitude qui se paie ailleurs, dans du code qui aura moins de contexte.
+Le SHA-256 du secret aléatoire est recherché par index. Le parcours précédent
+de tous les comptes n'était pas en temps constant : il s'arrêtait au succès et
+coûtait O(N) à chaque tentative anonyme. On ne compare jamais le secret en clair.
 
 La session tient dans un cookie `comptagefer_compte`, `httponly` et
-`samesite=lax`, avec `secure` seulement quand `COMPTAGEFER_HTTPS` est posée —
+`samesite=lax`, avec `secure` seulement quand `COMPTAGEFER_HTTPS=1` —
 sinon le cookie ne part pas sur une installation en `http://10.x`. Sa durée est
-longue, de l'ordre de la session `admin_sessions` multipliée par dix : un lien
-magique est déjà pénible à demander, le renvoyer à chaque déploiement serait
-une deuxième punition. Le cookie porte un jeton aléatoire, et c'est le SHA-256
+de 30 jours, indépendante de celle de l'administration. Dix sessions actives
+par compte au maximum ; les expirées sont purgées à la connexion, puis la plus
+ancienne est révoquée si nécessaire. Reconnexion ou création dans le même
+navigateur révoque son ancienne session. Le cookie porte un jeton aléatoire, et c'est le SHA-256
 de ce jeton qui va dans `session` — donc la base ne contient pas de session
 utilisable, mais un cookie volé donne bien une session volée. C'est le même
 niveau de protection que `comptagefer_admin`, et c'est suffisant ici : ce que le
@@ -920,10 +918,12 @@ elle est écrite en puces parce qu'une liste de choses à faire dans un document
 conception finit toujours par devenir une liste de choses faites, ce qui est pire
 que de ne pas l'avoir.
 
-**Vague 1 — HTTPS.** Rien d'écrit dans le code. Le domaine, le Caddy hors du
-compose, `COMPTAGEFER_HTTPS=1`, et le `127.0.0.1:8000:8000`. Le test du cookie
-`secure` reste à poser. C'est du déploiement et de la documentation, pas du
-code applicatif — c'est pourquoi c'est la vague la plus rapide.
+**Vague 1 — HTTPS.** Variable transmise par compose et décrite dans le README ;
+cookies compte et admin sécurisés pour la valeur exacte `1`, valeurs invalides
+refusées au démarrage. Les tests de ces cookies sont écrits. À ne pas refaire.
+Reste à vérifier sur le déploiement réel : certificat, proxy, redirection HTTP,
+Host public préservé et port lié à `127.0.0.1:8000:8000`. Aucun accès au VPS
+ni mesure de son TLS n'a été fait pour cet audit.
 
 **Vague 2 — Le compte. Ce qui manque :** rien. Elle est finie, et les trois pages
 que le plan annonçait répondent. La route `/compte/valider` du plan précédent a
@@ -940,7 +940,8 @@ Python, et ils sont du même ordre : la page s'affiche, rien ne signale l'erreur
    `/compte?secret-neuf=…` ; la session ouverte donc en premier renvoyait
    l'historique, et la personne ne voyait jamais son secret. Compte perdu avant
    d'avoir pu le garder, et personne à qui le demander — exactement ce que le
-   retrait de l'email veut dire. Le secret passe désormais avant l'historique.
+   retrait de l'email veut dire. L'audit de sécurité a depuis supprimé cette URL :
+   le secret est rendu dans le corps du POST, aucun GET ne peut le réafficher.
 2. **Le bouton de copie n'avait jamais fonctionné.** `_SCRIPT_COPIER` ne
    comportait pas ses balises `<script>` : le JavaScript était collé dans la page
    comme du texte visible. Un test qui relit le HTML voit bien « le script est
@@ -1023,6 +1024,11 @@ chiffres en face, ce qui est pire que des poids lisibles et assumés.
   navigateur, sans le voir. Le genre est maintenant exigé, donc un appel sans
   `kind` est refusé en 422 au lieu de supprimer plus large que demandé
 - `/classement`
+- audit des comptes : secret hors URL, pages privées non cacheables et non
+  encadrables, POST inter-origine refusés, quota de création atomique et
+  persistant, sessions bornées et révoquées. Le GET d'historique reste utilisable,
+  ainsi que le comptage anonyme. Voir `tests/test_securite_compte.py`,
+  `tests/test_browser_securite_compte.py` et [le rapport](securite-comptes.md).
 - `tests/test_compte.py` : 19 tests, dont la non-fuite, l'absence d'email en base,
   et le parcours création → reconnexion qui avait laissé passer un hachage fait
   sur deux formes différentes du même secret
@@ -1079,7 +1085,7 @@ sienne :
   sort en clair, c'est la page de création. Le test poste un relevé, relit
   `app.db`, `/api/export.csv`, `/comptages` et `/classement`, et cherche le
   secret comme il cherche `compte_id`
-- **HTTPS** : le cookie `secure` est posé quand `COMPTAGEFER_HTTPS` est là, et
+- **HTTPS** : le cookie `secure` est posé quand `COMPTAGEFER_HTTPS=1`, et
   absent sinon. Un `secure` sur une installation en `http://10.x` casse la
   session, et ce test existe parce que ce serait un bug de configuration, pas de
   code
@@ -1093,8 +1099,8 @@ sienne :
   test le vérifie en cherchant la valeur dans les trois sorties, pas en lisant
   la liste des colonnes — une colonne exportée sous un autre nom fuite aussi
 - **le secret se connecte** : le bon secret ouvre une session, le mauvais non,
-  et un secret d'un autre compte n'ouvre rien. La comparaison est en temps
-  constant, donc le test vérifie le résultat et non le temps
+  et un secret d'un autre compte n'ouvre rien. La recherche du condensat est
+  indexée ; aucune garantie de temps constant n'est annoncée.
 - **score** : un relevé à `um` vaut plus qu'un relevé à `voiture`, un serpent
   vaut plus qu'un comptage unique, un corridor inédit vaut plus qu'un corridor
   vu la veille, un corridor redondant du même jour ne vaut rien de plus, et la
@@ -1162,7 +1168,7 @@ qu'on les cherche :
 5. Fermée. Licence Ouverte 2.0 pour les comptages partagés. GPL-3.0 pour le code.
 6. Fermée. L'hébergeur est celui qui lance le conteneur. Il définit `ADMIN_TOKEN` à côté de Compose, et administre avec ce jeton.
 7. Fermée. On choisit son train dans une liste de 4 heures centrée sur maintenant, annotée par le temps réel. À la sélection, on fige ce train, le précédent et le suivant.
-8. Ouverte, phase 9. Le compte est facultatif à 100 %, et **aucune adresse email n'est stockée**. La connexion se fait par un secret long tiré au hasard et affiché une seule fois. Le plan prévoyait un lien envoyé par email ; c'est retiré, parce qu'une adresse email est un identifiant direct, réutilisable ailleurs, et qu'un lien de connexion est de surcroît un mot de passe qui voyage en clair dans une boîte mail hors de contrôle. Une passkey WebAuthn est notée pour plus tard : elle supprime même le secret à conserver, mais elle exige du JavaScript que la suite de tests n'exerce pas encore.
+8. Ouverte, phase 9. Le compte est facultatif à 100 %, et **aucune adresse email n'est stockée**. La connexion se fait par un secret long aléatoire, rendu dans le corps du POST de création, jamais en URL. L'option passkeys WebAuthn est étudiée dans [securite-comptes.md](securite-comptes.md) : le JavaScript de copie a déjà ses tests Chromium ; restent la cérémonie, la migration et la récupération. Aucun remplacement du secret n'est livré par cet audit.
 9. Ouverte, phase 9. Le classement récompense l'utilité, pas le volume. Un point par relevé récompenserait quelqu'un qui revient compter le même train vide dix fois. Les coefficients se calibrent sur la base réelle, pas dans une intuition. À l'intérieur de cette utilité, deux formes rapportent plus que les autres parce qu'elles sont plus interprétables : le serpent de charge, qui dit où la charge monte et descend, et le relevé à périmètre `um`, qui donne la charge de la rame entière.
 10. Ouverte, phase 9. `compte_id` n'est exporté nulle part — ni CSV, ni URL, ni journal, ni page. Le jeu est ouvert et republicisé chaque nuit ; y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent.
 
