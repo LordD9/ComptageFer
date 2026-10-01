@@ -36,6 +36,13 @@ NAVIGATION = (
     ("/carte", "Carte"),
     ("/rechercher", "Rechercher"),
     ("/", "Compter"),
+    # `/compte` et `/classement` sont entrés dans la navigation avec la phase 9.
+    # Ils étaient déjà écrits et déjà testés, mais hors du chrome : on n'y
+    # arrivait qu'en tapant l'URL. Les mettre là n'est pas une option d'ergonomie,
+    # c'est une page inexistante pour qui ne connaît pas l'adresse — et une
+    # fonction de Python qui répond 200 reste invisible sans lien.
+    ("/classement", "Classement"),
+    ("/compte", "Compte"),
     ("/methode", "Méthode"),
 )
 

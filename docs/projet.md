@@ -2,7 +2,7 @@
 
 Outil collaboratif pour compter la fréquentation des TER en France, puis rendre ces comptages publics, lisibles et réutilisables.
 
-**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 commencée — la vague 2 est livrée : le schéma, le secret long, le rattachement d'un relevé à un compte et `/compte` fonctionnent. Restent la vague 1 (HTTPS), la vague 3 (le score et le classement) et le signalement ; le détail est dans « Ce qui reste » plus bas. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
+**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 commencée — les vagues 2 et 3 sont écrites : le compte par secret long, le rattachement des relevés, le signalement, `/compte`, et le score avec son classement et son outil de calibration. Restent la vague 1 (HTTPS), le test Chromium de la page du secret, et la calibration des coefficients sur la base réelle, qui ne peut pas se faire sans elle ; le détail est dans « Ce qui reste » plus bas. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
 
 **Source du besoin :** cahier des charges « ComptagesFer » (présentation de trois diapositives).
 
@@ -917,38 +917,86 @@ compose, `COMPTAGEFER_HTTPS=1`, et le `127.0.0.1:8000:8000`. Le test du cookie
 `secure` reste à poser. C'est du déploiement et de la documentation, pas du
 code applicatif — c'est pourquoi c'est la vague la plus rapide.
 
-**Vague 2 — Le compte. Ce qui manque :**
+**Vague 2 — Le compte. Ce qui manque :** rien. Elle est finie, et les trois pages
+que le plan annonçait répondent. La route `/compte/valider` du plan précédent a
+été retirée avec l'email : aucune route, aucune page, aucune référence dans le
+dépôt. Le secret passe par `/compte/se-connecter`. Ce qui reste à la phase 9 est
+la vague 1 et la calibration, listées plus bas.
 
-- **le signalement d'un de ses relevés.** La page `/compte` montre l'historique
-  et le bouton de déconnexion, mais pas « celui-ci est faux ». C'est le reste de
-  la modération qui ne tenait pas dans `ADMIN_TOKEN`, et c'est la raison pour
-  laquelle la vague 2 n'est pas finie
-- **`/compte` et `/classement` dans la `NAVIGATION`.** Les pages existent et
-  répondent, mais on n'y arrive pas par un lien : il faut taper l'URL. C'est un
-  oubli, et non pas un choix. Le § « Fichiers » les annonçait déjà dans la
-  `NAVIGATION` ; ce qui manque est l'écriture
-- **le test Chromium de la page du secret.** Le projet a un filet de ce type pour
-  le formulaire de comptage ; `/compte` vient d'ajouter du JavaScript, donc elle
-  doit l'avoir aussi. C'est le seul endroit où ce clic n'est pas couvert, et le
-  plan le dit deux fois parce que c'est le seul endroit où on serait tenté de
-  mentir sur la couverture
-- **la route `/compte/valider` du plan précédent a été retirée** avec l'email :
-  aucune route, aucune page, aucune référence dans le dépôt. Le secret passe par
-  `/compte/se-connecter`
+**Ce que le test Chromium de `/compte` a trouvé, et qu'aucun autre test ne
+pouvait voir.** Les trois défauts étaient dans du code qui passait tous les tests
+Python, et ils sont du même ordre : la page s'affiche, rien ne signale l'erreur.
 
-**Vague 3 — Le score et le classement. Presque rien n'est écrit.** `/classement`
-existe et affiche deux nombres par compte — relevés et paires de gares — mais ce
-n'est **pas** le score du plan. Il reste :
+1. **Le secret n'était jamais affiché.** `compte_page` traitait « session ouverte »
+   avant « secret neuf ». La création pose le cookie *et* renvoie sur
+   `/compte?secret-neuf=…` ; la session ouverte donc en premier renvoyait
+   l'historique, et la personne ne voyait jamais son secret. Compte perdu avant
+   d'avoir pu le garder, et personne à qui le demander — exactement ce que le
+   retrait de l'email veut dire. Le secret passe désormais avant l'historique.
+2. **Le bouton de copie n'avait jamais fonctionné.** `_SCRIPT_COPIER` ne
+   comportait pas ses balises `<script>` : le JavaScript était collé dans la page
+   comme du texte visible. Un test qui relit le HTML voit bien « le script est
+   là » ; seul un navigateur dit qu'il ne s'exécute pas.
+3. **Le pseudo n'était jamais soumis.** `_champ` rendait le champ puis l'appelant
+   refermait le `<form>` : le `</form>` tombait après l'`input`, donc le champ était
+   dans le DOM mais hors de son formulaire, et rien ne le soumettait. Créer un
+   compte depuis un navigateur enregistrait un **pseudo vide**, sans erreur. Les
+   deux fonctions sont fusionnées en `_formulaire`, qui prend le corps et noue
+   les trois morceaux : il n'y a plus d'ordre à avoir raison.
+4. **Un compte sans relevé ne pouvait pas se déconnecter**, parce que le bouton
+   était rendu dans l'autre branche. Le cas est le plus fréquent du projet : le
+   compte qu'on vient de créer est celui qui n'a pas encore compté.
 
-- **une fonction de score unique et paramétrée**, qui récompense dans l'ordre du
-  plan : `um` d'abord, serpent ensuite, corridor inédit, corridor vieux, et rien
-  du tout pour la fidélité déclarée ni pour un relevé redondant du même jour
-- **la calibration sur la base réelle.** Les coefficients ne sont pas choisis dans
-  ce document, et la distribution obtenue est jointe au message de la PR
-- **l'historique d'un compte doit dire son score**, sinon le classement classe des
-  efforts qu'on ne voit pas
-- **le dénominateur** sur `/classement` : combien de comptes, combien de relevés
-  au total
+Deux autres corrections en ont découlé, chacune écrite dans le changement qui
+l'a révélée :
+
+- `/admin/supprimer` exige le `kind` (voir la vague 2 plus bas)
+- le cookie de session est `httpOnly`, donc invisible à `document.cookie`. Les
+  tests Chromium le lisent par le contexte du navigateur, et c'est le bon moyen :
+  un jeton de session lisible par le JavaScript de la page est un jeton qu'une
+  injection lit
+
+**Vague 3 — Le score et le classement. La formule est écrite, la calibration ne
+l'est pas.** Ce qui est livré, et qu'il ne faut pas refaire :
+
+- `comptagefer/score.py` : `Coeff` (les six paramètres, tous nommés),
+  `PAR_DEFAUT`, `classement`, `score_de`. Une passe sur `saisie`, pas une requête
+  par compte — avec quelques milliers de relevés, l'autre version est le N+1 que
+  `docs/regles.md` §4 interdit
+- les six règles du plan, chacune isolée par un coefficient dégénéré dans
+  `tests/test_score.py` : `um` avant voiture, serpent, inédit, corridor vieux, la
+  fidélité déclarée ne rapporte rien, et un redondant du même jour ne rapporte
+  rien de plus
+- la redondance par groupe (compte, couple, jour), qui garde le **meilleur** de
+  ses relevés et non le premier arrivé : deux relevés du même jour dont un seul
+  est à `um` ne doivent pas se départager sur l'ordre d'écriture
+- `/classement` : les points avec leur dénominateur, la part des corridors inédits, et un
+  paragraphe qui dit **ce que le score récompense** — le plan l'exige, sinon c'est
+  une page de Vanity
+- `/compte` : le score du compte, avec sa part des corridors inédits. Sans ça le classement
+  classe des efforts qu'on ne voit pas
+- `tools/calibrer_score.py` : la distribution, les trois questions du plan, et un
+  code de sortie non nul sur une base sans relevé rattaché
+
+Ce qui manque n'est pas bloquant. **La calibration attendra la base**, et c'est un
+choix, pas un oubli :
+
+- **les coefficients du score.** `PAR_DEFAUT` est lisible, pas juste, et
+  `/classement` le dit à qui la regarde — donc personne ne prend une mesure
+  provisoire pour une verité. La formule est calculée à la lecture, donc la
+  corriger plus tard ne demande **aucune migration** : on change une constante,
+  la prochaine requête recalcule. C'est précisément pour ça qu'aucune colonne n'a
+  été créée. `tools/calibrer_score.py` est écrit et fonctionne ; il sortira ses
+  trois mesures le jour où la base aura assez de comptes, et ce jour-là n'a pas à
+  être aujourd'hui
+- **la part d'inédit d'un « bon compteur »**, qui n'a pas encore de référentiel
+  tant qu'il n'y a pas d'historique de classement
+- **le plafond horaire de création**, dans le code, jamais mesuré. La même
+  mesure, sur le même fichier
+
+Une base trop petite ne donne pas de mauvais coefficients : elle n'en donne aucun.
+Choisir des poids sur cinq cents relevés serait choisir au hasard avec des
+chiffres en face, ce qui est pire que des poids lisibles et assumés.
 
 **Ce qui a été fait dans la vague 2, et qu'il ne faut pas refaire :**
 
@@ -956,19 +1004,47 @@ n'est **pas** le score du plan. Il reste :
   sessions, cookie, `releves_de`, `nombre_de_releves`
 - `saisie.compte_id`, écrite en base et lue par le cookie, jamais exportée
 - `/compte` : création, reconnexion, historique, déconnexion, page du secret avec
-  le bouton de copie et son repli
-- `/classement`, provisoire
+  le bouton de copie et son repli, le score, et « celui-ci est faux »
+- **le signalement** : table `signalement` avec un index unique sur
+  `(client_id, kind, compte_id)`, `POST /compte/signaler`, le formulaire sous
+  chaque relevé de `/compte`, et le panneau en tête de `/admin`. Un signalement
+  n'efface rien : il écrit une ligne, et c'est l'admin qui décide
+- `/admin/supprimer` corrige au passage : la route supprimait par `client_id`
+  seul alors que la clé primaire est `(client_id, kind)`. Un admin qui écartait un
+  effectif erroné effaçait aussi le signalement de train manquant du même
+  navigateur, sans le voir. Le genre est maintenant exigé, donc un appel sans
+  `kind` est refusé en 422 au lieu de supprimer plus large que demandé
+- `/classement`
 - `tests/test_compte.py` : 19 tests, dont la non-fuite, l'absence d'email en base,
   et le parcours création → reconnexion qui avait laissé passer un hachage fait
   sur deux formes différentes du même secret
+- `tests/test_signalement.py` : 15 tests. Le premier par ordre d'importance est
+  « on ne signale que ses propres relevés » — le `client_id` est dans le CSV, donc
+  le contrôle d'appartenance est ce qui empêche de faire modérer le relevé de
+  quelqu'un d'autre. Puis « un signalement n'efface rien », vérifié par les deux
+  côtés : les données et le score
+- `tests/test_browser_compte.py` : 12 tests dans un vrai Chromium. C'est le
+  fichier qui a trouvé les quatre défauts ci-dessus, et il est dans la CI pour
+  cette raison
+- `tests/conftest.py` : les fixtures `site`, `page` et le navigateur, partagées
+  par les deux fichiers de tests navigateur. Elles étaient dans `test_browser.py`
+  et le second fichier les **importait** — ce qui ne marche pas pour une fixture
+  `scope="session"`, parce que pytest identifie une fixture par le module qui la
+  définit : l'import créait une seconde instance du navigateur, et les 12 tests
+  échouaient tous au setup **en suite complète** tout en passant seuls. Un
+  `conftest.py` est résolu une fois pour toute la session
+- `tests/test_navigation.py` : chaque entrée de la navigation est rendue,
+  répond 200, et se marque `aria-current`
 
 #### Fichiers
 
 Chaque vague nomme ses fichiers avant d'écrire la première ligne, mais la phase
 se lit d'un bloc d'abord.
 
-- `comptagefer/app.py` — `compte` et `session` créées au démarrage, routes `/compte`, `/compte/connexion`, `/compte/deconnecter`, `/classement`, et la colonne `compte_id` sur `saisie`
+- `comptagefer/app.py` — `compte` et `session` créées au démarrage, routes `/compte`, `/compte/connexion`, `/compte/deconnecter`, `/classement`, et la colonne `compte_id` sur `saisie`. La page du classement et l'historique y appellent `comptagefer.score`, et n'y recalculent rien
 - `comptagefer/compte.py` — le nouveau module : le secret, sa comparaison, la session, le cookie. Un module et non quinze fonctions dans `app.py`, qui est déjà à 2 279 lignes
+- `comptagefer/score.py` — la formule du classement, avec ses six paramètres dans `Coeff`. Ni colonne ni vue SQL : un score stocké devient faux dès que la formule change
+- `tools/calibrer_score.py` — la distribution sur une base réelle, et les trois mesures que le plan nomme. Il sort en erreur sur une base sans relevé, pour qu'un zéro ne se confonde pas avec une mesure
 - `comptagefer/affichage.py` — `/compte` et `/classement` entrent dans `NAVIGATION`, donc dans le chrome et le test de tutoiement
 - `compose.yaml` et `.env.example` — **une seule** variable, `COMPTAGEFER_HTTPS`, et elle est facultative. Les trois variables d'envoi du plan précédent ont disparu avec l'email : il n'y a plus rien à configurer pour que les comptes marchent. Le README décrit la variable une par une, sinon `test_compose_doc.py` échoue, et il a raison d'échouer
 

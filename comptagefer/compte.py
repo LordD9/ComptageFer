@@ -137,6 +137,27 @@ def creer_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS signalement (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            saisie_client_id TEXT NOT NULL,
+            saisie_kind TEXT NOT NULL,
+            compte_id TEXT NOT NULL,
+            motif TEXT NOT NULL,
+            cree_le REAL NOT NULL
+        )
+        """
+    )
+    # Un même relevé signalé deux fois par le même compte ne doit pas remplir la
+    # file de modération. La contrainte porte sur le triplet, pas sur le relevé
+    # seul : deux personnes peuvent signaler le même relevé, chacune son avis.
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS signalement_unique
+        ON signalement (saisie_client_id, saisie_kind, compte_id)
+        """
+    )
 
 
 def _ajouter_compte_id(connection: sqlite3.Connection) -> None:
@@ -348,5 +369,111 @@ def releves_de(database: Path, identifiant: str, limite: int = 200) -> list[dict
             "reliability, kind, created_at FROM saisie WHERE compte_id = ? "
             "ORDER BY created_at DESC LIMIT ?",
             (identifiant, limite),
+        ).fetchall()
+    return [dict(ligne) for ligne in lignes]
+
+
+# Un motif de signalement est du texte libre que l'admin lit, donc il est borné.
+# La borne est celle d'un commentaire, pas d'une ligne de base : un signalement
+# utile dit « c'est deux fois le même train compté », pas un roman.
+LONGUEUR_MOTIF = 300
+
+
+def signaler(database: Path, identifiant: str, client_id: str, kind: str, motif: str) -> bool:
+    """Signaler un de ses relevés. Renvoie `False` si c'est déjà signalé.
+
+    **Un signalement n'efface rien.** Il crée une ligne que l'admin voit dans
+    `/admin`. Le plan le dit et le répète : être connecté ouvre le droit de dire
+    « ce relevé n'est pas le mien », pas le droit de le retirer. Une suppression
+    différée serait une modération par le signalement, et elle n'est pas
+    instrumentée.
+
+    La ligne cible est identifiée par `(client_id, kind)` — les deux, parce que la
+    clé primaire de `saisie` est ce couple : un même navigateur peut signaler un
+    train manquant et compter un train réel, et un `client_id` seul viserait les
+    deux.
+
+    Le relevé doit **appartenir au compte** qui signale. C'est vérifié ici, dans le
+    `INSERT ... SELECT`, et pas par l'appelant : une route qui oublie le test
+    laisserait n'importe qui signaler n'importe quel relevé en devinant un
+    `client_id` — et un `client_id` est dans le CSV.
+
+    `INSERT OR IGNORE` sur l'index unique : un second signalement du même relevé
+    par la même personne ne crée pas de seconde ligne. Le plan ne dit pas ce que
+    vaut un doublon, et une file de modération gonflée par un double-clic est un
+    bruit qu'un humain doit trier.
+    """
+    if not motif.strip():
+        return False
+    with sqlite3.connect(database) as connection:
+        creer_schema(connection)
+        curseur = connection.execute(
+            "INSERT OR IGNORE INTO signalement "
+            "(saisie_client_id, saisie_kind, compte_id, motif, cree_le) "
+            "SELECT client_id, kind, ?, ?, ? FROM saisie "
+            "WHERE client_id = ? AND kind = ? AND compte_id = ?",
+            (
+                identifiant,
+                motif.strip()[:LONGUEUR_MOTIF],
+                time.time(),
+                client_id,
+                kind,
+                identifiant,
+            ),
+        )
+        # `rowcount` à 0 quand le `INSERT` n'a rien écrit, et ça arrive de deux
+        # façons : le relevé n'existe pas ou n'est pas à ce compte, ou il est déjà
+        # signalé. Les deux rendent `False` pour l'appelant, qui répondra « déjà
+        # signalé » — un motif juste mais un relevé inexistant ne mérite pas
+        # mieux, et le dire demande un test que `signaler_deja` ne fait pas.
+        return curseur.rowcount > 0
+
+
+def deja_signales(database: Path, identifiant: str) -> set[tuple[str, str]]:
+    """Les `(client_id, kind)` déjà signalés par ce compte, en une lecture.
+
+    La page `/compte` affiche jusqu'à 200 relevés. Les prendre un par un serait
+    200 requêtes pour une page — le N+1 que `docs/regles.md` §4 interdit. Le
+    tableau complet tient en mémoire quelques kilooctets même avec des milliers
+    de signalements, donc il est ramené d'un coup et indexé par le couple.
+
+    Cette fonction remplace `signaler_deja`, qui n'aurait servi qu'ici et aurait
+    coûté une requête par relevé.
+    """
+    with sqlite3.connect(database) as connection:
+        creer_schema(connection)
+        lignes = connection.execute(
+            "SELECT saisie_client_id, saisie_kind FROM signalement WHERE compte_id = ?",
+            (identifiant,),
+        ).fetchall()
+    return {(str(client_id), str(kind)) for client_id, kind in lignes}
+
+
+def signalements(database: Path, limite: int = 100) -> list[dict]:
+    """Les signalements, les plus récents d'abord, pour l'admin.
+
+    Joint à `saisie` pour que l'admin voie **le relevé** et pas seulement son
+    identifiant : un signalement sans le trajet qu'il conteste n'est pas
+    modérable. Les noms de gares sont lus au moment de la lecture, donc un
+    signalement qui vise un relevé supprimé depuis reste visible avec une origine
+    vide — ce qui est le cas à traiter en priorité.
+
+    La jointure est sur `(client_id, kind)`, la clé primaire de `saisie` : sans le
+    `kind`, un même navigateur et deux genres donneraient des lignes croisées, et
+    l'admin verrait un signalement pointer vers le mauvais relevé.
+    """
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        creer_schema(connection)
+        lignes = connection.execute(
+            "SELECT g.id, g.saisie_client_id, g.saisie_kind, g.motif, g.cree_le, "
+            "c.pseudo AS auteur, s.origin_name, s.destination_name, s.passengers, "
+            "s.created_at AS releve_le "
+            "FROM signalement g "
+            "JOIN compte c ON c.id = g.compte_id "
+            "LEFT JOIN saisie s ON s.client_id = g.saisie_client_id "
+            "AND s.kind = g.saisie_kind "
+            "ORDER BY g.cree_le DESC, g.id DESC LIMIT ?",
+            (limite,),
         ).fetchall()
     return [dict(ligne) for ligne in lignes]

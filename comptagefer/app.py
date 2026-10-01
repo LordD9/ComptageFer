@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from comptagefer.affichage import chrome
 from comptagefer.carte import counted_features, map_page as carte_page
 from comptagefer import compte as compte_module
+from comptagefer import score as score_module
 from comptagefer.compte import COOKIE_COMPTE, compte_de_session, preparer as preparer_compte
 from comptagefer.filtres import (
     PAR_PAGE,
@@ -472,17 +473,29 @@ def create_app(
 
     @app.get("/compte", response_class=HTMLResponse)
     def compte_page(request: Request) -> str:
-        """Trois états, et trois pages : le compte créé, l'historique, ou rien.
+        """Quatre états, et quatre pages : le compte créé, l'historique, ou rien.
 
         Sans session, la page propose la création et la connexion. Il n'y a pas
         d'adresse email à demander, donc il n'y a rien à divulguer dans une
         réponse : la page ne dépend pas de l'existence d'un compte.
+
+        **La session ouverte ne masque pas le secret neuf.** La création pose le
+        cookie *et* renvoie sur `/compte?secret-neuf=…` ; si l'état « session
+        ouverte » était traité en premier, la personne qui arrive sur cette URL
+        verrait son historique et **jamais son secret**. Le compte serait perdu
+        avant d'avoir pu le garder, et il n'y a personne à qui le demander — c'est
+        précisément ce que le retrait de l'email veut dire.
+
+        Le secret passe donc avant l'historique. Il ne reste dans l'URL que le temps
+        d'un aller-retour, et la page porte `noindex`.
         """
+        secret_neuf = request.query_params.get("secret-neuf", "")
+        if secret_neuf:
+            return _compte_secret(secret_neuf)
         identifiant = _compte_de_cookie(request)
         if identifiant is not None:
             return _compte_historique(identifiant)
-        secret_neuf = request.query_params.get("secret-neuf", "")
-        return _compte_acces(secret_neuf)
+        return _compte_acces()
 
     @app.post("/compte/creer")
     def compte_creer(pseudo: str = Form("")) -> HTMLResponse:
@@ -528,6 +541,33 @@ def create_app(
             compte_module.poser_cookie(reponse, jeton, expire)
         return reponse
 
+    @app.post("/compte/signaler")
+    def compte_signaler(
+        request: Request,
+        client_id: str = Form(""),
+        kind: str = Form(""),
+        motif: str = Form(""),
+    ) -> HTMLResponse:
+        """Un relevé signalé, et rien d'autre.
+
+        Le signalement ne modifie ni `saisie` ni le score : il écrit une ligne que
+        l'admin lit. C'est écrit dans le plan et répété ici, parce que c'est le
+        genre de geste qui dérive en suppression dès qu'on n'a pas la phrase sous
+        les yeux.
+
+        Sans session, la réponse est un refus et **rien n'est écrit**. Le
+        `client_id` et le `kind` viennent du formulaire, donc ils sont contrôlables
+        — le contrôle qui compte est dans `signaler`, qui vérifie que le relevé
+        appartient bien au compte connecté. Une session ouverte ne donne le droit
+        de signaler que ses propres relevés.
+        """
+        reponse = HTMLResponse(status_code=303, headers={"location": "/compte"})
+        identifiant = _compte_de_cookie(request)
+        if identifiant is None:
+            return reponse
+        compte_module.signaler(database, identifiant, client_id, kind, motif)
+        return reponse
+
     @app.post("/compte/deconnecter", response_class=HTMLResponse)
     def compte_deconnecter(request: Request, response: Response) -> str:
         response.status_code = 303
@@ -544,21 +584,45 @@ def create_app(
         return _classement_page(_classement(database))
 
     def _compte_historique(identifiant: str) -> str:
-        """Les relevés de la personne, et le bouton qui la déconnecte.
+        """Les relevés de la personne, son score, et le bouton qui la déconnecte.
 
         La liste est tronquée par `releves_de`, et le total est compté à part :
         déduire le total de la liste rendue ferait dire « 200 relevés » à une
         personne qui en a 4 000.
+
+        Les signalements déjà posés sont lus en une requête et passés à
+        `_bouton_signaler`, qui s'en sert pour écrire « déjà signalé » sur le
+        bouton. Le dire **avant** le clic compte : un formulaire qui revient sans
+        changement visible laisse croire que l'action n'a rien fait.
         """
         releves = compte_module.releves_de(database, identifiant)
         total = compte_module.nombre_de_releves(database, identifiant)
+        deja = compte_module.deja_signales(database, identifiant)
+        # Le score est dit ici, sinon le classement classe des efforts qu'on ne
+        # voit pas : quelqu'un qui vient de passer premier n'a aucun moyen de
+        # savoir ce que ce rang vaut ni sur quoi il repose. Un compte sans aucun
+        # relevé n'a pas de score, et la page le dit — « aucun point » se lirait
+        # comme un score nul alors que c'est une absence.
+        score = score_module.score_de(database, identifiant)
         pluriel = "" if total == 1 else "s"
+        # La déconnexion est hors de la branche « a des relevés ». Elle en était
+        # dedans : un compte sans aucun relevé n'avait aucun bouton, donc
+        # personne ne pouvait quitter sa session. C'est le pire endroit pour un
+        # oubli de ce genre — le compte le plus récent est précisément celui qui
+        # n'a pas encore compté, donc celui qu'on vient juste de créer et qu'on
+        # veut pouvoir refermer.
+        deconnecter = (
+            '<form method="post" action="/compte/deconnecter">'
+            '<button class="ghost" type="submit">Se deconnecter</button>'
+            "</form>"
+        )
         if not releves:
             corps = (
                 "<h1>Vos releves</h1>"
                 "<p>Aucun releve n'est encore rattache a ce compte. "
                 "Comptage et serpent y sont rattaches automatiquement.</p>"
                 '<p><a class="bouton" href="/">Compter</a></p>'
+                + deconnecter
             )
             return chrome("Votre compte", corps, actif="/compte")
         cartes = []
@@ -574,6 +638,7 @@ def create_app(
                 + "<h2>" + depart + " → " + arrivee + "</h2>"
                 + "<p>" + escape(titre) + "</p>"
                 + '<p class="mention">Fiabilité ' + fiabilite + "</p>"
+                + _bouton_signaler(deja, releve)
                 + "</article>"
             )
         suite = (
@@ -585,11 +650,14 @@ def create_app(
             "<h1>Vos releves</h1>"
             + "<p>" + str(total) + " releve" + pluriel + " rattache" + pluriel
             + " a ce compte.</p>"
+            + "<p>" + _nombre(f"{score.points:g}".replace(".", ",")) + " point"
+            + ("" if score.points == 1 else "s")
+            + " au classement, sur ces " + str(total) + " releve" + pluriel
+            + ", dont " + f"{score.inedit:g}" + " sur des corridors qu'aucun "
+            + "releve ne portait.</p>"
             + "".join(cartes)
             + suite
-            + '<form method="post" action="/compte/deconnecter">'
-            + '<button class="ghost" type="submit">Se deconnecter</button>'
-            + "</form>"
+            + deconnecter
         )
         return chrome("Votre compte", corps, actif="/compte")
 
@@ -609,7 +677,7 @@ def create_app(
     def admin(request: Request) -> str:
         if not admin_open(request):
             return _admin_login()
-        return _admin_list(_list_saisies(database))
+        return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
 
     @app.post("/admin/login", response_class=HTMLResponse)
     def admin_login(response: Response, token: str = Form("")) -> str:
@@ -626,60 +694,70 @@ def create_app(
             max_age=SESSION_SECONDS,
             path="/",
         )
-        return _admin_list(_list_saisies(database))
+        return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
 
     @app.post("/admin/supprimer", response_class=HTMLResponse)
-    def admin_delete(request: Request, client_id: str = Form("")) -> str:
+    def admin_delete(
+        request: Request,
+        client_id: str = Form(""),
+        kind: str = Form(""),
+    ) -> str:
+        """Retirer un relevé de la liste et du CSV. L'admin seulement.
+
+        Le `kind` voyage avec le `client_id` parce que la clé primaire de `saisie`
+        est ce couple : supprimer par `client_id` seul effacerait aussi le train
+        manquant du même navigateur, et un admin qui écarte un comptage erroné
+        supprimerait par accident un signalement de train qui est une information
+        en soi.
+
+        Le `kind` est donc obligatoire ici. Une requête ancienne qui n'enverrait
+        que le `client_id` ne supprimerait plus rien : c'est un changement de
+        comportement visible, et il vaut mieux que la suppression silencieusement
+        élargie. Le bouton de la page envoie les deux.
+        """
         if not admin_open(request):
             raise HTTPException(status_code=401, detail="connexion requise")
+        if not kind:
+            raise HTTPException(status_code=422, detail="genre de relevé requis")
         with sqlite3.connect(database) as connection:
-            connection.execute("DELETE FROM saisie WHERE client_id = ?", (client_id,))
-        return _admin_list(_list_saisies(database))
+            connection.execute(
+                "DELETE FROM saisie WHERE client_id = ? AND kind = ?",
+                (client_id, kind),
+            )
+        return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
 
     return app
 
 
 def _classement(database: Path) -> list[dict]:
-    """Les comptes et leurs points, calculés à la lecture.
+    """Les comptes et leurs points.
 
-    Le score n'est pas une colonne : il serait faux dès que la formule change,
-    et il faudrait le recalculer — donc le migrer. Une fonction de score, et la
-    base est lue à chaque page.
-
-    Les coefficients sont volontairement égaux. Ils ne sont pas calibrés : le
-    plan dit que ce sera fait sur la base réelle, et mettre des nombres choisis
-    à l'avance ferait de cette page une illustration du score plutôt que le
-    score. Voir `docs/projet.md`, phase 9.
+    Le calcul est dans `comptagefer.score` et nulle part ici : le score n'est pas
+    une colonne, il serait faux dès que la formule change, et il faudrait le
+    recalculer — donc le migrer — à chaque réglage. Cette fonction n'est plus qu'un
+    nom, et elle le garde parce que l'appel est dans `create_app` et qu'un
+    rechargement de module n'a pas à changer les routes.
     """
-    with sqlite3.connect(database) as connection:
-        lignes = connection.execute(
-            """
-            SELECT c.id, c.pseudo, COUNT(*), COUNT(DISTINCT s.origin_stop_id || '>' || s.destination_stop_id)
-            FROM compte c JOIN saisie s ON s.compte_id = c.id
-            GROUP BY c.id, c.pseudo
-            ORDER BY COUNT(*) DESC, c.pseudo ASC
-            """
-        ).fetchall()
-    return [
-        {
-            # Jamais l'identifiant en repli : `/classement` est une page
-            # publique, et y écrire l'id d'un compte dont le pseudo est vide
-            # serait la fuite la plus facile du projet — celle qu'on ne verrait
-            # qu'en ouvrant la page avec un compte sans pseudo.
-            "pseudo": pseudo or "compte sans pseudo",
-            "releves": releves,
-            "paires": paires,
-        }
-        for identifiant, pseudo, releves, paires in lignes
-    ]
+    return score_module.classement(database)
 
 
 def _champ(nom: str, libelle: str, attributs: str) -> str:
     """Un champ étiqueté, pour les deux formulaires de `/compte`.
 
-    Les deux sont écrits ici plutôt qu'écrits deux fois dans les pages : un
-    `label` sans `for`, ou un `id` qui ne correspond pas, est le genre de faute
-    que rien ne relit et que seul un navigateur signale.
+    Le champ est rendu **à l'intérieur** du `<form>`, jamais à côté. Une version
+    précédente renvoyait `label + input` puis laissait l'appelant refermer son
+    formulaire, donc le `</form>` tombait après l'`input` : le champ était dans le
+    DOM mais hors de son formulaire, et **rien** ne le soumettait. Créer un compte
+    depuis un navigateur enregistrait donc un pseudo vide — sans erreur, sans
+    422, et le pseudo du compte venait à manquer au classement.
+
+    C'est exactement le genre de faute qu'un test qui relit le HTML ne voit pas :
+    le `<input name="pseudo">` est bien dans la page. Il faut un vrai navigateur
+    qui envoie le formulaire pour le voir, d'où `tests/test_browser_compte.py`.
+
+    Le `label` porte le `for` qui va avec l'`id` de l'input : le clic sur le
+    libellé doit placer le curseur dans le champ, et c'est ce que vérifie
+    l'accessibilité.
     """
     return (
         f'<label for="{nom}">{escape(libelle)}</label>'
@@ -687,43 +765,62 @@ def _champ(nom: str, libelle: str, attributs: str) -> str:
     )
 
 
-def _bouton(texte: str, action: str) -> str:
-    """Un `POST` avec son bouton. La méthode est explicite sur le formulaire."""
+def _formulaire(action: str, champ: str, texte_bouton: str) -> str:
+    """Un `POST`, son champ, et son bouton — dans cet ordre, dans la même balise.
+
+    La fonction prend le **corps** du formulaire et noue les trois morceaux. Elle
+    remplace les deux fonctions qui rendaient le champ puis le bouton séparément,
+    et l'ordre de rendu devenait une affaire de ponctuation : le `</form>` se
+    refermait après l'`input`, et le champ sortait du formulaire.
+
+    C'est la seule façon que l'erreur ne puisse plus arriver : il n'y a plus d'en-
+    tre deux appels dont l'ordre compte.
+    """
     return (
         f'<form method="post" action="{action}">'
-        f'<button type="submit">{escape(texte)}</button>'
+        f"{champ}"
+        f'<button type="submit">{escape(texte_bouton)}</button>'
         "</form>"
     )
 
 
-def _compte_acces(secret_neuf: str = "") -> str:
-    """Créer un compte, ou s’y reconnecter. Aucun email, aucun mot de passe.
+def _compte_acces() -> str:
+    """Créer un compte, ou s'y reconnecter. Aucun email, aucun mot de passe.
 
     Les deux gestes sont sur la même page parce qu’une personne qui revient ne
     sait pas encore si elle a un compte : lui faire choisir à l’avance serait lui
     demander de le savoir.
+
+    Sans paramètre : le secret neuf est rendu par `_compte_secret` avant d'arriver
+    ici, donc cette page est celle où il n'y a **aucune** session et aucun secret à
+    afficher. Elle n'a plus de paramètre du tout : l'ordre des états est le
+    problème de `compte_page`, qui est le seul endroit qui connaît les quatre.
     """
-    if secret_neuf:
-        return _compte_secret(secret_neuf)
     corps = (
         "<h1>Votre compte</h1>"
         "<p>Le compte est facultatif : compter n’en demande pas. Il sert à "
         "retrouver vos relevés, et à apparaître au classement.</p>"
         "<h2>Revenir</h2>"
-        + _champ(
-            "secret",
-            "Votre secret",
-            'type="text" required autocomplete="off" autocapitalize="none" '
-            'spellcheck="false"',
+        + _formulaire(
+            "/compte/se-connecter",
+            _champ(
+                "secret",
+                "Votre secret",
+                'type="text" required autocomplete="off" autocapitalize="none" '
+                'spellcheck="false"',
+            ),
+            "Ouvrir mon compte",
         )
-        + _bouton("Ouvrir mon compte", "/compte/se-connecter")
         + "<h2>En créer un</h2>"
-        + _champ(
-            "pseudo",
-            "Votre pseudo",
-            'type="text" maxlength="40" autocomplete="nickname"',
+        + _formulaire(
+            "/compte/creer",
+            _champ(
+                "pseudo",
+                "Votre pseudo",
+                'type="text" maxlength="40" autocomplete="nickname"',
+            ),
+            "Créer mon compte",
         )
-        + _bouton("Créer mon compte", "/compte/creer")
         + '<p class="mention">Aucune adresse email n’est demandée ni conservée. '
         "Vous obtenez un secret que vous gardez : c’est lui qui ouvre votre "
         "compte. Le perdre, c’est perdre le compte.</p>"
@@ -783,7 +880,7 @@ def _compte_secret(secret: str) -> str:
 # refusée — le secret est sélectionné et le dit. Le repli n'est pas un détail
 # cosmétique : sur une installation en `http://10.x`, `navigator.clipboard` est
 # absent, et un bouton sans repli serait un bouton mort sur le Pi d'origine.
-_SCRIPT_COPIER = """
+_SCRIPT_COPIER = """<script>
 (function () {
   var texte = document.getElementById("secret-texte");
   var bouton = document.getElementById("copier-secret");
@@ -805,7 +902,39 @@ _SCRIPT_COPIER = """
     );
   };
 })();
+</script>
 """
+
+
+def _bouton_signaler(deja: set[tuple[str, str]], releve: dict) -> str:
+    """Le formulaire « celui-ci est faux », ou la mention qu'il l'est déjà.
+
+    Le `client_id` et le `kind` voyagent dans des champs cachés : ce sont les
+    deux colonnes de la clé primaire de `saisie`, et les renvoyer ensemble est ce
+    qui évite que le formulaire vise le relevé jumeau. Ils sont échappés parce
+    qu'ils viennent de la base, donc d'une donnée, même si aujourd'hui ils sont
+    écrits par ce dépôt.
+
+    Le champ motif est un `required` : un signalement sans motif donne à l'admin
+    une ligne à traiter sans rien pour la traiter. La borne est posée côté
+    serveur (`LONGUEUR_MOTIF`), le `maxlength` n'étant qu'un confort.
+
+    La mention « déjà signalé » est du texte simple, pas un bouton désactivé :
+    un `<button disabled>` ne se lit pas au lecteur d'écran de la même façon, et
+    surtout il donne l'impression d'une action qui échouerait.
+    """
+    if (str(releve["client_id"]), str(releve["kind"])) in deja:
+        return '<p class="mention">Deja signale.</p>'
+    return (
+        '<details><summary>Celui-ci est faux</summary>'
+        "<form method='post' action='/compte/signaler'>"
+        f"<input type='hidden' name='client_id' value='{escape(str(releve['client_id']))}'>"
+        f"<input type='hidden' name='kind' value='{escape(str(releve['kind']))}'>"
+        f"<p><input name='motif' maxlength='{compte_module.LONGUEUR_MOTIF}' "
+        "required placeholder='Ce qui ne va pas'></p>"
+        "<button class='ghost' type='submit'>Signaler</button>"
+        "</form></details>"
+    )
 
 
 def _classement_page(lignes: list[dict]) -> str:
@@ -822,20 +951,72 @@ def _classement_page(lignes: list[dict]) -> str:
     # qui ne dit pas ce qu'elle tronque se prend pour l'ensemble.
     cartes = []
     for ligne in lignes:
+        points = ligne["points"]
+        points_texte = f"{points:g}".replace(".", ",")
         cartes.append(
             '<article class="carte">'
             f"<h2>{escape(ligne['pseudo'])}</h2>"
-            f"<p>{ligne['releves']} relevé{'' if ligne['releves'] == 1 else 's'}"
-            f", {ligne['paires']} paire{'' if ligne['paires'] == 1 else 's'} de gares</p>"
+            f"<p>{_nombre(points_texte)} point{'' if points == 1 else 's'} "
+            f"sur {ligne['releves']} relevé{'' if ligne['releves'] == 1 else 's'}</p>"
+            f"<p>{ligne['paires']} paire{'' if ligne['paires'] == 1 else 's'} de gares "
+            f"couvertes, dont {ligne['inedit']:g} point{'' if ligne['inedit'] == 1 else 's'} "
+            "sur des corridors qu'aucun relevé ne portait.</p>"
             "</article>"
         )
+    releves = sum(ligne["releves"] for ligne in lignes)
     corps = (
         "<h1>Classement</h1>"
         f"<p>{len(cartes)} compte{'' if len(cartes) == 1 else 's'} "
-        "avec des relevés rattachés.</p>"
+        f"avec des relevés rattachés, {releves} relevé{'' if releves == 1 else 's'} "
+        "au total.</p>"
         + "".join(cartes)
+        + _regle_du_classement()
     )
     return chrome("Classement", corps, actif="/classement")
+
+
+def _nombre(texte: str) -> str:
+    """Le score formaté à la française, 1 234 points et non 1234.0."""
+    entier, _, decimales = texte.partition(",")
+    groupes = []
+    while len(entier) > 3:
+        groupes.insert(0, entier[-3:])
+        entier = entier[:-3]
+    groupes.insert(0, entier)
+    return " ".join(groupes) + ("," + decimales if decimales else "")
+
+
+def _regle_du_classement() -> str:
+    """La règle, en clair, sur la page qui l'applique.
+
+    Un classement dont on ne connaît pas la règle est une page de Vanity. Le plan
+    demande les coefficients « en clair, avec la mesure qui les a choisis » — donc
+    cette page dit ce que le score récompense, dans l'ordre du plan, et **dit que
+    les poids ne sont pas calibrés**. Les annoncer comme définitifs serait la même
+    faute que le statut qui mentait dans le plan : une affirmation que le code ne
+    tient pas. La calibration se fait sur la base réelle, avec
+    `tools/calibrer_score.py`.
+    """
+    c = score_module.PAR_DEFAUT
+    return (
+        '<section class="mention">'
+        "<h2>Ce que le score récompense</h2>"
+        "<p>Un relevé compte d'abord s'il se lit à l'échelle de la rame entière, "
+        "c'est-à-dire mesuré sur une UM et non sur une voiture. Vient ensuite le "
+        "serpent de charge, qui dit où la charge monte et où elle descend. Puis un "
+        "couloir origine-destination qu'aucun relevé ne portait encore, et enfin un "
+        "couloir qui n'avait pas été vu depuis "
+        f"{c.fenetre_jours} jours. Compter le même trajet deux fois le même jour "
+        "ne rapporte rien de plus, et la fiabilité déclarée ne rapporte rien du "
+        "tout : elle est déclarée par celui qui compte.</p>"
+        f"<p>Ces poids — {c.base:g} par relevé, {c.um:g} de plus à l'échelle de la "
+        f"rame, {c.serpent:g} de plus pour un serpent, {c.corridor_inedit:g} pour un "
+        f"couloir inédit, {c.corridor_vieux:g} pour un couloir vu il y a plus de "
+        f"{c.fenetre_jours} jours — ne sont pas encore calibrés. Ils ont été choisis "
+        "pour être lisibles, et la distribution obtenue sur la base réelle décidera "
+        "des vrais nombres.</p>"
+        "</section>"
+    )
 
 
 def create_production_app() -> FastAPI:
@@ -1041,7 +1222,11 @@ def _admin_login() -> str:
 """
 
 
-def _admin_list(rows: list[dict], publication: dict | None = None) -> str:
+def _admin_list(
+    rows: list[dict],
+    publication: dict | None = None,
+    signalements: list[dict] | None = None,
+) -> str:
     cards = []
     for row in rows:
         who = escape(row["pseudo"]) if row["pseudo"] else "anonyme"
@@ -1049,8 +1234,12 @@ def _admin_list(rows: list[dict], publication: dict | None = None) -> str:
         destination = escape(row["destination_name"] or "")
         passengers = "" if row["passengers"] is None else row["passengers"]
         client_id = escape(row["client_id"])
+        # Le `kind` part avec le `client_id` : c'est la clé primaire de `saisie`,
+        # et sans lui la route refuse la suppression. Le poser ici plutôt que dans
+        # la route garde le formulaire et la requête d'accord sur la même cible.
+        genre = escape(str(row.get("kind") or ""))
         # Le commentaire explique une charge atypique (car de substitution,
-        # train supprimé). C'est l/admin qui le lit : sans lui, l'information
+        # train supprimé). C'est l'admin qui le lit : sans lui, l'information
         # est stockée et jamais consultée.
         note = f"<p>{escape(row['comment'])}</p>" if row.get("comment") else ""
         cards.append(
@@ -1059,6 +1248,7 @@ def _admin_list(rows: list[dict], publication: dict | None = None) -> str:
             f"<p>{passengers} voyageurs · {who}</p>{note}"
             "<form method='post' action='/admin/supprimer'>"
             f"<input type='hidden' name='client_id' value='{client_id}'>"
+            f"<input type='hidden' name='kind' value='{genre}'>"
             "<button type='submit'>Supprimer</button>"
             "</form></article>"
         )
@@ -1073,14 +1263,61 @@ def _admin_list(rows: list[dict], publication: dict | None = None) -> str:
   main {{ max-width: 32rem; margin: 0 auto; padding: 1rem; }}
   .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
   button {{ font: inherit; min-height: 3.2rem; width: 100%; border: 0; border-radius: 0.8rem; background: #8a2b1b; color: #fff; }}
+  .signalement {{ background: #fff; border-left: 4px solid #8a2b1b; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
 </style>
 </head><body><main>
   <h1>Admin</h1>
   <p>Supprimer retire le comptage de la liste et du CSV.</p>
+  {_panneau_signalements(signalements or [])}
   {body}
   {"" if publication is None else _publication_panel(publication)}
 </main></body></html>
 """
+
+
+def _panneau_signalements(lignes: list[dict]) -> str:
+    """Les signalements, lus par l'admin. Un signalement n'efface rien.
+
+    Le panneau est **avant** la liste des comptages, pas après : c'est une file de
+    travail, et une file qui se lit après la donnée à traiter se fait passer pour
+    une annexe.
+
+    Chaque ligne montre le relevé signalé avec son trajet et son motif, et le
+    bouton de suppression déjà présent dans la liste en dessous. Le geste reste
+    donc à l'admin : quelqu'un qui signale son propre relevé ne peut pas le
+    retirer, il peut seulement le mettre en avant.
+
+    Un signalement dont le relevé n'existe plus s'affiche quand même, marqué
+    « relevé supprimé ». C'est le cas le plus urgent des deux — quelqu'un a
+    signalé, et l'objet du signalement a disparu avant d'être traité.
+    """
+    if not lignes:
+        return "<h2>Signalements</h2><p>Aucun signalement.</p>"
+    cartes = []
+    for ligne in lignes:
+        origine = escape(str(ligne["origin_name"] or ""))
+        arrivee = escape(str(ligne["destination_name"] or ""))
+        trajet = (
+            f"{origine} → {arrivee}"
+            if origine or arrivee
+            else "relevé supprimé"
+        )
+        effectif = "—" if ligne["passengers"] is None else str(ligne["passengers"])
+        auteur = escape(str(ligne["auteur"] or "compte sans pseudo"))
+        cartes.append(
+            "<div class='signalement'>"
+            f"<strong>{trajet}</strong>"
+            f"<p>{effectif} voyageurs · signalé par {auteur}</p>"
+            f"<p>{escape(str(ligne['motif']))}</p>"
+            "</div>"
+        )
+    return (
+        "<h2>Signalements</h2>"
+        f"<p>{len(cartes)} signalement{'' if len(cartes) == 1 else 's'}, "
+        "les plus récents d'abord. Un signalement ne supprime rien : c'est "
+        "l'admin qui décide.</p>"
+        + "".join(cartes)
+    )
 
 
 def _publication_panel(publication: dict) -> str:
