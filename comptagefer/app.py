@@ -163,7 +163,19 @@ def _clef_par_genre(connection: sqlite3.Connection) -> None:
     colonnes = {row[1]: row for row in connection.execute("PRAGMA table_info(saisie)")}
     if "kind" not in colonnes or "legs" not in colonnes:
         return
-    if colonnes["client_id"][5] == 0:
+    # `PRAGMA table_info` porte en colonne 5 le rang dans la clé primaire, et
+    # **0 signifie « hors clé »** — pas « clé simple ». Une base neuve est
+    # créée par le `CREATE TABLE` de `create_app`, qui ne pose aucune clé : le
+    # test ci-dessous lisait donc 0, croyait la table déjà composite, et
+    # rendait la main. Une base neuve n'a jamais eu de clé primaire du tout.
+    #
+    # Ce n'était visible par aucun test parce que la seule garantie d'idempotence
+    # est un `SELECT` applicatif, qui masquait l'absence de contrainte. Elle est
+    # fausse dès qu'un même `client_id` produit deux genres et que le `SELECT`
+    # tombe sur l'autre ligne : voir `_save_saisie`.
+    #
+    # La clé est donc composite si — et seulement si — `kind` en fait partie.
+    if colonnes["kind"][5] > 0:
         return  # déjà composite : rien à faire
     noms = ", ".join(nom for nom, _ in SCHEMA_SAISIE if nom in colonnes)
     connection.execute("ALTER TABLE saisie RENAME TO saisie_ancienne_clef")
@@ -508,8 +520,18 @@ def create_app(
         Le secret voyage dans la `location` du `303` parce qu'un `POST` ne peut
         pas afficher une page : le serveur doit d'abord renvoyer le navigateur
         ailleurs. La page d'arrivée le rend, et `/compte` ne le rend plus jamais.
+
+        Le pseudo est exigé ici, et pas seulement par le `required` du champ. Un
+        `POST` peut être envoyé sans navigateur — un `curl`, un script — et la
+        route acceptait un corps vide : elle créait un compte sans pseudo, et le
+        classement le rangeait sous « un compte sans pseudo ». Un rang sans
+        auteur est une ligne de classement qui ne veut rien dire, donc la
+        contrainte est dans la route, où elle vaut pour les deux chemins.
         """
-        identifiant, secret = compte_module.creer_compte(database, pseudo.strip())
+        pseudo = pseudo.strip()
+        if not pseudo:
+            raise HTTPException(status_code=422, detail="un pseudo est requis")
+        identifiant, secret = compte_module.creer_compte(database, pseudo)
         jeton, expire = compte_module.ouvrir_session(database, identifiant)
         reponse = HTMLResponse(status_code=303, headers={"location": "/compte?secret-neuf=" + secret})
         # Le cookie est posé sur `reponse`, et `reponse` est ce qui part. Le
@@ -581,7 +603,22 @@ def create_app(
 
     @app.get("/classement", response_class=HTMLResponse)
     def classement() -> str:
-        return _classement_page(_classement(database))
+        try:
+            lignes = _classement(database)
+        except sqlite3.DatabaseError:
+            # Une base verrouillée rendait un 500 nu : la page publique du
+            # classement disparaissait, sans explication, et le visiteur ne
+            # pouvait pas distinguer « le site est cassé » de « il n'y a
+            # personne ». C'est la règle 2 de `docs/regles.md` appliquée à une
+            # lecture : elle ne dit pas « personne » — ce serait un mensonge —
+            # elle dit qu'elle n'a pas pu lire.
+            #
+            # `/compte` et `/api/sessions` traitent déjà `DatabaseError` de la
+            # même façon, chacun dans sa fonction. `score.classement` ne le
+            # faisait pas : c'est le chemin le plus lu et le seul qui rendait
+            # 500.
+            return _classement_page([], indisponible=True)
+        return _classement_page(lignes)
 
     def _compte_historique(identifiant: str) -> str:
         """Les relevés de la personne, son score, et le bouton qui la déconnecte.
@@ -817,7 +854,13 @@ def _compte_acces() -> str:
             _champ(
                 "pseudo",
                 "Votre pseudo",
-                'type="text" maxlength="40" autocomplete="nickname"',
+                # Le `required` est ce qui rend la saisie obligatoire dans un
+                # navigateur. Il ne suffit pas : `POST /compte/creer` accepte
+                # n'importe quel corps, et un appel sans pseudo créait un compte
+                # vide — que le classement affiche comme « un compte sans
+                # pseudo », donc un rang sans auteur. La borne est donc
+                # aussi dans la route, où elle vaut pour tout le monde.
+                'type="text" required maxlength="40" autocomplete="nickname"',
             ),
             "Créer mon compte",
         )
@@ -937,7 +980,20 @@ def _bouton_signaler(deja: set[tuple[str, str]], releve: dict) -> str:
     )
 
 
-def _classement_page(lignes: list[dict]) -> str:
+def _classement_page(lignes: list[dict], indisponible: bool = False) -> str:
+    if indisponible:
+        # L'échec est dit, et il est distinct de la liste vide. Une page qui
+        # affiche « personne n'a encore de compte » quand la base est verrouillée
+        # ment sur une absence de données — le mensonge que `tools/calibrer_score.py`
+        # refuse de faire, et pour la même raison.
+        corps = (
+            "<h1>Classement</h1>"
+            "<p>Le classement n'a pas pu être lu : la base est momentanément "
+            "occupée. Les relevés ne sont pas perdus, la page est juste "
+            "indisponible. Réessayez dans un instant.</p>"
+            f'<p><a class="bouton" href="/">Compter</a></p>'
+        )
+        return chrome("Classement", corps, actif="/classement")
     if not lignes:
         corps = (
             "<h1>Classement</h1>"
@@ -1422,13 +1478,20 @@ def _save_saisie(
     trajet_text = _freeze_trajet(timetable, stops_database, body)
     with sqlite3.connect(database) as connection:
         existing = connection.execute(
-            "SELECT client_id, kind FROM saisie WHERE client_id = ?",
-            (client_id,),
+            "SELECT client_id, kind FROM saisie WHERE client_id = ? AND kind = ?",
+            (client_id, kind),
         ).fetchone()
         # Le doublon ne vaut que s'il est du même genre. Un « train signalé »
         # consomme le jeton du navigateur, et le comptage réel qui suit
         # arrive avec le même : le rejeter ici perdait le comptage sans rien
         # dire, pendant que l'écran affichait « c'est noté ».
+        #
+        # La requête filtre donc sur les **deux** colonnes. Sur le seul
+        # `client_id`, `fetchone` rendait la ligne d'un autre genre — un
+        # `missing` déjà écrit pour ce jeton — et le test `existing[1] == kind`
+        # était faux, donc le doublon passait. Sans clé primaire en base pour
+        # l'arrêter, la seconde ligne s'écrivait : deux « count » pour un même
+        # navigateur, tous deux comptés au score.
         if existing and existing[1] == kind:
             return {"client_id": existing[0], "kind": existing[1], "stored": False}
         connection.execute(

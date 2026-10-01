@@ -1105,6 +1105,38 @@ sienne :
   personne qui revient avec son secret n'est pas bloquée par un problème de
   création
 
+Quatre propriétés de plus sont vérifiées sur cette phase. Elles ne sont pas
+dans la liste ci-dessus parce qu'elles ont été trouvées par la revue de la PR et
+non par la lecture du plan — c'est-à-dire qu'aucune des deux n'existait avant
+qu'on les cherche :
+
+- **la clé primaire de `saisie` est `(client_id, kind)` sur une base neuve.**
+  Elle n'y était pas. `_clef_par_genre` testait `colonnes["client_id"][5] == 0`
+  pour conclure « la clé est déjà composite », alors que `PRAGMA table_info` met
+  0 dans cette colonne pour « hors clé ». Le `CREATE TABLE` de `create_app` ne
+  pose aucune clé, donc la fonction croyait une base neuve déjà migrée et
+  rendait la main. Le test lit le schéma d'une base créée par l'application et
+  échoue sur la première qui n'a pas les deux colonnes en clé
+- **un jeton ne produit qu'une ligne par genre.** `missing` puis `count` puis
+  `count` donnait deux lignes de `count`. La requête d'idempotence portait sur
+  `client_id` seul, donc `fetchone` rendait la ligne du `missing` et le test
+  `existing[1] == kind` était faux ; sans clé primaire pour l'arrêter, la
+  seconde ligne s'écrivait — deux comptages pour un navigateur, tous deux au
+  score. C'est la règle 2 appliquée au code : la réponse disait `stored: false`
+  pendant que la donnée partait. Les deux ordres sont testés, parce qu'un seul
+  passait déjà
+- **`POST /compte/creer` sans pseudo rend 422.** Le `required` du champ ne
+  protège que le navigateur, et la route est appelable sans lui. Un compte sans
+  pseudo apparaissait au classement sous « un compte sans pseudo » : un rang sans
+  auteur. La contrainte est dans la route, et un test vérifie qu'un pseudo valide
+  — jusqu'à ses 40 caractères — passe toujours
+- **`/classement` dit une base occupée au lieu de rendre 500.** C'était la page
+  la plus lue du site, et la seule qui ne traitait pas `DatabaseError`. Elle
+  rendait un 500 nu, sans distinguer « le site est cassé » d'« il n'y a
+  personne ». Elle dit maintenant qu'elle n'a pas pu lire, ce qui est distinct de
+  la liste vide — le même refus de parler d'une absence de données que
+  `tools/calibrer_score.py`
+
 ### Ensuite, dans cet ordre
 
 1. Géométries de lignes, si les segments droits ne suffisent plus. Jointure OSM, ou GTFS régionaux qui ont un `shapes.txt`.
