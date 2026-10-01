@@ -2,7 +2,7 @@
 
 Outil collaboratif pour compter la fréquentation des TER en France, puis rendre ces comptages publics, lisibles et réutilisables.
 
-**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 commencée — le schéma et le rattachement d'un relevé à un compte sont écrits, la connexion est à faire sur le modèle du secret long décrit plus bas. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
+**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 commencée — la vague 2 est livrée : le schéma, le secret long, le rattachement d'un relevé à un compte et `/compte` fonctionnent. Restent la vague 1 (HTTPS), la vague 3 (le score et le classement) et le signalement ; le détail est dans « Ce qui reste » plus bas. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
 
 **Source du besoin :** cahier des charges « ComptagesFer » (présentation de trois diapositives).
 
@@ -904,6 +904,63 @@ même chose autrement, c'est la seule forme du relevé qui donne une charge
 comparable d'un train à l'autre. Le plan reconnaissait déjà que 180 dans une
 voiture d'une UM3 et 180 dans les trois sont deux relevés différents, et c'est
 justement pour ça que `PERIMETRES` existe.
+
+#### Ce qui reste
+
+Le plan décrit la phase entière ; cette liste dit ce qui manque **maintenant**, et
+elle est écrite en puces parce qu'une liste de choses à faire dans un document de
+conception finit toujours par devenir une liste de choses faites, ce qui est pire
+que de ne pas l'avoir.
+
+**Vague 1 — HTTPS.** Rien d'écrit dans le code. Le domaine, le Caddy hors du
+compose, `COMPTAGEFER_HTTPS=1`, et le `127.0.0.1:8000:8000`. Le test du cookie
+`secure` reste à poser. C'est du déploiement et de la documentation, pas du
+code applicatif — c'est pourquoi c'est la vague la plus rapide.
+
+**Vague 2 — Le compte. Ce qui manque :**
+
+- **le signalement d'un de ses relevés.** La page `/compte` montre l'historique
+  et le bouton de déconnexion, mais pas « celui-ci est faux ». C'est le reste de
+  la modération qui ne tenait pas dans `ADMIN_TOKEN`, et c'est la raison pour
+  laquelle la vague 2 n'est pas finie
+- **`/compte` et `/classement` dans la `NAVIGATION`.** Les pages existent et
+  répondent, mais on n'y arrive pas par un lien : il faut taper l'URL. C'est un
+  oubli, et non pas un choix. Le § « Fichiers » les annonçait déjà dans la
+  `NAVIGATION` ; ce qui manque est l'écriture
+- **le test Chromium de la page du secret.** Le projet a un filet de ce type pour
+  le formulaire de comptage ; `/compte` vient d'ajouter du JavaScript, donc elle
+  doit l'avoir aussi. C'est le seul endroit où ce clic n'est pas couvert, et le
+  plan le dit deux fois parce que c'est le seul endroit où on serait tenté de
+  mentir sur la couverture
+- **la route `/compte/valider` du plan précédent a été retirée** avec l'email :
+  aucune route, aucune page, aucune référence dans le dépôt. Le secret passe par
+  `/compte/se-connecter`
+
+**Vague 3 — Le score et le classement. Presque rien n'est écrit.** `/classement`
+existe et affiche deux nombres par compte — relevés et paires de gares — mais ce
+n'est **pas** le score du plan. Il reste :
+
+- **une fonction de score unique et paramétrée**, qui récompense dans l'ordre du
+  plan : `um` d'abord, serpent ensuite, corridor inédit, corridor vieux, et rien
+  du tout pour la fidélité déclarée ni pour un relevé redondant du même jour
+- **la calibration sur la base réelle.** Les coefficients ne sont pas choisis dans
+  ce document, et la distribution obtenue est jointe au message de la PR
+- **l'historique d'un compte doit dire son score**, sinon le classement classe des
+  efforts qu'on ne voit pas
+- **le dénominateur** sur `/classement` : combien de comptes, combien de relevés
+  au total
+
+**Ce qui a été fait dans la vague 2, et qu'il ne faut pas refaire :**
+
+- `comptagefer/compte.py` : schéma, `generer_secret`, `compte_de_secret`,
+  sessions, cookie, `releves_de`, `nombre_de_releves`
+- `saisie.compte_id`, écrite en base et lue par le cookie, jamais exportée
+- `/compte` : création, reconnexion, historique, déconnexion, page du secret avec
+  le bouton de copie et son repli
+- `/classement`, provisoire
+- `tests/test_compte.py` : 19 tests, dont la non-fuite, l'absence d'email en base,
+  et le parcours création → reconnexion qui avait laissé passer un hachage fait
+  sur deux formes différentes du même secret
 
 #### Fichiers
 
