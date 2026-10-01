@@ -345,8 +345,16 @@ La carte sert à voir les résultats, pas à saisir.
   - fond de plan : tuiles raster OpenStreetMap, aucune clé d'API. La politique d'usage d'OSM est le
     vrai plafond ; un fournisseur de tuiles se change en une constante
   - Leaflet vient d'un CDN : sans réseau, la page le dit et garde la liste des tracés
-- recherche par nom — **fait**, c'est `/rechercher`, un seul champ pour une gare ou une ligne
+- recherche par nom — **fait**, c'est `/rechercher`, un seul champ pour une gare ou une ligne. Une gare trouvée est un **lien** vers `/gare`, qui montre ses comptages : avant, la liste affichait le nom en texte brut et la recherche était un cul-de-sac qui répondait 200
 - page ligne : liste brute, ou invitation à contribuer s'il n'y a rien — **fait**, c'est `/ligne`
+- page gare : les relevés dont la gare est une extrémité, ou un arrêt traversé par un serpent — **fait**, c'est `/gare`, ajouté le 1er octobre 2026 avec `/releve`
+- fiche d'un relevé : la page `/comptages` est un résumé, et le reste (rame, périmètre, indicateurs, commentaire, arrêts du serpent) n'était lisible qu'en téléchargeant le CSV — **fait**, c'est `/releve?client_id=&kind=`, adossée à la clé primaire. La carte et la ligne du tableau y mènent toutes les deux, parce que ce ne sont pas deux rendus de la même chose sur un écran donné
+
+Trois décisions valent d'être écrites, parce qu'aucune ne se devine dans le code :
+
+- **Le rattachement à une gare se fait par sa famille**, pas par l'identifiant exact. Un même quai peut s'appeler `StopArea:Annecy` dans une offre et `StopPoint:AnnecyA` dans une autre ; chercher le seul identifiant du lien afficherait « aucun comptage » pour une gare qui en a un. C'est `_stop_family`, celle que le serpent et le temps réel utilisent déjà — pas une troisième définition du même mot
+- **Un champ de filtre est un enfant de grille, pas une balise.** Le formulaire est une grille à quatre colonnes ; ses enfants étaient les `<label>` et les `<input>`, donc la grille les répartissait alternativement et aucun champ n'était sous son libellé au-dessus de 48 rem. C'est invisible dans le HTML relu, et c'est pour ça que `tests/test_browser_ui.py` mesure la géométrie dans un vrai Chromium plutôt que de relire des balises
+- **Un tableau ne remplace pas une pile de cartes sur un téléphone.** Le classement en tableau rend les nombres alignés, ce qu'aucune carte ne fait ; mais sept colonnes débordent de 145 px en 390 px, ce que `tests/test_browser_compte.py` mesurait déjà. Les deux lectures coexistent donc dans le HTML, comme la liste des relevés, et la feuille de style en choisit une
 
 #### La lecture sur un écran large
 

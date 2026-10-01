@@ -10,7 +10,7 @@ import threading
 import time
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html import escape
 from io import BytesIO
 from pathlib import Path
@@ -20,33 +20,30 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
-from comptagefer.affichage import chrome
-from comptagefer.carte import counted_features, map_page as carte_page
 from comptagefer import compte as compte_module
 from comptagefer import score as score_module
-from comptagefer.compte import COOKIE_COMPTE, compte_de_session, preparer as preparer_compte
+from comptagefer.affichage import chrome
+from comptagefer.carte import counted_features
+from comptagefer.carte import map_page as carte_page
+from comptagefer.compte import COOKIE_COMPTE, compte_de_session
+from comptagefer.compte import preparer as preparer_compte
 from comptagefer.filtres import (
     PAR_PAGE,
     Filtres,
     conditions,
-    lire as lire_filtres,
     par_paire,
     trier_paires,
 )
+
 # Importé sous un autre nom : `_reading_table` a une variable locale
 # `lien` pour un en-tête de colonne, et le même nom pour la fabrique
 # d'URL serait un piège à lecture.
 from comptagefer.filtres import lien as lien_comptages
-from comptagefer.offer import nearest_stops, search_stops, trips_serving
-from comptagefer.timetable import (
-    find_line,
-    line_stops,
-    listed_trips,
-    search_lines,
-    stops_between,
-    trip_stops_all,
+from comptagefer.filtres import (
+    lire as lire_filtres,
 )
-from comptagefer.page import PAGE
+from comptagefer.offer import nearest_stops, open_stops, search_stops, trips_serving
+from comptagefer.page import PAGE, page_avec_pseudo
 from comptagefer.publish import (
     Publication,
     config_from_env,
@@ -60,6 +57,14 @@ from comptagefer.rt import (
     poll_once,
 )
 from comptagefer.securite import https_actif, origine_autorisee
+from comptagefer.timetable import (
+    find_line,
+    line_stops,
+    listed_trips,
+    search_lines,
+    stops_between,
+    trip_stops_all,
+)
 
 STOPS_URL = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip"
 
@@ -292,8 +297,32 @@ def create_app(
         return PlainTextResponse(script.read_text(), media_type="text/javascript")
 
     @app.get("/", response_class=HTMLResponse)
-    def home() -> str:
-        return PAGE
+    def home(request: Request) -> str:
+        """Le formulaire de comptage, avec le pseudo de la session ouverte.
+
+        `PAGE` est une constante et le pseudo du compte est une donnée de la
+        session : sans les assembler, la personne qui a un compte devait
+        retaper son pseudo à chaque comptage, en plus du trajet. C'est le
+        genre d'oubli qui fait qu'on arrête de signer ses relevés.
+
+        Le pseudo vient de `compte_de_session`, qui lit la base : le cookie
+        est `httpOnly`, donc la page ne peut pas le lire, et un jeton signé
+        par la page serait un jeton qu'une injection lit (voir
+        `docs/regles.md` § 1). Sans session, la page est rendue telle
+        quelle — c'est le cas le plus fréquent et il ne doit coûter aucune
+        lecture en base.
+        """
+        identifiant = _compte_de_cookie(request)
+        if identifiant is None:
+            return PAGE
+        try:
+            pseudo = compte_module.pseudo_de(database, identifiant)
+        except sqlite3.DatabaseError:
+            # Une base verrouillée ne doit pas faire échouer la saisie, qui
+            # est le chemin par défaut du site : on rend la page sans pseudo
+            # pré-rempli, et le comptage reste possible.
+            return PAGE
+        return page_avec_pseudo(pseudo)
 
     @app.get("/api/stops")
     def stops(q: str = "") -> list[dict]:
@@ -314,7 +343,7 @@ def create_app(
                 status_code=422, detail="`at` n'est pas une date ISO 8601"
             ) from ex
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
         if (data_dir / "timetable.db").exists():
             return listed_trips(
                 data_dir / "timetable.db",
@@ -444,6 +473,43 @@ def create_app(
     @app.get("/rechercher", response_class=HTMLResponse)
     def rechercher(q: str = Query("", max_length=80)) -> str:
         return _search_page(q, stops_database, timetable)
+
+    @app.get("/gare", response_class=HTMLResponse)
+    def gare(stop: str = Query("", alias="stop", max_length=120)) -> str:
+        """Les comptages d'une gare, et rien d'autre.
+
+        `/rechercher` trouvait une gare et n'affichait qu'un nom en texte
+        brut : la liste ne pouvait se sélectionner, donc la gare trouvée
+        était un cul-de-sac. Cette route est la sortie de cette impasse —
+        le nom devient un lien, et le lien mène ici.
+
+        Une gare sans comptage n'est pas une page d'erreur : la page dit
+        qu'il n'y en a pas encore et propose d'en compter un. C'est la même
+        règle que `/ligne`, et pour la même raison — une gare muette est
+        une gare qui attend son premier comptage, pas une gare inexistante.
+        """
+        return _gare_page(database, stops_database, stop.strip())
+
+    @app.get("/releve", response_class=HTMLResponse)
+    def releve(
+        client_id: str = Query("", max_length=120),
+        kind: str = Query("count", max_length=16),
+    ) -> str:
+        """Un comptage en entier, sur sa propre page.
+
+        `/comptages` résume : OD, effectif, auteur, date. Le reste du relevé
+        — la composition de la rame, les indicateurs de charge, le
+        commentaire, les arrêts du serpent, la photo du temps réel —
+        n'était lisible qu'en téléchargeant le CSV. Sur un téléphone, dans un
+        train, ce n'est pas une option : c'est la seule façon de vérifier
+        qu'un effectif se lit à l'échelle de la rame.
+
+        La page est indexable et partageable : son URL est la clé
+        `(client_id, kind)`, les deux colonnes de la clé primaire. Le
+        `client_id` vient du navigateur, donc il est échappé comme n'importe
+        quelle donnée client — règle 1 de `docs/regles.md`.
+        """
+        return _releve_page(database, client_id, kind)
 
     @app.get("/methode", response_class=HTMLResponse)
     def methode() -> str:
@@ -1026,7 +1092,7 @@ def _classement_page(lignes: list[dict], indisponible: bool = False) -> str:
             "<p>Le classement n'a pas pu être lu : la base est momentanément "
             "occupée. Les relevés ne sont pas perdus, la page est juste "
             "indisponible. Réessayez dans un instant.</p>"
-            f'<p><a class="bouton" href="/">Compter</a></p>'
+            '<p><a class="bouton" href="/">Compter</a></p>'
         )
         return chrome("Classement", corps, actif="/classement")
     if not lignes:
@@ -1035,35 +1101,159 @@ def _classement_page(lignes: list[dict], indisponible: bool = False) -> str:
             "<p>Personne n'a encore de compte. Le classement se remplira avec "
             "les relevés rattachés à un compte — les relevés anonymes comptent "
             "dans les données et n'apparaissent pas ici.</p>"
-            f'<p><a class="bouton" href="/">Compter</a></p>'
+            '<p><a class="bouton" href="/">Compter</a></p>'
         )
         return chrome("Classement", corps, actif="/classement")
     # Le dénominateur est annoncé, comme sur `/comptages` : une liste tronquée
     # qui ne dit pas ce qu'elle tronque se prend pour l'ensemble.
-    cartes = []
-    for ligne in lignes:
+    #
+    # C'est un **tableau**, pas une pile de cartes. Un classement se compare :
+    # deux lignes mises l'une sous l'autre ne se comparent pas, il faut les
+    # voir dans la même colonne et dans le même ordre. Les trois nombres qui
+    # font le score — points, relevés, paires — occupent chacun une colonne,
+    # donc les aligner verticalement, ce qu'aucune carte ne fait.
+    #
+    # Le rang est écrit explicitement même trié : une liste triée dont on
+    # ne voit pas le tri se prend pour un ordre arbitraire, et l'ex-aequo
+    # mérite d'être visible plutôt que résolu en silence. Deux comptes à
+    # égalité partagent donc le même rang, comme sur un podium.
+    meilleur = max((ligne["points"] for ligne in lignes), default=0)
+    lignes_html = []
+    cartes_html = []
+    rang_courant = 0
+    points_precedents: float | None = None
+    for position, ligne in enumerate(lignes, start=1):
         points = ligne["points"]
+        # Un nouveau rang seulement quand les points changent : c'est la
+        # définition d'un ex-aequo, et écrire 1, 2, 3 pour trois comptes à
+        # 12 points inventerait une hiérarchie que le score ne dit pas.
+        if points != points_precedents:
+            rang_courant = position
+            points_precedents = points
+        # La barre est proportionnelle au premier, donc sa longueur se lit
+        # comme un score. Un score nul ne donne pas une division par zéro :
+        # il donne une barre vide, ce qui est la même information.
+        proportion = 100.0 if meilleur <= 0 else max(0.0, min(100.0, points / meilleur * 100))
         points_texte = f"{points:g}".replace(".", ",")
-        cartes.append(
-            '<article class="carte">'
-            f"<h2>{escape(ligne['pseudo'])}</h2>"
-            f"<p>{_nombre(points_texte)} point{'' if points == 1 else 's'} "
+        dernier = _date_fr(ligne["dernier"]).split(" à ")[0] if ligne["dernier"] else "—"
+        inedit = f"{ligne['inedit']:g}".replace(".", ",")
+        lignes_html.append(
+            "<tr>"
+            f"<td class='nombre rang'>{rang_courant}</td>"
+            f"<td class='pseudo'>{escape(ligne['pseudo'])}</td>"
+            "<td class='points'>"
+            f"<span class='valeur'>{_nombre(points_texte)}</span>"
+            # Le dénominateur reste sous le score, dans la même cellule : un
+            # score sans « sur N relevés » se lit « 5 voyageurs » quand il
+            # veut dire « 5 points pour un relevé ». C'est la règle du §9
+            # du plan, et elle vaut dans un tableau autant que dans une
+            # carte — la colonne « Relevés » informe, elle ne rattache pas le
+            # nombre à ce qu'il mesure.
+            f"<span class='sur'>sur {ligne['releves']} relevé"
+            f"{'' if ligne['releves'] == 1 else 's'}</span>"
+            f"<span class='jauge' aria-hidden='true'>"
+            f"<span class='remplissage' style='width:{proportion:.1f}%'></span></span>"
+            "</td>"
+            f"<td class='nombre'>{ligne['releves']}</td>"
+            f"<td class='nombre'>{ligne['paires']}</td>"
+            f"<td class='nombre'>{inedit}</td>"
+            f"<td class='nombre'>{escape(dernier)}</td>"
+            "</tr>"
+        )
+        # La même ligne, en carte : c'est le téléphone qui ne peut pas
+        # aligner sept colonnes. La carte garde le rang, le nom, le score et
+        # son dénominateur en tête — les trois nombres qu'on compare — et
+        # passe le reste en une ligne de contexte.
+        cartes_html.append(
+            "<article>"
+            "<p class='entete'>"
+            f"<span class='rang'>{rang_courant}</span>"
+            f"<span class='nom'>{escape(ligne['pseudo'])}</span>"
+            f"<span class='score'>{_nombre(points_texte)}</span>"
+            "</p>"
+            f"<p class='sur'>point{'' if points == 1 else 's'} "
             f"sur {ligne['releves']} relevé{'' if ligne['releves'] == 1 else 's'}</p>"
-            f"<p>{ligne['paires']} paire{'' if ligne['paires'] == 1 else 's'} de gares "
-            f"couvertes, dont {ligne['inedit']:g} point{'' if ligne['inedit'] == 1 else 's'} "
-            "sur des corridors qu'aucun relevé ne portait.</p>"
+            f"<span class='jauge' aria-hidden='true'>"
+            f"<span class='remplissage' style='width:{proportion:.1f}%'></span></span>"
+            f"<p class='detail'>{ligne['paires']} paire{'' if ligne['paires'] == 1 else 's'} "
+            f"de gares couvertes, dont {inedit} sur des corridors inédits"
+            f"{' · dernier relevé le ' + escape(dernier) if dernier != '—' else ''}.</p>"
             "</article>"
         )
     releves = sum(ligne["releves"] for ligne in lignes)
     corps = (
         "<h1>Classement</h1>"
-        f"<p>{len(cartes)} compte{'' if len(cartes) == 1 else 's'} "
+        f"<p>{len(lignes)} compte{'' if len(lignes) == 1 else 's'} "
         f"avec des relevés rattachés, {releves} relevé{'' if releves == 1 else 's'} "
-        "au total.</p>"
-        + "".join(cartes)
+        "au total. Les comptes à égalité partagent le même rang.</p>"
+        "<table class='tableau palmares'>"
+        "<caption>Les comptes classés du meilleur au moins bon. La barre est "
+        "proportionnelle au score du premier.</caption>"
+        "<thead><tr>"
+        "<th>Rang</th><th>Compte</th><th>Points</th>"
+        "<th>Relevés</th><th>Paires de gares</th><th> dont inédit</th><th>Dernier relevé</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(lignes_html)}</tbody>"
+        "</table>"
+        # La lecture téléphone : les mêmes nombres, en cartes. Elle n'est pas
+        # retirée du rendu quand le tableau s'affiche, ni l'inverse — les
+        # deux existent dans le HTML et la feuille de style en choisit un,
+        # comme le fait la liste des relevés. Les faire coexister ferait lire
+        # le classement deux fois à qui a un écran large.
+        f"<div class='palmares-cartes'>{''.join(cartes_html)}</div>"
+        "<p class='mention'>Les paires de gares disent la couverture : deux "
+        "comptes peuvent avoir le même nombre de relevés et couvrir des "
+        "corridors différents.</p>"
         + _regle_du_classement()
     )
-    return chrome("Classement", corps, actif="/classement")
+    return chrome(
+        "Classement",
+        corps,
+        actif="/classement",
+        extra_css="""
+  /* Le classement : un tableau sur grand écran, une liste sur téléphone.
+
+     Un tableau à sept colonnes **ne tient pas** en 390 px, et le projet le
+     vérifie : `tests/test_browser_compte.py` mesure le débordement et
+     échouait de 145 px. Le tableau ne peut donc pas rester affiché sous
+     48 rem, contrairement à la vue par paire — il n'a pas de lecture
+     dégradée à lui opposer.
+
+     La lecture mobile est la **même donnée** en cartes, pas une autre
+     liste : le score, son dénominateur, le rang et le nombre de relevés.
+     Les colonnes de comparaison (paires, inédit, dernier relevé) se lisent
+     dans la carte en une ligne chacune, donc rien n'est perdu — c'est
+     seulement la comparaison verticale qui disparaît, et elle demande un
+     écran large pour être utile de toute façon. */
+  .palmares-cartes { display: grid; gap: 0.6rem; }
+  .palmares-cartes article { background: #fff; border-radius: 0.8rem; padding: 0.7rem 0.8rem; }
+  .palmares-cartes .entete { display: flex; align-items: baseline; gap: 0.6rem; }
+  .palmares-cartes .rang { font-weight: 700; color: var(--gris); min-width: 1.6rem; }
+  .palmares-cartes .nom { font-weight: 700; font-size: 1.1rem; flex: 1; }
+  .palmares-cartes .score { font-variant-numeric: tabular-nums; font-weight: 700; }
+  .palmares-cartes .sur { color: var(--gris); font-size: 0.85rem; }
+  .palmares-cartes .detail { margin: 0.3rem 0 0; font-size: 0.85rem; color: var(--gris); }
+  .palmares-cartes .jauge { display: block; height: 0.5rem; margin-top: 0.4rem;
+                             background: #ece7dc; border-radius: 1rem; overflow: hidden; }
+  .palmares-cartes .remplissage { display: block; height: 100%; background: var(--encre); }
+  .tableau.palmares { display: none; }
+  @media (min-width: 48rem) {
+    .palmares-cartes { display: none; }
+    .tableau.palmares { display: table; font-size: 0.9rem; }
+    .tableau.palmares .rang { font-weight: 700; font-size: 1.05rem; }
+    .tableau.palmares .pseudo { font-weight: 600; }
+    .tableau.palmares .points { min-width: 9rem; }
+    .tableau.palmares .valeur { font-variant-numeric: tabular-nums; font-weight: 700; }
+    .tableau.palmares .sur { display: block; font-size: 0.78rem; color: var(--gris); }
+  }
+  /* La jauge est une barre, pas un graphique : elle dit l'écart au premier
+     d'un coup d'œil, sans axe ni graduation — un axe sur des scores non
+     calibrés promettrait une précision que le plan dit ne pas avoir. */
+  .tableau.palmares .jauge { display: block; height: 0.5rem; margin-top: 0.25rem;
+                             background: #ece7dc; border-radius: 1rem; overflow: hidden; }
+  .tableau.palmares .remplissage { display: block; height: 100%; background: var(--encre); }
+""",
+    )
 
 
 def _nombre(texte: str) -> str:
@@ -1154,7 +1344,7 @@ def _poll_forever(database: Path) -> None:
                 fetch_trips=lambda: _fetch(TU_URL),
                 fetch_siri=lambda: _fetch(SIRI_URL, timeout=120),
                 fetch_alerts=lambda: _fetch(ALERTS_URL),
-                now=datetime.now(timezone.utc),
+                now=datetime.now(UTC),
                 siri_tente=siri_tente,
             )
         except Exception:
@@ -1559,7 +1749,7 @@ def _save_saisie(
                 legs_text,
                 trajet_text,
                 kind,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 compte_id,
             ),
         )
@@ -1661,6 +1851,287 @@ _COLONNES_SAISIE = """
                    snapshot, kind, created_at, legs, trajet
             FROM saisie
 """
+
+
+def _saisie_par_cle(database: Path, client_id: str, kind: str) -> dict | None:
+    """Un relevé par sa clé primaire, ou `None`.
+
+    La clé est `(client_id, kind)` et rien d'autre : c'est elle qui
+    distingue deux genres de relevés du même navigateur. Une lecture par
+    `client_id` seul rendrait le premier genre trouvé, donc `/releve` sans
+    `kind` afficherait un serpent sous l'identité d'un comptage unique — ou
+    l'inverse, selon la ligne que SQLite rend en premier.
+
+    Les deux paramètres viennent de l'URL, donc ils sont des données client
+    au sens de `docs/regles.md` § 1 : ils sont liés en paramètres, jamais
+    concaténés dans la chaîne SQL. La ligne du `SELECT` est reprise de
+    `_COLONNES_SAISIE` pour que la page détail ne puisse pas afficher un
+    champ de moins que la liste — c'est le même motif que `_ligne_saisie`.
+    """
+    if not client_id:
+        return None
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            _COLONNES_SAISIE + " WHERE client_id = ? AND kind = ?",
+            (client_id, kind),
+        ).fetchone()
+    return _ligne_saisie(row) if row is not None else None
+
+
+def _lien_releve(row: dict) -> str:
+    """L'URL d'un relevé, et le paramètre `kind` qui l'accompagne.
+
+    Le `kind` voyage avec le `client_id` parce que les deux forment la clé
+    : sans lui, un serpent et un comptage unique du même navigateur
+    partageraient une URL, et le second affiché ne serait pas le bon.
+    """
+    return (
+        f"/releve?client_id={quote(str(row.get('client_id') or ''), safe='')}"
+        # `&amp;` et non `&` : un attribut HTML porte du `&` qui n'est pas
+        # une entité, et le validateur le refuse. Les navigateurs le
+        # tolèrent, donc le défaut ne se voit pas — jusqu'au jour où un
+        # validateur ou un parseur strict entre dans la chaîne.
+        f"&amp;kind={quote(str(row.get('kind') or 'count'), safe='')}"
+    )
+
+
+def _releve_page(database: Path, client_id: str, kind: str) -> str:
+    """Un comptage, tout entier, sur une page qui se partage.
+
+    La liste des comptages est un résumé : elle compare des relevés, donc
+    elle garde ce qu'on compare et jette le reste. Le reste n'était
+    accessible que par le CSV, ce qui est une façon de dire « pas
+    accessible » pour qui compte dans un train : le téléphone n'a pas le
+    fichier sous la main au moment où la question se pose.
+
+    Ce que la page ajoute, et que la liste n'a pas : la composition de la
+    rame et le périmètre compté (sans quoi 180 voyageurs dans une voiture
+    d'une UM3 et 180 dans les trois sont le même chiffre), les trois
+    indicateurs de charge, le commentaire, les arrêts du serpent avec leurs
+    montées et descentes, et la photo du temps réel/train par train.
+    """
+    row = _saisie_par_cle(database, client_id, kind)
+    if row is None:
+        # Une page qui dit « pas trouvé » plutôt qu'une 404 : l'URL est
+        # partageable, donc elle peut arriver après une suppression, et un
+        # lien mort doit dire où il mène.
+        return _plain_reading_page(
+            "Ce comptage n'existe pas",
+            "Ce lien ne correspond à aucun comptage enregistré. "
+            "Il a pu être supprimé depuis qu'il a été copié, "
+            "ou le lien a été tronqué.",
+        )
+    titre = "Train signalé" if row["kind"] == "missing" else "Comptage"
+    # Chaque fait est dans une ligne `dt`/`dd` : une liste de couples
+    # nom/valeur se lit en descendant la colonne, ce qu'un `<p>` libre ne
+    # garantit pas — deux paragraphes qui se suivent se lisent comme une
+    # phrase.
+    faits = [
+        ("Date", _date_fr(row.get("created_at"))),
+        ("Trajet", f"{row.get('origin_name') or '—'} → {row.get('destination_name') or '—'}"),
+        ("Mode", _mode_texte(row.get("kind"))),
+        (
+            "Effectif",
+            "sans effectif" if row.get("passengers") is None else f"{row['passengers']} voyageurs",
+        ),
+        ("Fiabilité", _fiabilite_texte(row) or "—"),
+        ("Par", escape(row["pseudo"]) if row.get("pseudo") else "anonyme"),
+    ]
+    materiel = _materiel_texte(row)
+    if materiel:
+        faits.append(("Matériel", materiel))
+    legs = _legs_text(row.get("legs"))
+    if legs:
+        faits.append(("Serpent", legs))
+    photo = _photo_phrase(row)
+    if photo:
+        faits.append(("Temps réel au moment du comptage", escape(photo)))
+    commentaire = (row.get("comment") or "").strip()
+    if commentaire:
+        faits.append(("Commentaire", escape(commentaire)))
+    description = "".join(f"<dt>{escape(intitule)}</dt><dd>{valeur}</dd>" for intitule, valeur in faits)
+    corps = (
+        f"<article class='card releve'>"
+        f"{_card_tete(row)}"
+        f"<dl class='faits'>{description}</dl>"
+        f"{_pastilles(row)}"
+        f"{_commentaire(row)}"
+        "<p class='status'><a href='/comptages'>Retour aux comptages</a></p>"
+        "</article>"
+    )
+    return chrome(
+        titre,
+        corps,
+        actif="/comptages",
+        extra_css="""
+  /* La page détail : une liste de couples nom/valeur, pas des paragraphes.
+     Le `<dl>` a un rendu par défaut que l'on neutralise — les `dt` et les
+     `dd` sont sur la même ligne en CSS, empilés en colonne sur téléphone. */
+  dl.faits { margin: 0.6rem 0; display: grid; grid-template-columns: minmax(0, 1fr);
+            gap: 0.1rem 0.8rem; }
+  dl.faits dt { font-size: 0.82rem; color: var(--gris); text-transform: uppercase;
+                letter-spacing: 0.04em; padding-top: 0.35rem; }
+  dl.faits dd { margin: 0; padding: 0.35rem 0; border-bottom: 1px solid #e6e0d5; }
+  dl.faits dd:last-of-type { border-bottom: 0; }
+  @media (min-width: 48rem) {
+    /* Deux colonnes nom/valeur dès qu'il y a de la place : une fiche se lit
+       en descendant, et une colonne de 72 rem laisserait la moitié de
+       l'écran vide. */
+    dl.faits { grid-template-columns: minmax(0, 14rem) minmax(0, 1fr); }
+  }
+""",
+    )
+
+
+def _saisies_de_gare(database: Path, stops_database: Path, stop_id: str) -> list[dict]:
+    """Les relevés dont la gare est une extrémité, ou un arrêt du serpent.
+
+    Le rattachement se fait par la **famille** de la gare, pas par
+    l'identifiant exact : le même quai peut s'appeler `StopArea:Annecy` dans
+    une offre et `StopPoint:AnnecyA` dans une autre, et un comptage fait
+    depuis l'un n'apparaîtrait pas si l'on ne cherchait que l'autre.
+    `_stop_family` est la fonction qui sait quels identifiants appartiennent
+    à une gare ; c'est elle que le serpent et le temps réel utilisent déjà,
+    donc l'utiliser ici évite une troisième définition du même mot.
+
+    Les arrêts du serpent comptent aussi : un relevé dont l'origine est
+    ailleurs mais qui passe par cette gare est un relevé **de** cette gare,
+    et l'exclure donnerait une page qui ment sur la couverture.
+
+    Le serpent se lit en Python, pas avec un `LIKE` sur la colonne `legs` :
+    cette colonne est du JSON, donc une sous-chaîne peut apparaître dans un
+    nom de gare ou dans une valeur, et le comptage afficherait un relevé
+    passé par la gare parce que le nom d'une autre gare contient son
+    identifiant. Une lecture de plus, et le filtre est exact.
+    """
+    from comptagefer.offer import _stop_family
+
+    famille = set(_stop_family(stops_database if stops_database.exists() else None, stop_id))
+    marques = ",".join("?" for _ in famille)
+    with sqlite3.connect(database) as connection:
+        extremites = connection.execute(
+            _COLONNES_SAISIE
+            + f"""
+            WHERE origin_stop_id IN ({marques})
+               OR destination_stop_id IN ({marques})
+            ORDER BY created_at
+            """,
+            (*famille, *famille),
+        ).fetchall()
+        serpents = connection.execute(
+            _COLONNES_SAISIE + " WHERE legs IS NOT NULL ORDER BY created_at"
+        ).fetchall()
+    retenus = [_ligne_saisie(row) for row in extremites]
+    vus = {(row["client_id"], row["kind"]) for row in retenus}
+    for row in serpents:
+        releve = _ligne_saisie(row)
+        if (releve["client_id"], releve["kind"]) in vus:
+            continue
+        if _passe_par(releve.get("legs"), famille):
+            retenus.append(releve)
+    return sorted(retenus, key=lambda r: r.get("created_at") or "")
+
+
+def _passe_par(legs: object, famille: set[str]) -> bool:
+    """Un serpent passe-t-il par l'un de ces arrêts ?
+
+    Chaque arrêt est comparé **exactement** à un identifiant de la famille.
+    Une comparaison partielle (`in` sur la chaîne du JSON) confondrait une
+    gare avec une autre dont le nom la contient.
+    """
+    if not isinstance(legs, list):
+        return False
+    return any(
+        isinstance(leg, dict) and leg.get("stop_id") in famille for leg in legs
+    )
+
+
+def _gare_page(database: Path, stops_database: Path, stop_id: str) -> str:
+    """La gare, ses comptages, ou une invitation à en compter un.
+
+    Le nom vient du catalogue des gares, jamais de l'URL : un nom passé en
+    paramètre serait une donnée client affichée sans être échappée, et il
+    pourrait nommer une gare qui n'existe pas. Si le catalogue ne connaît
+    pas cet identifiant, la page le dit et propose la recherche — elle ne
+    devine pas un nom.
+    """
+    if not stop_id:
+        return _plain_reading_page(
+            "Quelle gare ?", _link("/rechercher", "Rechercher une gare ou une ligne")
+        )
+    nom = _nom_de_gare(stops_database, stop_id)
+    if nom is None:
+        return _plain_reading_page(
+            "Cette gare n'est pas dans le catalogue",
+            "Les gares viennent du GTFS national. "
+            "Un identifiant qui n'y est pas n'ouvre aucune page de comptages.",
+        )
+    rows = _saisies_de_gare(database, stops_database, stop_id)
+    if rows:
+        # Le lien `/comptages` garde le corridor entier dans l'URL, donc la
+        # page se partage et se marque. `/gare` n'a pas besoin d'être
+        # dans la navigation : c'est la sortie d'une recherche, pas une
+        # destination qu'on visite.
+        contenu = (
+            "<p class='status'>"
+            f"{len(rows)} comptage{'' if len(rows) == 1 else 's'} "
+            f"touchent {escape(nom)}.</p>"
+            f"<div class='grille'>{_reading_cards(rows)}</div>"
+        )
+    else:
+        contenu = (
+            "<div class='card'>"
+            f"<p><strong>Aucun comptage sur {escape(nom)} pour l'instant.</strong></p>"
+            "<p>Une gare sans comptage n'est pas une gare vide : c'est une gare "
+            "qui attend son premier train compté. Le comptage se fait dans le "
+            "train, sur un trajet — la gare n'est qu'une des deux extrémités.</p>"
+            "<p><a class='bouton' href='/'>Compter un train</a></p>"
+            "</div>"
+        )
+    return chrome(
+        nom,
+        contenu,
+        actif="/rechercher",
+        extra_css="""
+  /* Un nom de gare qui part la recherche : sans cela, le lecteur cherche
+     « Lyon », lit « Lyon Part-Dieu » en noir sur fond crème, et ne voit pas
+     que ce mot est une destination. */
+  ul.stops a { display: block; color: var(--encre); text-decoration: none; }
+  ul.stops a:hover, ul.stops a:focus-visible { text-decoration: underline; }
+""",
+    )
+
+
+def _nom_de_gare(stops_database: Path, stop_id: str) -> str | None:
+    """Le nom d'une gare dans le catalogue, ou `None`.
+
+    La gare peut être donnée par l'aire ou par un de ses points : les deux
+    portent le même nom, donc la lecture demande le `parent` d'abord et
+    remonte au point quand il n'y en a pas. C'est ce qui permet à un lien
+    construit depuis un comptage — donc depuis un `StopPoint` — d'ouvrir la
+    même page que le lien construit depuis la recherche.
+    """
+    if not stops_database.exists():
+        return None
+    with open_stops(stops_database) as connection:
+        row = connection.execute(
+            "SELECT name, parent FROM stop WHERE stop_id = ?", (stop_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        nom, parent = row
+        if parent:
+            aire = connection.execute(
+                "SELECT name FROM stop WHERE stop_id = ?", (parent,)
+            ).fetchone()
+            if aire is not None:
+                return str(aire[0])
+    return str(nom)
+
+
+def _lien_gare(stop_id: str) -> str:
+    """L'URL d'une gare, son `stop_id` encodé."""
+    return f"/gare?stop={quote(str(stop_id), safe='')}"
 
 
 def _ligne_saisie(row) -> dict:
@@ -1967,9 +2438,17 @@ def _search_page(query: str, stops_database: Path, timetable: Path) -> str:
     else:
         morceaux = []
         if gares:
+            # Les gares étaient du texte brut : une liste qu'on ne peut pas
+            # sélectionner est une liste qui ne mène nulle part, et la page
+            # répondait 200 en donnant l'impression d'avoir trouvé. Le nom
+            # porte maintenant l'identifiant, donc le lien ouvre les
+            # comptages de **cette** gare.
             morceaux.append(
                 "<h2>Gares</h2><ul class='stops'>"
-                + "".join(f"<li>{escape(gare['name'])}</li>" for gare in gares)
+                + "".join(
+                    f"<li><a href='{_lien_gare(gare['stop_id'])}'>{escape(gare['name'])}</a></li>"
+                    for gare in gares
+                )
                 + "</ul>"
             )
         if lignes:
@@ -2196,16 +2675,25 @@ def _card_tete(row: dict) -> str:
     auteur, mode. C'est l'identité d'un comptage, donc elle est écrite une
     fois — une carte et une ligne qui divergent sur le nombre affiché
     seraient deux chiffres pour un relevé.
+
+    Le trajet est un lien vers `/releve`. C'est le seul élément cliquable de
+    la carte : une carte entièrement cliquable avale les sélections de texte
+    et se déclenche au premier glissement de doigt sur un téléphone, ce qui
+    est le geste qu'on fait en lisant. Un lien sur le titre, lui, se voit et
+    se vise.
     """
     who = escape(row["pseudo"]) if row["pseudo"] else "anonyme"
-    origin = escape(row["origin_name"] or "")
     destination = escape(row["destination_name"] or "")
+    titre = (
+        f"<a href='{_lien_releve(row)}'>"
+        f"{escape(row['origin_name'] or '')} → {destination}</a>"
+    )
     # Un train signalé n'a pas d'effectif : écrire « sans effectif voyageurs »
     # serait un faux pluriel et une fausse unité.
     if row.get("passengers") is None:
-        return f"<strong>{origin} → {destination}</strong><p>{_mode_texte(row.get('kind'))} · {who}</p>"
+        return f"<strong>{titre}</strong><p>{_mode_texte(row.get('kind'))} · {who}</p>"
     return (
-        f"<strong>{origin} → {destination}</strong>"
+        f"<strong>{titre}</strong>"
         f"<p>{_passagers_texte(row)} voyageurs · {who} · {_mode_texte(row.get('kind'))}</p>"
     )
 
@@ -2215,6 +2703,10 @@ def _reading_cards(rows: list[dict]) -> str:
     for row in rows:
         materiel = _materiel_texte(row)
         ligne_materiel = f"<p class='status'>{materiel}</p>" if materiel else ""
+        # Le lien de détail est aussi en bas de carte, et pas seulement dans
+        # le titre : sur téléphone le titre se lit vite et se tape par
+        # habitude, alors qu'un lien nommé ne demande pas de deviner qu'il
+        # est cliquable.
         cards.append(
             "<article class='card'>"
             + _card_tete(row)
@@ -2224,6 +2716,7 @@ def _reading_cards(rows: list[dict]) -> str:
             + _legs_text(row.get("legs"))
             + _commentaire(row)
             + f"<p class='status'>{_photo_phrase(row)}</p>"
+            + f"<p class='status'><a href='{_lien_releve(row)}'>Détail du comptage</a></p>"
             + "</article>"
         )
     return "".join(cards) or "<p>Aucun comptage pour l'instant.</p>"
@@ -2317,7 +2810,14 @@ def _reading_table(rows: list[dict], tri: str, sens: str, filtres: Filtres) -> s
         fiabilite = _fiabilite_texte(row) or vide
         pseudo = escape(row["pseudo"]) if row["pseudo"] else vide
         moment = escape(_date_fr(row.get("created_at")))
-        trajet = f"{escape(row['origin_name'] or '')} → {escape(row['destination_name'] or '')}"
+        # Le trajet est un lien vers le relevé. Sur grand écran c'est la
+        # seule colonne qui décrit le relevé, donc c'est elle qui doit
+        # porter la sortie vers le détail — un lien nommé en fin de ligne
+        # ferait une colonne de plus, et du bruit visuel dans chaque ligne.
+        trajet = (
+            f"<a href='{_lien_releve(row)}'>"
+            f"{escape(row['origin_name'] or '')} → {escape(row['destination_name'] or '')}</a>"
+        )
         cellules = [
             f"<td class='nombre'>{moment}</td>",
             f"<td>{trajet}</td>",
@@ -2332,7 +2832,8 @@ def _reading_table(rows: list[dict], tri: str, sens: str, filtres: Filtres) -> s
 
     return (
         "<table class='tableau'>"
-        "<caption>Les mêmes comptages, en tableau. Un en-tête de colonne trie la liste.</caption>"
+        "<caption>Les mêmes comptages, en tableau. Un en-tête de colonne trie la "
+        "liste, un trajet ouvre le relevé en entier.</caption>"
         f"<thead><tr>{''.join(entetes)}</tr></thead>"
         f"<tbody>{''.join(corps)}</tbody>"
         "</table>"
@@ -2431,19 +2932,38 @@ def _filtres_html(filtres: Filtres, vue: str) -> str:
         items = "".join(f"<li>{e}</li>" for e in filtres.erreurs)
         alertes = f"<ul class='erreurs'>{items}</ul>"
     # Les chips disent ce qui EST appliqué, pour qu'un filtre écarté ne
-    # laisse pas croire qu'il filtre encore.
+    # laisse pas croire qu'il filtre encore. Ils sont dans une boîte à part
+    # qui prend toute la largeur : en enfants directs de la grille, chaque
+    # chip prenait une colonne, et la rangée des filtres se trouvait
+    # repoussée vers la droite selon le nombre de filtres actifs.
     chips = "".join(
         f"<span class='chip'>{escape(e)}</span>" for e in filtres.etiquettes()
     )
+    if chips:
+        chips = f"<p class='chips'>{chips}</p>"
     return (
         "<form class='filtres' action='/comptages' method='get'>"
+        # Chaque champ est dans son propre `<p>`. Les `label` et les `input`
+        # étaient des enfants directs de la grille, donc la grille les
+        # répartissait dans ses colonnes **alternativement** : à cinq
+        # colonnes, le libellé « Depuis le » tombait dans la première, son
+        # champ dans la deuxième, le libellé « Mode » dans la cinquième et
+        # le champ `mode` dans la première de la rangée suivante. Aucun
+        # filtre n'était sous son libellé, et « Ligne » se lisait au-dessus
+        # de la liste déroulante. Un enfant de grille par *champ*, pas par
+        # *balise*, est la seule forme qui tienne dans n'importe quel nombre
+        # de colonnes.
         f"{_champ_texte('depuis', 'Depuis le', filtres.depuis, '2026-01-31')}"
         f"{_champ_texte('jusqu', 'Jusqu’au le', filtres.jusqu, '2026-01-31')}"
+        "<p class='champ'>"
         "<label for='mode'>Mode</label>"
         f"<select id='mode' name='mode'>{mode_options}</select>"
+        "</p>"
+        "<p class='champ'>"
         "<label for='ligne'>Ligne (route_id)</label>"
         f"<input id='ligne' type='text' name='ligne' autocomplete='off' value='{escape(filtres.ligne, quote=True)}'"
         " placeholder='C13 ou le route_id'>"
+        "</p>"
         f"{_champ_cache(vue)}"
         f"{chips}"
         f"{alertes}"
@@ -2459,9 +2979,17 @@ def _filtres_html(filtres: Filtres, vue: str) -> str:
 
 
 def _champ_texte(nom: str, etiquette: str, valeur: str, exemple: str) -> str:
+    """Une date, dans la boîte qui aligne le libellé et son champ.
+
+    Le `<p>` n'est pas un habillage : c'est l'unité de grille. Sans lui, le
+    `label` et l'`input` occupent deux cellules et le nombre de colonnes
+    décide lequel est au-dessus de quoi.
+    """
     return (
+        "<p class='champ'>"
         f"<label for='{nom}'>{escape(etiquette)}</label>"
         f"<input id='{nom}' type='date' name='{nom}' value='{escape(valeur, quote=True)}'>"
+        "</p>"
     )
 
 
@@ -2743,9 +3271,15 @@ def _reading_page(
   .commentaire { border-left: 3px solid var(--bord); padding-left: 0.6rem; margin: 0.5rem 0;
                  font-size: 0.95rem; }
   /* Les filtres sur une colonne, comme le formulaire de saisie : c'est une
-     page qu'on consulte, pas un formulaire qu'on remplit sur un quai. */
-  form.filtres { display: grid; gap: 0.3rem 0.5rem; background: #fff; border-radius: 0.8rem;
-                 padding: 0.8rem; margin: 0 0 1rem; align-items: center; }
+     page qu'on consulte, pas un formulaire qu'on remplit sur un quai.
+     `align-items: end` alignait les *cellules* par le bas, donc un `label`
+     au-dessus d'un `input` se retrouvait décalé d'une ligne par rapport à
+     son voisin ; l'alignement se fait dans la boîte, pas dans la grille. */
+  form.filtres { display: grid; gap: 0.6rem 0.5rem; background: #fff; border-radius: 0.8rem;
+                 padding: 0.8rem; margin: 0 0 1rem; align-items: start; }
+  /* `margin: 0` : un `<p>` apporte un espacement vertical que la grille
+     ne demande pas, et l'écart vertical venait de là. */
+  form.filtres p.champ { margin: 0; display: flex; flex-direction: column; gap: 0.2rem; }
   form.filtres label { font-size: 0.85rem; color: var(--gris); }
   form.filtres input, form.filtres select { font: inherit; padding: 0.5rem; width: 100%;
                                            box-sizing: border-box; border-radius: 0.5rem;
@@ -2757,6 +3291,9 @@ def _reading_page(
   form.filtres a.retirer { font-size: 0.9rem; }
   .chip { display: inline-block; background: #f0ece2; border: 1px solid var(--bord);
           border-radius: 1rem; padding: 0.1rem 0.6rem; font-size: 0.85rem; }
+  /* La rangée des chips est une seule cellule, sur toute la largeur. */
+  form.filtres p.chips { margin: 0; grid-column: 1 / -1; display: flex;
+                         flex-wrap: wrap; gap: 0.3rem; }
   /* La table par paire est visible sur téléphone, contrairement à `.tableau`,
      et déborde donc au lieu de se comprimer en colonnes illisibles. */
   .tableau.paires { display: table; font-size: 0.9rem; }
@@ -2768,9 +3305,11 @@ def _reading_page(
                    justify-content: space-between; }
   @media (min-width: 48rem) {
     /* Les quatre filtres sur une rangée, pas quatre lignes empilées dans
-       72 rem de largeur. */
-    form.filtres { grid-template-columns: repeat(4, 1fr) auto; }
-    form.filtres label { align-self: end; }
+       72 rem de largeur. Quatre colonnes et non cinq : le cinquième enfant
+       est le `input type="hidden"`, qui ne prend pas de place, et le
+       cinquième *champ* — le bouton — est posé plus bas par
+       `.filtres-actions`. */
+    form.filtres { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     /* Le tableau remplace les cartes, il ne s'ajoute pas à elles : sans
        cette ligne, un lecteur sur grand écran verrait la liste deux fois,
        une fois en cartes et une fois en tableau. */
