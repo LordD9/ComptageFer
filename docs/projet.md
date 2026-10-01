@@ -616,9 +616,38 @@ seule fois, et la personne le garde.**
   journal
 - le cookie `comptagefer_compte` tient la session au quotidien : le secret est
   tapé rarement, et un secret qu'on tape 47 fois par jour finit noté sur un
-  papel
+  papier
 - perdu, le compte est perdu. Pas de récupération. C'est la contrepartie assumée :
   il n'y a pas d'adresse email à qui écrire
+
+**Un bouton « copier », parce qu'un secret de 24 caractères se recopie mal à la
+main.** C'est du JavaScript, donc la première exception JS de cette page, et elle
+est bornée : deux lignes, aucune dépendance, et le même traitement que le bouton
+de partage d'un serpent. Deux choses le rendent acceptables, et deux le bornent.
+
+Ce qui le rend possible : l'API presse-papiers du navigateur est utilisable sur
+une page déjà chargée, en HTTPS ou en `http://10.x`. Ce qui le rend nécessaire :
+le secret est long, et une transcription erronée se voit au moment de la
+coller — pas au moment de la chercher, plus tard.
+
+Ce qui le borne : la page `/compte` **reste utilisable sans lui**, et le secret
+reste sélectionnable et copiable à la main. Un bouton qui ne marche pas ne doit
+pas empêcher de récupérer son compte. Donc :
+
+- le secret est dans un `<code>` sélectionnable, et le bouton est à côté
+- le bouton a un repli : si l'API refuse, il bascule en « sélectionner »
+  plutôt que de ne rien faire. Se taire quand on ne peut pas copier serait le
+  pire des deux comportements
+- le retour est écrit dans la page — « Secret copié » — et pas dans une alerte,
+  parce qu'une alerte disparaît et qu'un doute de non-persisté ne se lève pas
+- aucun test ne peut-click : le presse-papiers du navigateur n'est pas
+  accessible depuis Playwright sans octet de permission. Le test vérifie donc ce
+  qui est vérifiable — le secret est présent, il est sélectionnable, et le
+  bouton existe — et le projet assume que le clic lui-même n'est pas couvert
+
+C'est la première fois que `/compte` a du JavaScript, donc `test_browser.py` gagne
+un test qui ouvre la page de création et vérifie qu'elle ne casse pas au
+chargement. C'est le filet qui existe déjà pour le formulaire.
 
 Ce que ça change : plus de service d'envoi, plus de quota, plus de coût, plus
 de dépendance externe, et une application qui fonctionne entièrement hors ligne
@@ -933,6 +962,11 @@ sienne :
 - **classement** : il s'affiche dans Chromium, sur téléphone comme sur écran
   large, il dit son dénominateur, il annonce une liste vide, et il se lit sans
   JavaScript
+- **le secret se copie en un clic** : le bouton est présent, le secret est
+  sélectionnable, et le repli « sélectionner » existe. Le clic lui-même n'est pas
+  testé — le presse-papiers n'est pas lisible depuis Playwright sans permission —
+  et c'est dit dans le plan plutôt que découvrir plus tard que la couverture
+  s'arrête là
 - **la création est plafonnée** : au plafond, `/compte` dit que la création est
   fermée pour l'instant, et **la connexion par secret continue de marcher**. Une
   personne qui revient avec son secret n'est pas bloquée par un problème de
