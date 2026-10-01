@@ -2,7 +2,7 @@
 
 Outil collaboratif pour compter la fréquentation des TER en France, puis rendre ces comptages publics, lisibles et réutilisables.
 
-**Statut :** phases 0 à 5 livrées, septembre 2026. Phases 6, 7 et 8 commencées. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
+**Statut :** phases 0 à 8 livrées, septembre 2026. Phase 9 commencée — les vagues 2 et 3 sont écrites : le compte par secret long, le rattachement des relevés, le signalement, `/compte`, et le score avec son classement et son outil de calibration. Restent la vague 1 (HTTPS), le test Chromium de la page du secret, et la calibration des coefficients sur la base réelle, qui ne peut pas se faire sans elle ; le détail est dans « Ce qui reste » plus bas. Ce document est la source de vérité : quand le code et le plan divergent, c'est le plan qui a tort, et on le corrige dans le changement qui révèle l'écart.
 
 **Source du besoin :** cahier des charges « ComptagesFer » (présentation de trois diapositives).
 
@@ -34,7 +34,7 @@ Le cas d'usage est un téléphone, dans un train, souvent avec un réseau médio
 4. Je passe au formulaire. Le retard, l'heure et la suppression ne se tapent pas.
    - **Comptage unique.** Une interstation (les deux arrêts qui l'encadrent), un effectif, et trois indicateurs approximatifs : part de gens debout, part de places assises restantes, écart de charge entre la partie la plus chargée et la moins chargée.
    - **Serpent de charge.** Je monte, je compte une fois les portes fermées, puis à chaque arrêt j'indique montées et descentes jusqu'à ma descente. Les indicateurs du mode unique sont optionnels sur chaque interstation. Compter sa propre descente est optionnel.
-5. Pseudo, si je veux. Facultatif. Pas un compte.
+5. Pseudo, si je veux. Facultatif. Un compte, si je veux aussi : facultatif lui aussi, jamais demandé, et il ne donne aucun droit sur les données des autres. La connexion se fait par un secret long que l'outil affiche une fois — rien à retenir, et aucune adresse email n'est demandée.
 6. En quittant, j'indique un pourcentage de fiabilité. Commentaire et modèle de véhicule seulement si j'ai quelque chose à ajouter.
 
 À la sélection, l'outil fige l'état du train choisi, du précédent et du suivant sur la même origine-destination. C'est cette photo qui voyage avec le comptage. On ne relit pas le flux plus tard pour reconstituer le contexte : il ne le contient plus.
@@ -54,7 +54,7 @@ L'export des données brutes, lui, arrive tôt. C'est le retour dû aux gens qui
 - **Simple à poser.** Un conteneur, une base fichier, pas de base managée. La commande est la même partout où Docker tourne.
 - **Le téléphone dans le train est le client principal.** Grandes zones tactiles, peu d'étapes. On saisit le compte, pas le contexte que le flux connaît déjà.
 - **Brut avant estimé.** Pas de chiffre annuel tant que la règle d'extrapolation n'est pas écrite et affichée à côté du chiffre. Une suppression du train précédent est un fait conservé, pas un effectif qu'on réécrit.
-- **Anonyme par défaut.** Pas de compte pour contribuer. Un pseudo facultatif peut signer un comptage. Il n'identifie personne, et il n'ouvre aucun droit.
+- **Anonyme par défaut, et c'est encore vrai.** On peut contribuer sans compte, sans pseudo, et sans rien laisser qui permette de retrouver qui a compté. Un compte existe depuis la phase 9 et n'est jamais demandé : il donne un historique et un classement, et rien qui touche aux données des autres. Aucune adresse email n'est stockée, aucune. Un pseudo facultatif peut signer un comptage. Il n'identifie personne, et il n'ouvre aucun droit.
 - **L'offre vient du GTFS, le contexte du temps réel, les comptages des gens.** On ne mélange pas les trois. Une circulation absente est un signalement, pas une ligne créée à la main.
 - **Pas de trace GPS.** La position peut proposer l'arrêt le plus proche. Elle n'est pas enregistrée.
 - **Les comptages partagés sont en Licence Ouverte 2.0.** Le code reste en GPL-3.0. Les deux licences ne se mélangent pas.
@@ -218,7 +218,8 @@ Le flux temps réel ne donne pas le nom des gares, et il travaille surtout en St
 - `trip_id`, la circulation confirmée, sinon rien
 - `passengers`, l'effectif. En mode serpent c'est l'effectif portes fermées : c'est le nombre saisi, pas le total reconstruit. La reconstruction reste dans `legs`.
 - `reliability`, entier de 0 à 100
-- `pseudo`, facultatif, texte libre court. Pas un compte, pas un droit.
+- `pseudo`, facultatif, texte libre court. Pas un compte, pas un droit. Il reste ce que le CSV publie, y compris quand la personne a un compte : le compte en a un aussi, mais il ne sort pas.
+- `compte_id`, facultatif, ajouté par la phase 9. Un identifiant de compte, ou rien. Il rattache un relevé à son auteur dans l'application, et **n'est exporté nulle part** : ni dans le CSV, ni dans une URL, ni dans un journal, ni dans une page. Le CSV est un jeu ouvert, republicisé chaque nuit, et y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent. La migration l'ajoute par `ALTER TABLE`, donc les relevés antérieurs gardent `NULL` : ils comptent dans les données et pas au classement.
 - `comment`, facultatif, texte libre court. C'est la partie qui explique un comptage atypique : train précédent supprimé, car de substitution, forte charge. Il est publié dans le CSV, donc lu par ceux qui réutilisent les données, et affiché dans l'admin.
 - `standing`, `seats_free`, `imbalance`, optionnels
 - `legs`, le profil du serpent, en JSON. La suite ordonnée des arrêts avec l'effectif de départ puis montées et descentes. Effectif suivant = effectif + montées − descentes.
@@ -241,7 +242,9 @@ On ne stocke pas de position GPS.
 
 ## 6. Hors périmètre pour l'instant
 
-- Comptes, mots de passe, OAuth.
+- Mots de passe à retenir, et tout ce qui en dépend : OAuth, fournisseurs externes d'identité. Le compte de la phase 9 affiche un **secret long** une seule fois, à conserver soi-même. Il n'y a ni mot de passe, ni adresse email, ni fournisseur d'identité : le dépôt est personnel, et un compte qui se connecte chez quelqu'un d'autre n'est plus un compte du projet.
+- Passkey WebAuthn pour la connexion. Noté ici parce que c'est **la bonne réponse** à ce que la phase 9 règle de travers — le serveur ne stockerait qu'une clé publique, et la clé privée ne quitterait jamais le téléphone — et qu'elle est écartée pour une raison concrète, écrite plus bas : c'est du JavaScript, donc du travail que la suite de tests n'exerce pas encore sur cette page.
+- Messagerie : aucune notification, aucun récapitulatif, aucune relance. Le compte n'écrit pas à personne.
 - Estimation annuelle de voyageurs et de voyageurs.kilomètres.
 - Comparaison de lignes, agrégats région ou agglomération.
 - Géométrie réelle des lignes.
@@ -551,23 +554,609 @@ Une limite, dite : le filtre ligne a bien sa clause `trip_id IN (...)`, et
 elle est maintenant vérifiée avec une vraie base d'horaires — voir la suite
 plus bas. La page `/ligne`, qui utilise la même lecture, l'est aussi.
 
+### Phase 9 — Compte facultatif, et un classement qui récompense l'utilité
+
+La phase 8 a rendu les données lisibles. Celle-ci s'adresse à celui qui les
+produit, pour qu'il en produise davantage et qu'il sache ce que son comptage a
+apporté.
+
+Quatre règles gouvernent toute la phase, et chacune a déjà coûté une décision
+ailleurs dans ce document :
+
+- **Aucune adresse email n'est stockée, et c'est une règle de conception, pas
+  un oubli.** Une adresse est un identifiant *direct* : elle relie toute
+  l'activité future d'une personne à une identité réelle, et elle sert à autre
+  chose qu'à ce projet — c'est une clé d'envoi, un identifiant de connection, un
+  moyen de la croiser avec n'importe quelle fuite. Le §3 dit « pas de trace GPS »
+  et « anonyme par défaut » ; stocker un email les deux rendrait faux. Un secret
+  long n'identifie personne : il ne peut servir qu'ici, donc une base qui fuite
+  donne des pseudos et des hachages — exactement ce que le projet assume déjà de
+  publier.
+- **L'application marche sans l'option compte.** C'est la première règle, parce
+  qu'elle décide si la phase est réversible. Sans variable d'envoi dans le `.env`,
+  l'application démarre, la saisie marche, le classement affiche sa liste vide, et
+  `/compte` dit en une phrase que la connexion n'est pas configurée sur cette
+  installation. Aucune page n'est retirée, aucune erreur, aucun 500 : c'est le
+  même traitement que `DATAGOUV_API_KEY` absent. Une installation contributrice,
+  la mienne sur le Pi, une démonstration et une contribution à un fork restent
+  possibles sans rien configurer
+- **Le compte reste facultatif à 100 %.** Aucun écran ne le demande, aucune
+  saisie ne le réclame, aucun formulaire ne le bloque. `POST /api/sessions`
+  accepte une requête sans cookie et sans jeton, comme aujourd'hui, et c'est le
+  chemin par défaut. Le §3 disait « pas de compte pour contribuer » : la
+  phrase est amendée, pas abandonnée — on peut contribuer sans compte, et c'est
+  encore le cas le plus simple.
+- **Le classement mesure l'utilité, pas le volume.** Un point par relevé
+  récompense un comptable qui revient compter le même train vide dix fois, et
+  c'est le pire comportement possible pour un jeu de données qui sert à
+  estimer une charge. Le score suit donc la couverture, et sa calibration se
+  mesure sur la base réelle au lieu d'être choisie dans une intuition.
+- **`compte_id` ne sort nulle part.** Ni dans le CSV, ni dans une URL, ni dans
+  un journal, ni dans une page. Le CSV est un jeu de données ouvert, en Licence
+  Ouverte 2.0, republié chaque nuit sur data.gouv.fr : y écrire un identifiant
+  de compte stable et durable produirait une donnée personnelle lisible par
+  tous, ce que ni le pseudo ni la Licence Ouverte ne demandent. Le compte vit
+  dans l'application, le pseudo continue de signer le relevé dans le CSV.
+
+#### La connexion : un secret affiché une fois
+
+Le plan prévoyait un lien de connexion envoyé par email. Cette idée est retirée,
+et sa raison est celle de la première règle : elle imposait de stocker une
+adresse email, et une adresse email est la donnée la plus sensible qu'un compte
+puisse détenir. Un lien de connexion est de surcroît un mot de passe qui voyage
+en clair dans une boîte mail — Gmail, Outlook, le proxy de la boîte
+d'entreprise — donc hors de tout contrôle du projet.
+
+Le remplacement tient en une phrase : **`/compte` affiche un secret long une
+seule fois, et la personne le garde.**
+
+- 24 caractères tirés au hasard, groupes de 4 pour être recopiés sans faute
+- le secret est montré **une fois**, à la création, dans une page qui le dit
+- stocké en SHA-256, comme le jeton de session. Jamais en clair, jamais dans un
+  journal
+- le cookie `comptagefer_compte` tient la session au quotidien : le secret est
+  tapé rarement, et un secret qu'on tape 47 fois par jour finit noté sur un
+  papier
+- perdu, le compte est perdu. Pas de récupération. C'est la contrepartie assumée :
+  il n'y a pas d'adresse email à qui écrire
+
+**Un bouton « copier », parce qu'un secret de 24 caractères se recopie mal à la
+main.** C'est du JavaScript, donc la première exception JS de cette page, et elle
+est bornée : deux lignes, aucune dépendance, et le même traitement que le bouton
+de partage d'un serpent. Deux choses le rendent acceptables, et deux le bornent.
+
+Ce qui le rend possible : l'API presse-papiers du navigateur est utilisable sur
+une page déjà chargée, en HTTPS ou en `http://10.x`. Ce qui le rend nécessaire :
+le secret est long, et une transcription erronée se voit au moment de la
+coller — pas au moment de la chercher, plus tard.
+
+Ce qui le borne : la page `/compte` **reste utilisable sans lui**, et le secret
+reste sélectionnable et copiable à la main. Un bouton qui ne marche pas ne doit
+pas empêcher de récupérer son compte. Donc :
+
+- le secret est dans un `<code>` sélectionnable, et le bouton est à côté
+- le bouton a un repli : si l'API refuse, il bascule en « sélectionner »
+  plutôt que de ne rien faire. Se taire quand on ne peut pas copier serait le
+  pire des deux comportements
+- le retour est écrit dans la page — « Secret copié » — et pas dans une alerte,
+  parce qu'une alerte disparaît et qu'un doute de non-persisté ne se lève pas
+- aucun test ne peut-click : le presse-papiers du navigateur n'est pas
+  accessible depuis Playwright sans octet de permission. Le test vérifie donc ce
+  qui est vérifiable — le secret est présent, il est sélectionnable, et le
+  bouton existe — et le projet assume que le clic lui-même n'est pas couvert
+
+C'est la première fois que `/compte` a du JavaScript, donc `test_browser.py` gagne
+un test qui ouvre la page de création et vérifie qu'elle ne casse pas au
+chargement. C'est le filet qui existe déjà pour le formulaire.
+
+Ce que ça change : plus de service d'envoi, plus de quota, plus de coût, plus
+de dépendance externe, et une application qui fonctionne entièrement hors ligne
+pour cette partie. Ce que ça coûte : la personne doit conserver un secret. Pour
+un service dont le compte ne sert qu'à retrouver ses relevés et à figurer au
+classement, c'est le bon rapport effort/bénéfice — et surtout, il n'y a rien à
+voler qui identifie quelqu'un.
+
+**Ce qui sera fait plus tard, et pourquoi c'est la bonne réponse.** Une
+**passkey WebAuthn** : le serveur ne stocke qu'une clé publique, la clé privée ne
+quitte jamais l'appareil, et la synchronisation iCloud comme Google Password
+Manager est chiffrée de bout en bout. Aucun secret stocké, aucune adresse email,
+et la résistance au hameçonnage vient du navigateur lui-même. C'est exactement la
+propriété que le secret long n'a pas.
+
+Elle n'est pas dans la phase 9 pour une raison mesurable, pas par principe : une
+passkey se crée et se vérifie en JavaScript, et la page `/compte` est aujourd'hui
+du HTML sans script. Le projet a une règle — « pas de JavaScript dans une page
+dont le JavaScript n'est jamais exécuté par la suite de tests » — donc l'ajouter
+exigerait d'abord un test Chromium qui traverse la création d'une passkey, avec
+une authentificateur simulé. C'est faisable, et c'est un travail à part. La note
+est dans le §6 pour qu'on la retrouve quand le reste de la phase sera livré.
+
+#### Vague 1 — HTTPS
+
+Le secret de connexion ne voyage plus par email, donc HTTPS n'est plus la
+condition d'une fonctionnalité : **c'est celle du cookie**. Un cookie `secure`
+posé sur une installation en `http://10.x` n'est jamais renvoyé, donc la session
+serait ouverte puis perdue à la navigation suivante, sans message. Et le
+`comptagefer_compte` serait interceptable en clair sur un réseau partagé — un
+train, un WiFi de gare.
+
+Le site est public et sert des données ouvertes, donc HTTPS est de toute façon
+la bonne posture. Mais il est écrit ici comme une condition de la phase, parce
+que le symptôme d'une installation en HTTP est silencieux.
+
+Le domaine est chez OVH, donc le certificat vient de là aussi :
+
+- `comptages.<domaine>` en A sur l'IP du VPS, et Caddy devant le conteneur
+- le conteneur n'écoute que sur la boucle de l'hôte : `ports: - "127.0.0.1:8000:8000"`
+- Caddy reste **hors** du `compose.yaml`. Le compose reste « un service, un
+  volume, pas de base séparée, pas de worker » ; ajouter Caddy dedans ferait
+  du reverse proxy une dépendance du déploiement, et le README promet le
+  contraire
+- `COMPTAGEFER_HTTPS=1` dans le `.env` du VPS. Une variable, pas une
+  détection : la détection par en-tête `X-Forwarded-Proto` fait confiance au
+  premier qui parle, et un `secure` activé à tort casse la session chez une
+  installation locale en `http://10.x`
+
+Ce que la vague ne change pas : une installation sans cette variable continue
+de fonctionner en HTTP, avec un cookie sans `secure`. C'est l'état d'aujourd'hui.
+
+#### Vague 2 — Le compte, sans score
+
+Le compte sert d'abord à deux choses concrètes : rattacher ses relevés à lui, et
+pouvoir les signaler. Le classement vient après, parce qu'un score sans
+historique n'a rien à montrer.
+
+**Tables.** Deux nouvelles, dans `app.db` — pas un fichier de plus :
+
+- `compte(id, pseudo, secret, cree_le, dernier_voir)` — `id` est une chaîne
+  tirée au hasard et **non** un `AUTOINCREMENT`. Un compteur se devine, et un
+  identifiant devinable est un identifiant qui fuite dès qu'il sort par une URL.
+  `secret` est le **SHA-256** du secret affiché, jamais le secret
+- `session(jeton, compte_id, ouverte, expire)` — en base, et non dans un
+  dictionnaire en mémoire comme `admin_sessions`. Un dictionnaire perd les
+  sessions au redémarrage du conteneur, donc chaque déploiement déconnecte
+  tout le monde ; et il grossit sans borne, ce que l'audit a relevé sur
+  `app.py`
+- `saisie.compte_id`, une colonne nullable
+
+**Il n'y a pas de colonne `email`.** Ce n'est pas une omission à rattraper plus
+tard : c'est la première règle de la phase. Une colonne vide prévue pour être
+remplie plus tard est une colonne qui se remplira.
+
+Le secret est comparé en `hmac.compare_digest`, pas avec `==`. Comparer un
+hachage de secret avec `==` se voit sur le temps de réponse, et même si ce
+n'est pas exploitable ici — le secret est long et aléatoire — c'est une
+habitude qui se paie ailleurs, dans du code qui aura moins de contexte.
+
+La session tient dans un cookie `comptagefer_compte`, `httponly` et
+`samesite=lax`, avec `secure` seulement quand `COMPTAGEFER_HTTPS` est posée —
+sinon le cookie ne part pas sur une installation en `http://10.x`. Sa durée est
+longue, de l'ordre de la session `admin_sessions` multipliée par dix : un lien
+magique est déjà pénible à demander, le renvoyer à chaque déploiement serait
+une deuxième punition. Le cookie porte un jeton aléatoire, et c'est le SHA-256
+de ce jeton qui va dans `session` — donc la base ne contient pas de session
+utilisable, mais un cookie volé donne bien une session volée. C'est le même
+niveau de protection que `comptagefer_admin`, et c'est suffisant ici : ce que le
+compte protège, c'est un historique et un score.
+
+Une seule connexion pour tout le monde, dans `app.db` : un compte référence ses
+relevés, et deux fichiers SQLite signifieraient deux connexions et une
+transaction qui ne couvre pas les deux. Le sauvegarder reste « copier
+`./data` », ce qui est déjà la consigne.
+
+**Ce que le compte donne, exactement.**
+
+- l'accès à son historique, `/compte`, avec ses relevés et les corridors qu'il
+  a couverts
+- le signalement d'un de ses relevés, avec un motif libre. Un signalement
+  n'efface rien et ne modifie rien : il crée une ligne que l'admin voit dans
+  `/admin`, à côté des relevés, avec son motif. `/admin` reste derrière
+  `ADMIN_TOKEN`, un jeton unique, pas une administration par compte
+- rien d'autre. Pas de droit sur les données des autres, pas de modification du
+  CSV depuis l'interface, pas de suppression
+
+**Ce que le compte ne donne pas, et qu'il faut écrire parce que c'est
+invisible :** être connecté ouvre le droit de dire « ce relevé n'est pas le
+mien », pas le droit de le retirer. Un signalement n'est pas une suppression
+différée.
+
+**La saisie hors ligne et le compte.** Le payload en file ne transporte que ce
+que le navigateur a sous la main, et le cookie part avec le `POST` au moment
+de l'envoi. Donc :
+
+- un comptage fait hors ligne **connecté** est rattaché au compte, parce que la
+  session est encore ouverte au moment où la file se vide
+- un comptage fait hors ligne **déconnecté**, puis envoyé après connexion, est
+  rattaché au compte ouvert à cet instant. C'est un cas rare et il va dans le
+  bon sens : la personne qui a envoyé le relevé est le compte connecté
+- un comptage fait hors ligne, puis envoyé alors que la session a expiré, est
+  anonyme. Il est compté dans les données et absent du classement, et la page
+  `/compte` le dit
+
+Ce comportement est mesuré par un test qui vide la file à deux moments
+différents. Il est dans la liste parce qu'il est contre-intuitif : il dépend
+de l'heure d'envoi, pas de l'heure du comptage.
+
+**Le coût de la création, et son seul risque qui reste.** Créer un compte
+n'envoie rien et ne coûte rien : un secret est tiré au hasard, affiché une fois,
+et rien ne quitte le serveur. Il n'y a donc plus de quota à surveiller, ni de
+service externe à tomber, ni de dépendance à déployer.
+
+Ce qui reste à surveiller, et c'est un risque nouveau qu'il ne faut pas ignorer :
+la création est une **écriture non authentifiée** dans la base. Une page qui
+crée un compte à la demande est un point d'entrée inépuisé — un script peut en
+faire dix mille en une nuit, ils seront tous vides, et tous apparaîtront au
+classement comme des comptes sans pseudo. La parade est un plafond de créations
+par heure, en mémoire comme le reste, avec deux conséquences à écrire :
+
+- un plafond trop bas gêne la vraie usage, donc il est mesuré sur la base, comme
+  les coefficients du score
+- un plafond qui coupe `/compte` doit couper **la création seulement**. Quelqu'un
+  qui revient avec son secret continue de se connecter : c'est une écriture
+  authentifiée, elle ne coûte rien et elle n'est pas une cible
+
+Un compte vide ne vaut rien et ne pollue rien : il n'apparaît au classement que
+s'il a au moins un relevé rattaché. C'est pourquoi le classement ne se lit pas
+en SQL seul — le filtre est là, et le test le vérifie.
+
+**La suppression du compte.** Elle n'est pas dans l'interface. Une
+suppression de compte détache ses relevés — `compte_id` à `NULL`, le pseudo
+conservé — et ne les supprime pas. Tant que ce geste n'est pas outillé, il
+reste une action d'admin, et c'est écrit ici comme une limite et non comme un
+choix de confort.
+
+#### Vague 3 — Le score, et sa calibration
+
+**Ce que le score récompense**, dans l'ordre d'importance :
+
+- **un relevé qui se lit à l'échelle de la rame.** C'est le premier critère,
+  et il est devant la couverture parce qu'il répond à la seule question pour
+  laquelle la base existe. Un `perimetre` à `um` sur une UM2 ou une UM3 donne
+  la charge de la rame entière, donc un chiffre comparable d'un train à l'autre.
+  Un `perimetre` à `voiture` ne donne qu'une voiture, et 180 personnes dans une
+  voiture d'une UM3 et 180 dans les trois sont le même relevé écrit deux fois —
+  c'est la raison pour laquelle `PERIMETRES` existe dans le code, et la même
+  raison vaut pour le score. Un relevé à `um` rapporte plus qu'un relevé à
+  `voiture`
+- **un serpent de charge.** Le profil le long de la ligne dit où la charge se
+  monte et où elle descend, là où un effectif unique ne dit qu'une valeur entre
+  deux gares. Le même raisonnement que ci-dessus : plus d'information
+  interprétable, donc plus de points. C'est aussi la seule partie de la base
+  qui renseigne le §2 sur la montée et la descente
+- **un corridor qu'aucun relevé ne portait.** C'est un relevé qui ajoute une
+  paire origine-destination à la base
+- **un corridor qui n'a pas été vu depuis longtemps.** Un corridor vu la semaine
+  dernière vaut un relevé, pas une découverte. La fenêtre se mesure
+- **la fidélité déclarée** ne rapporte rien. Elle est déclarée par celui qui
+  compte, donc elle est manipulable par construction, et la mettre au score
+  ferait monter tout le monde à 100. Elle reste une information affichée
+- **un relevé redondant** ne rapporte rien de plus. Le même origine-destination
+  par la même personne dans la même journée rapporte une fois
+
+**Ce que le score ne peut pas faire.** Un seul compte par personne n'est pas
+vérifiable, et le secret long n'y change rien : il ne prouve rien sur l'identité
+de qui le détient. Le frein n'est donc pas l'identité, c'est la formule — un
+spammeur qui crée dix comptes pour dix points perd plus de temps qu'il n'en
+gagne, et il pollue le classement des autres, ce que l'admin voit dans `/admin`.
+C'est une limite assumée, écrite ici et pas découverte dans six mois.
+
+Le secret long supprime en revanche le risque d'un lien intercepté, qu'il y
+avait avec l'email : il n'est jamais transmis, donc il n'est jamais volé en
+route. Ce qui reste est un secret que la personne écrit quelque part — une note,
+un gestionnaire de mots de passe. C'est un risque bien plus faible, et il n'est
+pas du ressort du projet.
+
+**La calibration se mesure.** Les coefficients ne sont pas choisis dans ce
+document. Une fonction de score unique, paramétrée, produit une distribution
+sur la base réelle du VPS — l'ordre de grandeur connu est 6 000 relevés sur
+90 × 37 gares — et la distribution décide des coefficients. Trois questions,
+chacune avec sa mesure :
+
+- combien de points pour un corridor inédit, en vérifiant qu'un tiers des
+  points d'un bon compteur vient de l'inédit, pas du volume
+- combien de points au-delà, pour que le classement récompense la constance, sans
+  que le jour de pic ait un classement « juste » — et un tel classement se décide
+  à la mesure ou pas du tout
+- la fenêtre de « pas vu depuis », en jours, en regardant la base : si
+  presque tous les corridors ont été vus dans les 30 derniers jours, une
+  fenêtre à 30 jours ne distingue rien
+
+Le score se calcule à la lecture, dans une requête SQL sur `saisie` filtrée par
+`compte_id`. Il n'est **pas** stocké en colonne : un score en base devient
+faux dès que la formule change, et il faudrait le recalculer — donc le migrer —
+à chaque réglage. Une vue SQL, ou une fonction Python au-dessus d'une requête,
+et la formule reste un calcul.
+
+**La page.** `/classement`, dans le chrome existant, donc lisible sur téléphone.
+Elle affiche, par compte : les points, le nombre de relevés, le nombre de
+paires distinctes, et le dernier relevé. Le pseudo est affiché, il est déjà
+libre. Le classement se lit sans JavaScript, comme `/comptages` : les points se
+calculent côté serveur.
+
+Trois choses que le tri impose, parce qu'elles sont vraies aussi pour
+`/comptages` :
+
+- **une liste vide s'annonce.** Un classement sans compte dit qu'il n'y en a pas
+  encore, et propose de compter. Il ne sort pas vide
+- **le score a un dénominateur.** « 34 points sur 12 relevés », jamais « 34
+  points ». C'est le §9 appliqué à un jeu
+- **la page dit ce qu'elle classe.** Les coefficients, en clair, avec la
+  mesure qui les a choisis. Un classement dont on ne connaît pas la règle est
+  une page de Vanity
+
+#### Ce que la vague ne fait pas
+
+- **Pas de badge, pas de niveau, pas de série.** Ce sont des mécaniques de jeu,
+  pas des informations sur les données. Elles ajoutent un « j'ai compté 47
+  fois » qui ne veut rien dire sur le réseau
+- **Pas de rang privé.** Le classement est public. Un classement privé
+  n'intéresse personne et coûte une page
+
+Une décision a été écrite à l'envers dans une première version de ce plan, et
+elle est reprise ici parce que le raisonnement qui la réfutait était faux. J'y
+écrivais qu'un serpent ne devait pas rapporter plus qu'un comptage unique, parce
+que les deux seraient « deux granularités du même chiffre ». C'est une
+distinction de forme, pas de contenu : un effectif unique donne une valeur
+entre deux gares, un serpent donne où la charge monte et où elle descend, et
+seule la deuxième répond à la question du §2 sur les montées et descentes. La
+même correction vaut pour le périmètre : `um` n'est pas une façon de dire la
+même chose autrement, c'est la seule forme du relevé qui donne une charge
+comparable d'un train à l'autre. Le plan reconnaissait déjà que 180 dans une
+voiture d'une UM3 et 180 dans les trois sont deux relevés différents, et c'est
+justement pour ça que `PERIMETRES` existe.
+
+#### Ce qui reste
+
+Le plan décrit la phase entière ; cette liste dit ce qui manque **maintenant**, et
+elle est écrite en puces parce qu'une liste de choses à faire dans un document de
+conception finit toujours par devenir une liste de choses faites, ce qui est pire
+que de ne pas l'avoir.
+
+**Vague 1 — HTTPS.** Rien d'écrit dans le code. Le domaine, le Caddy hors du
+compose, `COMPTAGEFER_HTTPS=1`, et le `127.0.0.1:8000:8000`. Le test du cookie
+`secure` reste à poser. C'est du déploiement et de la documentation, pas du
+code applicatif — c'est pourquoi c'est la vague la plus rapide.
+
+**Vague 2 — Le compte. Ce qui manque :** rien. Elle est finie, et les trois pages
+que le plan annonçait répondent. La route `/compte/valider` du plan précédent a
+été retirée avec l'email : aucune route, aucune page, aucune référence dans le
+dépôt. Le secret passe par `/compte/se-connecter`. Ce qui reste à la phase 9 est
+la vague 1 et la calibration, listées plus bas.
+
+**Ce que le test Chromium de `/compte` a trouvé, et qu'aucun autre test ne
+pouvait voir.** Les trois défauts étaient dans du code qui passait tous les tests
+Python, et ils sont du même ordre : la page s'affiche, rien ne signale l'erreur.
+
+1. **Le secret n'était jamais affiché.** `compte_page` traitait « session ouverte »
+   avant « secret neuf ». La création pose le cookie *et* renvoie sur
+   `/compte?secret-neuf=…` ; la session ouverte donc en premier renvoyait
+   l'historique, et la personne ne voyait jamais son secret. Compte perdu avant
+   d'avoir pu le garder, et personne à qui le demander — exactement ce que le
+   retrait de l'email veut dire. Le secret passe désormais avant l'historique.
+2. **Le bouton de copie n'avait jamais fonctionné.** `_SCRIPT_COPIER` ne
+   comportait pas ses balises `<script>` : le JavaScript était collé dans la page
+   comme du texte visible. Un test qui relit le HTML voit bien « le script est
+   là » ; seul un navigateur dit qu'il ne s'exécute pas.
+3. **Le pseudo n'était jamais soumis.** `_champ` rendait le champ puis l'appelant
+   refermait le `<form>` : le `</form>` tombait après l'`input`, donc le champ était
+   dans le DOM mais hors de son formulaire, et rien ne le soumettait. Créer un
+   compte depuis un navigateur enregistrait un **pseudo vide**, sans erreur. Les
+   deux fonctions sont fusionnées en `_formulaire`, qui prend le corps et noue
+   les trois morceaux : il n'y a plus d'ordre à avoir raison.
+4. **Un compte sans relevé ne pouvait pas se déconnecter**, parce que le bouton
+   était rendu dans l'autre branche. Le cas est le plus fréquent du projet : le
+   compte qu'on vient de créer est celui qui n'a pas encore compté.
+
+Deux autres corrections en ont découlé, chacune écrite dans le changement qui
+l'a révélée :
+
+- `/admin/supprimer` exige le `kind` (voir la vague 2 plus bas)
+- le cookie de session est `httpOnly`, donc invisible à `document.cookie`. Les
+  tests Chromium le lisent par le contexte du navigateur, et c'est le bon moyen :
+  un jeton de session lisible par le JavaScript de la page est un jeton qu'une
+  injection lit
+
+**Vague 3 — Le score et le classement. La formule est écrite, la calibration ne
+l'est pas.** Ce qui est livré, et qu'il ne faut pas refaire :
+
+- `comptagefer/score.py` : `Coeff` (les six paramètres, tous nommés),
+  `PAR_DEFAUT`, `classement`, `score_de`. Une passe sur `saisie`, pas une requête
+  par compte — avec quelques milliers de relevés, l'autre version est le N+1 que
+  `docs/regles.md` §4 interdit
+- les six règles du plan, chacune isolée par un coefficient dégénéré dans
+  `tests/test_score.py` : `um` avant voiture, serpent, inédit, corridor vieux, la
+  fidélité déclarée ne rapporte rien, et un redondant du même jour ne rapporte
+  rien de plus
+- la redondance par groupe (compte, couple, jour), qui garde le **meilleur** de
+  ses relevés et non le premier arrivé : deux relevés du même jour dont un seul
+  est à `um` ne doivent pas se départager sur l'ordre d'écriture
+- `/classement` : les points avec leur dénominateur, la part des corridors inédits, et un
+  paragraphe qui dit **ce que le score récompense** — le plan l'exige, sinon c'est
+  une page de Vanity
+- `/compte` : le score du compte, avec sa part des corridors inédits. Sans ça le classement
+  classe des efforts qu'on ne voit pas
+- `tools/calibrer_score.py` : la distribution, les trois questions du plan, et un
+  code de sortie non nul sur une base sans relevé rattaché
+
+Ce qui manque n'est pas bloquant. **La calibration attendra la base**, et c'est un
+choix, pas un oubli :
+
+- **les coefficients du score.** `PAR_DEFAUT` est lisible, pas juste, et
+  `/classement` le dit à qui la regarde — donc personne ne prend une mesure
+  provisoire pour une verité. La formule est calculée à la lecture, donc la
+  corriger plus tard ne demande **aucune migration** : on change une constante,
+  la prochaine requête recalcule. C'est précisément pour ça qu'aucune colonne n'a
+  été créée. `tools/calibrer_score.py` est écrit et fonctionne ; il sortira ses
+  trois mesures le jour où la base aura assez de comptes, et ce jour-là n'a pas à
+  être aujourd'hui
+- **la part d'inédit d'un « bon compteur »**, qui n'a pas encore de référentiel
+  tant qu'il n'y a pas d'historique de classement
+- **le plafond horaire de création**, dans le code, jamais mesuré. La même
+  mesure, sur le même fichier
+
+Une base trop petite ne donne pas de mauvais coefficients : elle n'en donne aucun.
+Choisir des poids sur cinq cents relevés serait choisir au hasard avec des
+chiffres en face, ce qui est pire que des poids lisibles et assumés.
+
+**Ce qui a été fait dans la vague 2, et qu'il ne faut pas refaire :**
+
+- `comptagefer/compte.py` : schéma, `generer_secret`, `compte_de_secret`,
+  sessions, cookie, `releves_de`, `nombre_de_releves`
+- `saisie.compte_id`, écrite en base et lue par le cookie, jamais exportée
+- `/compte` : création, reconnexion, historique, déconnexion, page du secret avec
+  le bouton de copie et son repli, le score, et « celui-ci est faux »
+- **le signalement** : table `signalement` avec un index unique sur
+  `(client_id, kind, compte_id)`, `POST /compte/signaler`, le formulaire sous
+  chaque relevé de `/compte`, et le panneau en tête de `/admin`. Un signalement
+  n'efface rien : il écrit une ligne, et c'est l'admin qui décide
+- `/admin/supprimer` corrige au passage : la route supprimait par `client_id`
+  seul alors que la clé primaire est `(client_id, kind)`. Un admin qui écartait un
+  effectif erroné effaçait aussi le signalement de train manquant du même
+  navigateur, sans le voir. Le genre est maintenant exigé, donc un appel sans
+  `kind` est refusé en 422 au lieu de supprimer plus large que demandé
+- `/classement`
+- `tests/test_compte.py` : 19 tests, dont la non-fuite, l'absence d'email en base,
+  et le parcours création → reconnexion qui avait laissé passer un hachage fait
+  sur deux formes différentes du même secret
+- `tests/test_signalement.py` : 15 tests. Le premier par ordre d'importance est
+  « on ne signale que ses propres relevés » — le `client_id` est dans le CSV, donc
+  le contrôle d'appartenance est ce qui empêche de faire modérer le relevé de
+  quelqu'un d'autre. Puis « un signalement n'efface rien », vérifié par les deux
+  côtés : les données et le score
+- `tests/test_browser_compte.py` : 12 tests dans un vrai Chromium. C'est le
+  fichier qui a trouvé les quatre défauts ci-dessus, et il est dans la CI pour
+  cette raison
+- `tests/conftest.py` : les fixtures `site`, `page` et le navigateur, partagées
+  par les deux fichiers de tests navigateur. Elles étaient dans `test_browser.py`
+  et le second fichier les **importait** — ce qui ne marche pas pour une fixture
+  `scope="session"`, parce que pytest identifie une fixture par le module qui la
+  définit : l'import créait une seconde instance du navigateur, et les 12 tests
+  échouaient tous au setup **en suite complète** tout en passant seuls. Un
+  `conftest.py` est résolu une fois pour toute la session
+- `tests/test_navigation.py` : chaque entrée de la navigation est rendue,
+  répond 200, et se marque `aria-current`
+
+#### Fichiers
+
+Chaque vague nomme ses fichiers avant d'écrire la première ligne, mais la phase
+se lit d'un bloc d'abord.
+
+- `comptagefer/app.py` — `compte` et `session` créées au démarrage, routes `/compte`, `/compte/connexion`, `/compte/deconnecter`, `/classement`, et la colonne `compte_id` sur `saisie`. La page du classement et l'historique y appellent `comptagefer.score`, et n'y recalculent rien
+- `comptagefer/compte.py` — le nouveau module : le secret, sa comparaison, la session, le cookie. Un module et non quinze fonctions dans `app.py`, qui est déjà à 2 279 lignes
+- `comptagefer/score.py` — la formule du classement, avec ses six paramètres dans `Coeff`. Ni colonne ni vue SQL : un score stocké devient faux dès que la formule change
+- `tools/calibrer_score.py` — la distribution sur une base réelle, et les trois mesures que le plan nomme. Il sort en erreur sur une base sans relevé, pour qu'un zéro ne se confonde pas avec une mesure
+- `comptagefer/affichage.py` — `/compte` et `/classement` entrent dans `NAVIGATION`, donc dans le chrome et le test de tutoiement
+- `compose.yaml` et `.env.example` — **une seule** variable, `COMPTAGEFER_HTTPS`, et elle est facultative. Les trois variables d'envoi du plan précédent ont disparu avec l'email : il n'y a plus rien à configurer pour que les comptes marchent. Le README décrit la variable une par une, sinon `test_compose_doc.py` échoue, et il a raison d'échouer
+
+Trois tests s'appliquent sans qu'on les pense, et le plan les nomme pour ne pas
+les découvrir en CI :
+
+- `test_compose_doc.py` exige que toute variable du compose soit dans le README
+  **et** dans `.env.example`
+- `test_form.py` exige qu'aucune page ne parle à la 2e personne. « Vous avez
+  « Vous avez copié votre secret », pas « Tu as gardé ton code »
+- la liste de pages du workflow `docker-test.yml` doit gagner `/compte` et
+  `/classement`, sinon la page peut être morte en production et verte en CI
+
+#### Vérification
+
+Une phase se termine par quelque chose de déployable, donc chaque vague a la
+sienne :
+
+- **aucune adresse email dans la base.** Le test lit le schéma de `compte` et
+  échoue s'il contient une colonne qui ressemble à une adresse. C'est la
+  propriété de la phase, et elle se vérifie en une assertion au lieu d'être une
+  intention
+- **le secret n'apparaît nulle part après son affichage.** La seule fois où il
+  sort en clair, c'est la page de création. Le test poste un relevé, relit
+  `app.db`, `/api/export.csv`, `/comptages` et `/classement`, et cherche le
+  secret comme il cherche `compte_id`
+- **HTTPS** : le cookie `secure` est posé quand `COMPTAGEFER_HTTPS` est là, et
+  absent sinon. Un `secure` sur une installation en `http://10.x` casse la
+  session, et ce test existe parce que ce serait un bug de configuration, pas de
+  code
+- **le cookie tient** : la session survit à un redémarrage du conteneur, donc à
+  un `docker compose restart`, et expire bien quand elle doit
+- **compte** : un relevé posté sans cookie est enregistré, compté dans les
+  données et absent du classement. Un relevé posté avec une session ouverte est
+  rattaché. C'est le test qui tient la promesse « 100 % facultatif »
+- **`compte_id` ne fuit pas** : la colonne est absente du CSV, absente de
+  `/api/export.csv`, absente de toute URL, et absente du corps des pages. Un
+  test le vérifie en cherchant la valeur dans les trois sorties, pas en lisant
+  la liste des colonnes — une colonne exportée sous un autre nom fuite aussi
+- **le secret se connecte** : le bon secret ouvre une session, le mauvais non,
+  et un secret d'un autre compte n'ouvre rien. La comparaison est en temps
+  constant, donc le test vérifie le résultat et non le temps
+- **score** : un relevé à `um` vaut plus qu'un relevé à `voiture`, un serpent
+  vaut plus qu'un comptage unique, un corridor inédit vaut plus qu'un corridor
+  vu la veille, un corridor redondant du même jour ne vaut rien de plus, et la
+  fiabilité déclarée ne change pas le score. Sur une base réelle, la
+  distribution est jointe au message de la PR
+- **classement** : il s'affiche dans Chromium, sur téléphone comme sur écran
+  large, il dit son dénominateur, il annonce une liste vide, et il se lit sans
+  JavaScript
+- **le secret se copie en un clic** : le bouton est présent, le secret est
+  sélectionnable, et le repli « sélectionner » existe. Le clic lui-même n'est pas
+  testé — le presse-papiers n'est pas lisible depuis Playwright sans permission —
+  et c'est dit dans le plan plutôt que découvrir plus tard que la couverture
+  s'arrête là
+- **la création est plafonnée** : au plafond, `/compte` dit que la création est
+  fermée pour l'instant, et **la connexion par secret continue de marcher**. Une
+  personne qui revient avec son secret n'est pas bloquée par un problème de
+  création
+
+Quatre propriétés de plus sont vérifiées sur cette phase. Elles ne sont pas
+dans la liste ci-dessus parce qu'elles ont été trouvées par la revue de la PR et
+non par la lecture du plan — c'est-à-dire qu'aucune des deux n'existait avant
+qu'on les cherche :
+
+- **la clé primaire de `saisie` est `(client_id, kind)` sur une base neuve.**
+  Elle n'y était pas. `_clef_par_genre` testait `colonnes["client_id"][5] == 0`
+  pour conclure « la clé est déjà composite », alors que `PRAGMA table_info` met
+  0 dans cette colonne pour « hors clé ». Le `CREATE TABLE` de `create_app` ne
+  pose aucune clé, donc la fonction croyait une base neuve déjà migrée et
+  rendait la main. Le test lit le schéma d'une base créée par l'application et
+  échoue sur la première qui n'a pas les deux colonnes en clé
+- **un jeton ne produit qu'une ligne par genre.** `missing` puis `count` puis
+  `count` donnait deux lignes de `count`. La requête d'idempotence portait sur
+  `client_id` seul, donc `fetchone` rendait la ligne du `missing` et le test
+  `existing[1] == kind` était faux ; sans clé primaire pour l'arrêter, la
+  seconde ligne s'écrivait — deux comptages pour un navigateur, tous deux au
+  score. C'est la règle 2 appliquée au code : la réponse disait `stored: false`
+  pendant que la donnée partait. Les deux ordres sont testés, parce qu'un seul
+  passait déjà
+- **`POST /compte/creer` sans pseudo rend 422.** Le `required` du champ ne
+  protège que le navigateur, et la route est appelable sans lui. Un compte sans
+  pseudo apparaissait au classement sous « un compte sans pseudo » : un rang sans
+  auteur. La contrainte est dans la route, et un test vérifie qu'un pseudo valide
+  — jusqu'à ses 40 caractères — passe toujours
+- **`/classement` dit une base occupée au lieu de rendre 500.** C'était la page
+  la plus lue du site, et la seule qui ne traitait pas `DatabaseError`. Elle
+  rendait un 500 nu, sans distinguer « le site est cassé » d'« il n'y a
+  personne ». Elle dit maintenant qu'elle n'a pas pu lire, ce qui est distinct de
+  la liste vide — le même refus de parler d'une absence de données que
+  `tools/calibrer_score.py`
+
 ### Ensuite, dans cet ordre
 
 1. Géométries de lignes, si les segments droits ne suffisent plus. Jointure OSM, ou GTFS régionaux qui ont un `shapes.txt`.
 2. Autres GTFS : cars d'AOM, TER non SNCF. Leur temps réel viendra avec, sur le même poller, seulement s'il existe un flux.
 3. Méthode d'estimation annuelle, écrite avant d'être codée. Jours types, biais de qui compte, seuil minimal de comptages, voyageurs.kilomètres. Le chiffre affiche toujours son dénominateur. Une suppression conservée ne devient pas, à elle seule, un report chiffré.
 4. Comparaison de lignes et agrégats géographiques.
-5. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton.
+5. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton. **Fait, c'est la phase 9** — déclenché par l'historique : rattacher ses relevés à soi est ce qui manquait, et le signalement d'un relevé est la modération qui ne tenait pas dans `ADMIN_TOKEN`.
 
 ## 8. Décisions
 
 1. Fermée. La file d'attente hors ligne passe avant la carte. La carte sert à lire, pas à saisir.
-2. Fermée. Pseudo facultatif. Pas de compte.
+2. Rouverte, et refermée par la phase 9. Pseudo facultatif, et pas de compte. Un compte existe maintenant : il est facultatif comme le pseudo, il donne un historique et un classement, et il n'ouvre aucun droit sur les données des autres. Ce qui reste fermé, c'est le mot de passe à retenir : la connexion se fait par un secret long affiché une fois.
 3. Fermée. Pas de marque institutionnelle, pour le moment.
 4. Fermée. La v1 s'arrête au GTFS et au GTFS-RT nationaux SNCF. Cars TER SNCF inclus, cars d'AOM et opérateurs non SNCF exclus.
 5. Fermée. Licence Ouverte 2.0 pour les comptages partagés. GPL-3.0 pour le code.
 6. Fermée. L'hébergeur est celui qui lance le conteneur. Il définit `ADMIN_TOKEN` à côté de Compose, et administre avec ce jeton.
 7. Fermée. On choisit son train dans une liste de 4 heures centrée sur maintenant, annotée par le temps réel. À la sélection, on fige ce train, le précédent et le suivant.
+8. Ouverte, phase 9. Le compte est facultatif à 100 %, et **aucune adresse email n'est stockée**. La connexion se fait par un secret long tiré au hasard et affiché une seule fois. Le plan prévoyait un lien envoyé par email ; c'est retiré, parce qu'une adresse email est un identifiant direct, réutilisable ailleurs, et qu'un lien de connexion est de surcroît un mot de passe qui voyage en clair dans une boîte mail hors de contrôle. Une passkey WebAuthn est notée pour plus tard : elle supprime même le secret à conserver, mais elle exige du JavaScript que la suite de tests n'exerce pas encore.
+9. Ouverte, phase 9. Le classement récompense l'utilité, pas le volume. Un point par relevé récompenserait quelqu'un qui revient compter le même train vide dix fois. Les coefficients se calibrent sur la base réelle, pas dans une intuition. À l'intérieur de cette utilité, deux formes rapportent plus que les autres parce qu'elles sont plus interprétables : le serpent de charge, qui dit où la charge monte et descend, et le relevé à périmètre `um`, qui donne la charge de la rame entière.
+10. Ouverte, phase 9. `compte_id` n'est exporté nulle part — ni CSV, ni URL, ni journal, ni page. Le jeu est ouvert et republicisé chaque nuit ; y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent.
 
 ## 9. Ce qui n'est pas une promesse
 

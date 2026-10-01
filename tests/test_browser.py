@@ -10,159 +10,27 @@ handlers déclarés après : ``test_page_loads_without_a_script_error`` est le
 filet qui l'attrape.
 """
 
-import csv
 import json
-import threading
 import urllib.request
-from datetime import datetime, timedelta
-from pathlib import Path
-from zoneinfo import ZoneInfo
 
-import pytest
-import uvicorn
-from playwright.sync_api import sync_playwright
+# Les fixtures `site`, `page` et le navigateur sont dans `tests/conftest.py`.
+#
+# Elles étaient ici, et `test_browser_compte.py` les importait — ce qui ne marche
+# pas pour une fixture `scope="session"` : pytest identifie une fixture par le
+# module qui la définit, donc l'import créait une **seconde** instance du
+# navigateur. Le second `sync_playwright()` s'ouvrait pendant que la boucle asyncio
+# du premier tournait encore, et Playwright refuse (« Sync API inside the asyncio
+# loop »). Résultat : les 69 tests de ce fichier passaient, et les 12 de l'autre
+# échouaient tous au setup — verts seuls, morts en suite complète. Un `conftest.py`
+# est résolu une fois pour toute la session, quel que soit le fichier.
+#
+# `_write_stop_csv`, `_write_gtfs` et la constante `STOPS` suivent le même chemin :
+# le scénario GTFS est construit une fois, dans la fixture.
 
-from comptagefer.app import create_app
-from comptagefer.offer import import_stop_names
-from comptagefer.timetable import import_timetable
+from tests.conftest import _console_errors  # noqa: F401
 
-PARIS = ZoneInfo("Europe/Paris")
-
-STOPS = [
-    # stop_id, nom, parent (StopArea), lat, lon
-    ("StopArea:Lyon", "Lyon Part-Dieu", "", 45.7608, 4.8557),
-    ("StopPoint:LyonA", "Lyon Part-Dieu voie A", "StopArea:Lyon", 45.7608, 4.8557),
-    ("StopPoint:LyonB", "Lyon Part-Dieu voie B", "StopArea:Lyon", 45.7608, 4.8557),
-    ("StopArea:Vienne", "Vienne", "", 45.4481, 4.8789),
-    ("StopPoint:VienneA", "Vienne voie 1", "StopArea:Vienne", 45.4481, 4.8789),
-    ("StopArea:Valence", "Valence", "", 44.9294, 4.9925),
-    ("StopPoint:ValenceA", "Valence voie A", "StopArea:Valence", 44.9294, 4.9925),
-]
-
-
-def _write_stop_csv(path: Path) -> None:
-    with path.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["stop_id", "stop_name", "stop_lat", "stop_lon", "location_type", "parent_station"])
-        for stop_id, name, parent, lat, lon in STOPS:
-            writer.writerow([stop_id, name, lat, lon, "0" if parent else "1", parent])
-
-
-def _write_gtfs(folder: Path, now: datetime) -> None:
-    """Un service TER, un TGV et un IC, autour de maintenant, pour que la
-    fenêtre de deux heures les fasse tous apparaître.
-
-    GTFS autorise 25:00 pour un passage après minuit, mais pas 00:25 : un
-    départ à 23h50 suivi d'un arrêt à +20 min déborderait. On décale donc le
-    scenario pour qu'il tienne dans la journée, et on garde les trois trains
-    à moins de deux heures de maintenant.
-    """
-    trips = folder / "trips.txt"
-    times = folder / "stop_times.txt"
-    dates = folder / "calendar_dates.txt"
-
-    local = now.astimezone(PARIS)
-    day = local.strftime("%Y%m%d")
-    # Départ du TER : une heure pile, dans le passé récent, pour que le train
-    # soit déjà parti sans que l'arrêt final ne déborde sur le lendemain.
-    hour = max(0, min(23, local.hour - 1))
-    anchor = local.replace(hour=hour, minute=0, second=0, microsecond=0)
-
-    routes = [
-        # trip_id, service, départ, (arrêt, minutes depuis le départ)
-        # Le format réel est <prefixe>_<sens>:<marqueur>:<numéro> : kind_of
-        # prend le troisième champ, donc il faut "1_F:TER:..." et non
-        # "TER:1_F:...".
-        ("1_F:TER:1234", "TER1", anchor, [
-            ("StopPoint:LyonA", 0), ("StopPoint:VienneA", 52), ("StopPoint:ValenceA", 104)]),
-        ("1_F:TGV:5678", "TGV1", anchor - timedelta(minutes=25), [
-            ("StopPoint:LyonA", 0), ("StopPoint:ValenceA", 110)]),
-        ("1_F:IC:9012", "IC1", anchor + timedelta(minutes=70), [
-            ("StopPoint:LyonA", 0), ("StopPoint:VienneA", 40), ("StopPoint:ValenceA", 90)]),
-    ]
-
-    with trips.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["trip_id", "service_id"])
-        for trip_id, service, _departure, _stops in routes:
-            writer.writerow([trip_id, service])
-
-    with times.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["trip_id", "stop_id", "departure_time", "arrival_time"])
-        for trip_id, _service, departure, stops in routes:
-            for stop_id, offset in stops:
-                moment = departure + timedelta(minutes=offset)
-                stamp = moment.strftime("%H:%M:%S")
-                writer.writerow([trip_id, stop_id, stamp, stamp])
-
-    with dates.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["service_id", "date", "exception_type"])
-        for _trip_id, service, _departure, _stops in routes:
-            writer.writerow([service, day, "1"])
-
-
-@pytest.fixture
-def site(tmp_path: Path):
-    """L'application réelle, servie sur un vrai port, avec une base complète."""
-    data = tmp_path / "data"
-    data.mkdir()
-    _write_stop_csv(tmp_path / "stops.txt")
-    import_stop_names(data / "stops.db", tmp_path / "stops.txt")
-
-    now = datetime.now(PARIS)
-    _write_gtfs(tmp_path, now)
-    import_timetable(
-        data / "timetable.db",
-        tmp_path / "trips.txt",
-        tmp_path / "stop_times.txt",
-        tmp_path / "calendar_dates.txt",
-    )
-
-    app = create_app(data, admin_token="jeton-admin-test")
-    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error")
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    for _ in range(200):
-        if server.started:
-            break
-        threading.Event().wait(0.05)
-    assert server.started, "le serveur de test n'a pas démarré"
-
-    port = server.servers[0].sockets[0].getsockname()[1]
-    yield f"http://127.0.0.1:{port}"
-
-    server.should_exit = True
-    thread.join(timeout=10)
-
-
-@pytest.fixture(scope="session")
-def browser():
-    with sync_playwright() as playwright:
-        instance = playwright.chromium.launch()
-        yield instance
-        instance.close()
-
-
-@pytest.fixture
-def page(browser):
-    """Un contexte neuf par test : localStorage et cookies ne fuient pas."""
-    context = browser.new_context(viewport={"width": 390, "height": 844})  # iPhone, la cible
-    page = context.new_page()
-    # Un handler non câblé fait expirer le wait_for_selector en 30 s : on
-    # échoue vite et avec un message lisible.
-    page.set_default_timeout(5000)
-    errors: list[str] = []
-    page.on("pageerror", lambda exc: errors.append(str(exc)))
-    page.errors = errors  # type: ignore[attr-defined]
-    yield page
-    context.close()
-
-
-def _console_errors(page) -> list[str]:
-    return [e for e in page.errors if e]  # type: ignore[attr-defined]
+# L'identifiant du TER du scénario, écrit par la fixture `site`.
+TER = "1_F:TER:1234"
 
 
 def _sessions(site: str) -> list[dict]:
@@ -179,7 +47,7 @@ def _poster_releve(site: str, jeton: str, nom: str, effectif: int) -> None:
     page en test de saisie. On écrit donc directement, et on ne teste ici
     que ce qui se voit.
     """
-    _ecrire_releve(site, jeton, nom, "Vienne", effectif, "1_F:TER:1234")
+    _ecrire_releve(site, jeton, nom, "Vienne", effectif, "TER")
 
 
 def _ecrire_releve(
@@ -188,7 +56,7 @@ def _ecrire_releve(
     origine: str,
     destination: str,
     effectif: int | None,
-    trip_id: str = "1_F:TER:1234",
+    trip_id: str = "TER",
 ) -> None:
     """Un relevé dont on choisit la paire et la ligne.
 
@@ -1266,7 +1134,7 @@ def _serpent(site: str, jeton: str, a_bord: int, boarded: int, alighted: int) ->
         "destination_stop_id": "StopArea:Valence",
         "origin_name": "Lyon",
         "destination_name": "Valence",
-        "trip_id": "1_F:TER:1234",
+        "trip_id": "TER",
         "passengers": a_bord,
         "reliability": 70,
         "legs": [
@@ -1365,7 +1233,7 @@ def test_a_stop_name_cannot_inject_markup_into_the_curve(page, site):
     """
     photo = {
         "precedent": None,
-        "courant": {"trip_id": "1_F:TER:1234", "status": "SCHEDULED", "delay_seconds": 0},
+        "courant": {"trip_id": "TER", "status": "SCHEDULED", "delay_seconds": 0},
         "suivant": None,
     }
     # Trois arrêts, tous connus de la fixture : un serpent dont une gare est
@@ -1377,7 +1245,7 @@ def test_a_stop_name_cannot_inject_markup_into_the_curve(page, site):
         "destination_stop_id": "StopArea:Valence",
         "origin_name": "Lyon",
         "destination_name": "Valence",
-        "trip_id": "1_F:TER:1234",
+        "trip_id": "TER",
         "passengers": 40,
         "reliability": 70,
         "snapshot": photo,

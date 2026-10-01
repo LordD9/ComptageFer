@@ -60,10 +60,36 @@ jobs:
       - name: Verifier que les pages repondent
         run: |
           set -e
-          for chemin in / /comptages /carte /rechercher /methode /offline.js /api/publish; do
+          # `/compte` et `/classement` sont dans cette liste depuis la phase 9.
+          # Ils repondent sans session — `/compte` propose la creation et la
+          # connexion, `/classement` dit qu'il n'y a personne — donc `curl` peut
+          # les vérifier sur un conteneur vide. C'est exactement ce qu'un 200 ne
+          # prouve pas en general : ces deux pages ont un etat « rien » qui doit
+          # s'afficher, et c'est ce que le contenu verifie ci-dessous.
+          for chemin in / /comptages /carte /rechercher /methode /offline.js /api/publish /compte /classement; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000$chemin")
             echo "$chemin -> $code"
             test "$code" = "200" || { echo "echec sur $chemin"; exit 1; }
+          done
+
+      - name: Verifier que le compte et le classement annoncent leur etat vide
+        run: |
+          # Une page qui repond 200 avec un corps vide est une page cassee. Les
+          # deux états « rien » de la phase 9 doivent se dire :
+          # - `/compte` sans session propose les deux gestes (revenir, creer),
+          #   parce que la personne ne sait pas encore si elle a un compte ;
+          # - `/classement` sans releve dit qu'il n'y a personne, parce qu'une
+          #   liste vide qui ne s'annonce pas se prend pour une page en panne.
+          #
+          # Les libelles sont avec leurs accents : le HTML les rend en UTF-8 et un
+          # grep sur « Creer » ne trouverait rien, donc le job echouerait sur une
+          # page correcte. C'est ecrit ici parce que l'erreur serait muette et
+          # doublement trompeuse.
+          for attente in "/compte:Ouvrir mon compte" "/compte:Créer mon compte" "/classement:Classement"; do
+            chemin="${attente%%:*}"; attendu="${attente#*:}"
+            corps=$(curl -sS "http://127.0.0.1:8000$chemin")
+            echo "$corps" | grep -q "$attendu" || {
+              echo "echec : '$attendu' absent de $chemin"; exit 1; }
           done
 
       - name: Verifier le tri de la liste

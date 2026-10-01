@@ -8,6 +8,7 @@ Le rapport qui les motive est dans `docs/audit-2026-09.md`.
 """
 
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from fastapi.testclient import TestClient
 from google.transit import gtfs_realtime_pb2
 
 from comptagefer.app import create_app
+from comptagefer.compte import (
+    COOKIE_COMPTE,
+    creer_compte,
+    ouvrir_session,
+)
 from comptagefer.offer import _distance_m, nearest_stops, open_stops
 from comptagefer.rt import (
     alert_count,
@@ -372,3 +378,282 @@ def test_an_admin_session_expires(tmp_path, monkeypatch):
 
     reopened = TestClient(create_app(tmp_path, admin_token="secret"))
     assert reopened.get("/admin").text.count("<form") >= 1
+
+
+# --- 12. La cle primaire de `saisie` n'existait sur aucune base neuve ---------
+#
+# Constats de la revue de la PR #42, reproduits et corriges. Chacun de ces
+# tests echouait avant la correction.
+
+
+def test_une_base_neuve_a_bien_la_cle_primaire_composee(tmp_path):
+    """Une base creee par l'application porte la cle `(client_id, kind)`.
+
+    Le defaut : `_clef_par_genre` testait `colonnes["client_id"][5] == 0` pour
+    conclure « la cle est deja composite ». Or `PRAGMA table_info` met 0 dans sa
+    cinquieme colonne pour « **hors cle** », pas pour « cle simple ». Le
+    `CREATE TABLE` de `create_app` ne pose aucune cle, donc le test lisait 0,
+    croyait la table migree, et rendait la main.
+
+    Aucune base neuve n'a donc jamais eu de cle primaire. C'est invisible tant
+    que la seule garantie d'idempotence est un `SELECT` applicatif — et ce
+    `SELECT` etait justement defaillant (constat 13). Les deux fautes se
+    masquaient : le code applicatif cachait l'absence de contrainte, et
+    l'absence de contrainte rendait le defaut du `SELECT` inoffensif sur le
+    chemin le plus courant.
+    """
+    create_app(tmp_path)
+    database = tmp_path / "app.db"
+
+    with sqlite3.connect(database) as connection:
+        table = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'saisie'"
+        ).fetchone()[0]
+        rang = {row[1]: row[5] for row in connection.execute("PRAGMA table_info(saisie)")}
+
+    assert "PRIMARY KEY (client_id, kind)" in table, (
+        f"une base neuve n'a pas la cle composite : {table}"
+    )
+    assert rang["client_id"] == 1 and rang["kind"] == 2, (
+        f"la cle primaire ne porte pas les deux colonnes : {rang}"
+    )
+
+
+def test_une_base_avec_une_ancienne_clef_est_migree_sans_perdre_de_ligne(tmp_path):
+    """La migration fait ce qu'elle promet, et elle est idempotente.
+
+    Le cas nominal — une base qui avait bien la cle simple — fonctionnait deja.
+    Ce test verifie que le correctif ne l'a pas casse, et qu'une **seconde**
+    ouverture ne recree pas la table : sinon chaque redemarrage du conteneur
+    recopierait `saisie` au lieu de la migrer une fois.
+    """
+    from comptagefer.app import SCHEMA_SAISIE
+
+    database = tmp_path / "app.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE saisie ("
+            + ", ".join(f"{nom} {type_}" for nom, type_ in SCHEMA_SAISIE)
+            + ", PRIMARY KEY (client_id))"
+        )
+        connection.execute(
+            "INSERT INTO saisie (client_id, kind, origin_stop_id, destination_stop_id, "
+            "created_at) VALUES ('avant', 'count', 'A', 'B', '2026-01-01')"
+        )
+
+    create_app(tmp_path)
+    with sqlite3.connect(database) as connection:
+        apres = list(connection.execute("SELECT client_id, kind FROM saisie"))
+        rang = {row[1]: row[5] for row in connection.execute("PRAGMA table_info(saisie)")}
+
+    assert apres == [("avant", "count")], f"la migration a perdu la ligne : {apres}"
+    assert rang["client_id"] == 1 and rang["kind"] == 2
+
+    create_app(tmp_path)
+    with sqlite3.connect(database) as connection:
+        assert list(connection.execute("SELECT client_id, kind FROM saisie")) == apres
+
+
+# --- 13. Un doublon passait quand le meme jeton avait deux genres ------------
+
+
+def _lignes_de(client_id: str, database: Path) -> dict:
+    """Le nombre de lignes par genre pour un jeton. L'echantillon des trois tests."""
+    with sqlite3.connect(database) as connection:
+        return {
+            str(kind): total
+            for kind, total in connection.execute(
+                "SELECT kind, COUNT(*) FROM saisie WHERE client_id = ? GROUP BY kind",
+                (client_id,),
+            )
+        }
+
+
+def _corps(client_id: str = "X") -> tuple[dict, dict]:
+    """Le releve minimal, et sa variante `missing` (sans effectif)."""
+    commun = {
+        "client_id": client_id,
+        "origin_stop_id": "A",
+        "destination_stop_id": "B",
+        "origin_name": "Lyon",
+        "destination_name": "Nimes",
+    }
+    return {**commun, "passengers": 10, "reliability": 80}, commun
+
+
+def test_un_doublon_ne_passe_pas_apres_un_train_manquant(tmp_path):
+    """`missing` puis `count` puis `count` : une seule ligne de `count`.
+
+    Le defaut : la requete d'idempotence portait sur `client_id` seul. Apres un
+    `missing`, `fetchone` rendait cette ligne-la, `existing[1] == kind` etait
+    faux pour le `count`, le doublon passait, et — la base n'ayant pas de cle
+    primaire, voir constat 12 — la seconde ligne s'ecrivait reellement. Deux
+    « count » pour un meme navigateur, tous deux comptes au score.
+    """
+    client = TestClient(create_app(tmp_path))
+    base, compte = _corps()
+
+    assert client.post("/api/missing", json=compte).json()["stored"] is True
+    assert client.post("/api/sessions", json=base).json()["stored"] is True
+    assert client.post("/api/sessions", json=base).json()["stored"] is False
+
+    assert _lignes_de("X", tmp_path / "app.db") == {"missing": 1, "count": 1}, (
+        f"le jeton a produit {_lignes_de('X', tmp_path / 'app.db')}"
+    )
+
+
+def test_un_doublon_annonce_comme_ecrit_une_fois_de_trop(tmp_path):
+    """La reponse et la base doivent dire la meme chose.
+
+    Le code casse renvoyait `stored: false` sur le doublon **et** ecrivait la
+    ligne : la reponse disait « rien ecrit » pendant que la donnee partait. C'est
+    la faute que la regle 2 de `docs/regles.md` interdit, et elle est invisible
+    au test qui ne regarde que le code de retour.
+    """
+    client = TestClient(create_app(tmp_path))
+    base, compte = _corps()
+
+    client.post("/api/missing", json=compte)
+    client.post("/api/sessions", json=base)
+    reponse = client.post("/api/sessions", json=base).json()
+
+    assert reponse["stored"] is False, "le doublon a ete annonce comme ecrit"
+    assert _lignes_de("X", tmp_path / "app.db") == {"missing": 1, "count": 1}
+
+
+def test_un_doublon_ne_passe_pas_dans_l_ordre_inverse(tmp_path):
+    """`count` puis `missing` puis `count` : toujours une seule ligne de `count`.
+
+    Separe du precedent parce que cet ordre-ci echouait deja : `fetchone`
+    rendait la ligne du `count`, le test passait donc sur le code casse. Le
+    fusionner donnerait l'illusion d'une couverture que le premier ordre ne
+    fournit pas.
+    """
+    client = TestClient(create_app(tmp_path))
+    base, compte = _corps()
+
+    assert client.post("/api/sessions", json=base).json()["stored"] is True
+    assert client.post("/api/missing", json=compte).json()["stored"] is True
+    assert client.post("/api/sessions", json=base).json()["stored"] is False
+
+    assert _lignes_de("X", tmp_path / "app.db") == {"missing": 1, "count": 1}
+
+
+# --- 14. Un compte pouvait etre cree sans pseudo -----------------------------
+
+
+def test_creer_un_compte_sans_pseudo_est_refuse(tmp_path):
+    """`POST /compte/creer` sans pseudo rend 422, et n'ecrit rien.
+
+    Le defaut : la route acceptait un corps vide. Le `required` du champ ne
+    protege que le navigateur — or la route est appelable sans lui. Le compte
+    etait cree sans pseudo, et le classement l'affichait sous « un compte sans
+    pseudo » : un rang sans auteur, dans une page dont le denominateur est la
+    seule garantie de lecture.
+
+    Les quatre formes sont testees parce que `.strip()` est ce qui les
+    distingue, et qu'un `.strip()` oublie est le defaut le plus probable du
+    correctif.
+    """
+    client = TestClient(create_app(tmp_path))
+
+    for corps in ({}, {"pseudo": ""}, {"pseudo": "   "}, {"pseudo": "\t\n"}):
+        reponse = client.post("/compte/creer", data=corps, follow_redirects=False)
+        assert reponse.status_code == 422, f"{corps} a ete accepte ({reponse.status_code})"
+
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        total = connection.execute("SELECT COUNT(*) FROM compte").fetchone()[0]
+    assert total == 0, f"{total} compte(s) sans pseudo ont ete crees"
+
+
+def test_un_compte_avec_un_pseudo_valide_est_toujours_cree(tmp_path):
+    """Le refus ne doit pas avoir trop corrige.
+
+    Le test qui accompagne une contrainte doit prouver ce qu'elle ne doit pas
+    casser. Un pseudo de 40 caracteres est la borne du champ : il doit passer,
+    et c'est aussi le seul cas ou la troncature silencieuse importerait.
+    """
+    client = TestClient(create_app(tmp_path))
+    long_pseudo = "x" * 40
+
+    assert client.post(
+        "/compte/creer", data={"pseudo": "romain"}, follow_redirects=False
+    ).status_code == 303
+    assert client.post(
+        "/compte/creer", data={"pseudo": long_pseudo}, follow_redirects=False
+    ).status_code == 303
+
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        pseudos = [row[0] for row in connection.execute("SELECT pseudo FROM compte")]
+    assert pseudos == ["romain", long_pseudo]
+
+
+# --- 15. `/classement` rendait 500 sur une base verrouillee -------------------
+
+
+@contextmanager
+def _base_occupee(database: Path):
+    """Une connexion qui tient un verrou exclusif, pour simuler un ecrivant.
+
+    Un contexte et non un couple d'appels : le test doit pouvoir lire
+    **pendant** que la base est bloquee, puis la liberer, quoi qu'il arrive
+    entre les deux.
+    """
+    bloqueur = sqlite3.connect(database, isolation_level=None, timeout=0.3)
+    bloqueur.execute("BEGIN EXCLUSIVE")
+    bloqueur.execute(
+        "INSERT INTO compte (id, pseudo, secret, cree_le) VALUES ('x', 'y', 'z', 0)"
+    )
+    try:
+        yield
+    finally:
+        bloqueur.execute("ROLLBACK")
+        bloqueur.close()
+
+
+def test_le_classement_dit_une_base_occupee_au_lieu_de_500(tmp_path):
+    """Une base verrouillee rend la page, et la page dit qu'elle n'a pas pu lire.
+
+    Le defaut : `score.classement` ne traitait pas `DatabaseError`, donc
+    `/classement` rendait un 500 nu — la page la plus lue du site, et celle que
+    le workflow Docker verifie, disparue sans explication. Le visiteur ne pouvait
+    pas distinguer « le site est casse » de « il n'y a personne ».
+
+    Le test exige deux choses : un 200, et un texte qui distingue l'echec de la
+    liste vide. Le second point est le vrai — une page qui affiche « personne
+    n'a encore de compte » quand elle n'a pas pu lire ment sur une absence de
+    donnees, et c'est le meme mensonge que `tools/calibrer_score.py` refuse.
+    """
+    client = TestClient(create_app(tmp_path), raise_server_exceptions=False)
+    # Un releve rattache : sans lui, la page vide et l'echec se ressembleraient.
+    identifiant, _secret = creer_compte(tmp_path / "app.db", "romain")
+    jeton, _expire = ouvrir_session(tmp_path / "app.db", identifiant)
+    client.cookies.set(COOKIE_COMPTE, jeton)
+    base, _compte = _corps("jeton")
+    assert client.post("/api/sessions", json=base).status_code == 200
+
+    with _base_occupee(tmp_path / "app.db"):
+        reponse = client.get("/classement")
+
+    assert reponse.status_code == 200, f"/classement a rendu {reponse.status_code}"
+    assert "pas pu" in reponse.text, "la page ne dit pas qu'elle n'a pas pu lire"
+    assert "Personne n" not in reponse.text, (
+        "la page affirme une absence de comptes alors qu'elle n'a pas pu lire"
+    )
+
+
+def test_le_classement_vide_reste_son_etat_a_lui(tmp_path):
+    """Sans verrou, la page dit « personne », et elle le dit toujours.
+
+    Le test-jumeau du precedent. Il existe parce que le correctif touche le rendu
+    de la page vide : une correction de « ne plus de 500 » qui transformerait la
+    liste vide en message d'erreur serait invisible sur un site neuf, ou personne
+    n'a encore de compte.
+    """
+    client = TestClient(create_app(tmp_path))
+
+    reponse = client.get("/classement")
+
+    assert reponse.status_code == 200
+    assert "Personne n" in reponse.text
+    assert "pas pu" not in reponse.text
