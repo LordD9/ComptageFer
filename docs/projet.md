@@ -1160,23 +1160,52 @@ calcul, ni l'export, ni la page `/methode` de l'application.
 Les décisions arrêtées sont l'année civile, la publication stricte et la
 recherche de comptages variés dans le temps. Un comptage unique fournit le même
 effectif sur chaque segment qu'il englobe, jamais au-delà. Un total annuel
-exige une offre annuelle documentée et une couverture suffisante de tous les
+complet exige une offre annuelle documentée et des comptages dans tous les
 groupes de circulations actifs ; les groupes sans données ne sont pas remplis
-par la moyenne des autres. Une synthèse partielle reste explicitement partielle.
+par la moyenne des autres. Une estimation partielle peut commencer avec cinq
+circulations distinctes admissibles au total, réparties entre pointe du matin,
+pointe du soir et heures creuses de semaine, avec au moins une dans chaque
+catégorie. Elle annonce uniquement le volume annuel des catégories couvertes,
+avec un indicateur `partial` et un `commentaire` expliquant les lacunes. Un
+segment sans valeur n'est pas affiché ; une absence n'est jamais un zéro.
+
+Le comptage porte par défaut sur le train entier, sauf indication contraire.
+US, UM2 et UM3 désignent des rames complètes, pas leurs voitures ou caisses.
+Plusieurs personnes comptant la même circulation le même jour sur le même
+segment fournissent une moyenne pondérée par leur fiabilité, pas plusieurs
+circulations : un score nul n'a aucun poids, et des scores tous nuls ne donnent
+pas de valeur. Seuls les comptages entrent dans l'estimation.
+
+Hors vacances : semaine en pointe du matin [07h, 10h[, en pointe du soir
+[16h, 19h[ ou en heures creuses ; samedi ; dimanche et jours fériés. Les
+vacances scolaires remplacent ces catégories, tous jours et horaires confondus,
+avec un groupe distinct pour les vacances d'été. La classification scolaire
+devra être obtenue automatiquement à partir de la date et du calendrier
+géographique applicable, puis figée avec le comptage.
 
 Le ratio de trois entre train moyen et train le plus chargé, rapporté par
 Balraj, motive la séparation des horaires. Ce n'est ni un ratio pointe/creux
 universel, ni un coefficient qui permet de compléter les périodes manquantes.
-Les facteurs proposés pour une seule voiture comptée en UM2 (×1,75) ou UM3
-(×2,7) restent des hypothèses à calibrer. Leur application exige de lever
-l'ambiguïté entre voiture et élément complet d'une UM ; le brut reste inchangé.
+Les facteurs pour une seule rame complète comptée en UM2 (×1,75) ou UM3
+(×2,7) sont des valeurs provisoires non sourcées, retenues pour expérimenter
+plutôt qu'un simple ×2 ou ×3. Ils pourront être affinés ; ils ne constituent
+pas une calibration validée. Le brut reste inchangé et un train entier déjà
+compté n'est pas remultiplié.
 
-Avant de coder : valider les seuils de diversité et de précision, la gestion
-des observations du même train, les dates réelles de comptage et l'historique
-de l'offre. Préparer aussi un export du contexte figé distinguant le précédent,
-le précédent du même type, le courant, le suivant et le suivant du même type.
-Le CSV actuel ne fournit que les états du précédent, du courant et du suivant ;
-cette PR ne le modifie pas.
+Restent à préciser avant l'implémentation : l'historique compressé de l'offre
+théorique SNCF, la source et le rattachement géographique du calendrier scolaire,
+le poids représentatif d'une circulation après fusion de plusieurs relevés,
+et l'heure de classement d'un segment. Le trajet GTFS figé contient les gares
+desservies, pas nécessairement toutes les gares traversées sans arrêt : celles-ci
+doivent être retrouvées pour respecter les segments élémentaires, sans gare
+intermédiaire. La précision statistique devra être étudiée, sans présenter les
+seuils pragmatiques comme une garantie de représentativité.
+
+Le futur CSV conserve uniquement les statuts du précédent, du précédent du
+même type, du courant, du suivant et du suivant du même type, à partir du
+contexte figé. Il n'est pas demandé d'ajouter leurs identités ou toutes leurs
+métadonnées. Le CSV actuel ne fournit que les états du précédent, du courant
+et du suivant ; cette PR ne le modifie pas.
 
 ### Ensuite, dans cet ordre
 
@@ -1198,7 +1227,7 @@ cette PR ne le modifie pas.
 8. Ouverte, phase 9. Le compte est facultatif à 100 %, et **aucune adresse email n'est stockée**. La connexion se fait par un secret long aléatoire, rendu dans le corps du POST de création, jamais en URL. L'option passkeys WebAuthn est étudiée dans [securite-comptes.md](securite-comptes.md) : le JavaScript de copie a déjà ses tests Chromium ; restent la cérémonie, la migration et la récupération. Aucun remplacement du secret n'est livré par cet audit.
 9. Ouverte, phase 9. Le classement récompense l'utilité, pas le volume. Un point par relevé récompenserait quelqu'un qui revient compter le même train vide dix fois. Les coefficients se calibrent sur la base réelle, pas dans une intuition. À l'intérieur de cette utilité, deux formes rapportent plus que les autres parce qu'elles sont plus interprétables : le serpent de charge, qui dit où la charge monte et descend, et le relevé à périmètre `um`, qui donne la charge de la rame entière.
 10. Ouverte, phase 9. `compte_id` n'est exporté nulle part — ni CSV, ni URL, ni journal, ni page. Le jeu est ouvert et republicisé chaque nuit ; y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent.
-11. Fermée, phase 10. L'estimation porte sur l'année civile et les passages de voyageurs par segment et par sens. La publication est stricte : pas de total annuel complet avec un groupe de circulations actif insuffisamment couvert. Un comptage unique fournit la même valeur sur tous les segments qu'il englobe. La calibration des seuils et des facteurs UM, et la définition exacte du périmètre « voiture », restent ouvertes dans la [méthode](frequentation-annuelle.md).
+11. Fermée, phase 10. L'estimation porte sur l'année civile et les passages de voyageurs par segment et par sens. Un comptage concerne le train entier par défaut ; un comptage unique fournit la même valeur sur tous les segments qu'il englobe. Les comptages d'une même circulation sont fusionnés par moyenne pondérée de fiabilité. Une estimation partielle des seules catégories couvertes démarre avec cinq circulations admissibles réparties entre les trois catégories de semaine, au moins une dans chacune ; elle porte `partial` et un `commentaire`. Les catégories de vacances remplacent les catégories ordinaires. Les facteurs d'une rame dans une UM2 (×1,75) ou une UM3 (×2,7) sont expérimentaux et non sourcés. Les choix techniques encore ouverts figurent dans la [méthode](frequentation-annuelle.md).
 
 ## 9. Ce qui n'est pas une promesse
 
