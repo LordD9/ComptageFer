@@ -74,7 +74,7 @@ def test_export_and_page_show_the_count_and_the_licence(tmp_path):
     exported = client.get("/api/export.csv")
 
     assert page.status_code == 200
-    assert "pas une fréquentation officielle" in page.text
+    assert "pas une fréquentation officielle" not in page.text
     assert "railfan" in page.text
     assert "Lyon Part Dieu" in page.text
     assert "Licence Ouverte 2.0" in exported.text

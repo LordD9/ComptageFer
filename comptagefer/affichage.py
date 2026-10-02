@@ -26,25 +26,31 @@ mettre un tableau en place serait le coût que ce dépôt s'interdit.
 
 from html import escape
 
-# La mention est la même partout, et elle est obligatoire : aucun chiffre
-# de ce site n'est une fréquentation officielle. Elle vit ici pour qu'aucune
-# page ne puisse l'oublier en étant écrite dans un autre ordre.
-MENTION = "Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0."
-
 NAVIGATION = (
     ("/comptages", "Comptages"),
     ("/carte", "Carte"),
     ("/rechercher", "Rechercher"),
     ("/", "Compter"),
-    # `/compte` et `/classement` sont entrés dans la navigation avec la phase 9.
-    # Ils étaient déjà écrits et déjà testés, mais hors du chrome : on n'y
-    # arrivait qu'en tapant l'URL. Les mettre là n'est pas une option d'ergonomie,
-    # c'est une page inexistante pour qui ne connaît pas l'adresse — et une
-    # fonction de Python qui répond 200 reste invisible sans lien.
     ("/classement", "Classement"),
     ("/compte", "Compte"),
     ("/methode", "Méthode"),
 )
+
+NAV_STYLE = """
+  header.site { background: #fff; border-bottom: 1px solid var(--bord, #c9c1b4); }
+  header.site .barre { max-width: 32rem; margin: 0 auto; padding: 0.7rem 1rem 0.5rem; }
+  header.site .marque { font-weight: 700; font-size: 1.05rem; text-decoration: none; }
+  header.site nav { display: flex; flex-wrap: wrap; gap: 0.2rem 0.9rem; font-size: 0.92rem; margin-top: 0.3rem; }
+  header.site nav a[aria-current="page"] { font-weight: 700; text-decoration: none; border-bottom: 2px solid var(--encre, #1c1915); }
+  @media (min-width: 48rem) {
+    header.site .barre { max-width: 72rem; display: flex; align-items: baseline; gap: 1.5rem; padding: 0.7rem 1.5rem; }
+    header.site nav { margin-top: 0; }
+  }
+"""
+
+
+def navigation_html(actif: str) -> str:
+    return f'<header class="site"><div class="barre"><a class="marque" href="/">ComptagesFer</a><nav>{_nav(actif)}</nav></div></header>'
 
 # La feuille de base. Elle est volontairement courte : ce qui est propre à
 # une page (le cadre de la carte, le champ de recherche) vient dans
@@ -54,11 +60,7 @@ STYLE = """
   * { box-sizing: border-box; }
   body { margin: 0; font: 18px/1.4 system-ui, sans-serif; background: var(--pale); color: var(--encre); }
   a { color: var(--encre); }
-  header.site { background: #fff; border-bottom: 1px solid var(--bord); }
-  header.site .barre { max-width: 32rem; margin: 0 auto; padding: 0.7rem 1rem 0.5rem; }
-  header.site .marque { font-weight: 700; font-size: 1.05rem; text-decoration: none; }
-  header.site nav { display: flex; flex-wrap: wrap; gap: 0.2rem 0.9rem; font-size: 0.92rem; margin-top: 0.3rem; }
-  header.site nav a[aria-current="page"] { font-weight: 700; text-decoration: none; border-bottom: 2px solid var(--encre); }
+
   main { max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
   h1 { font-size: 1.6rem; margin: 0 0 0.3rem; }
   h2 { font-size: 1.15rem; margin: 1.8rem 0 0.5rem; }
@@ -81,9 +83,7 @@ STYLE = """
   .grille { display: grid; grid-template-columns: 1fr; gap: 0.6rem; align-items: start; }
 
   @media (min-width: 48rem) {
-    header.site .barre, footer.site .barre, main { max-width: 72rem; }
-    header.site .barre { display: flex; align-items: baseline; gap: 1.5rem; padding: 0.7rem 1.5rem; }
-    header.site nav { margin-top: 0; }
+    footer.site .barre, main { max-width: 72rem; }
     main { padding: 1.5rem 1.5rem 4rem; }
     footer.site .barre { padding: 1rem 1.5rem; }
 
@@ -121,7 +121,7 @@ def chrome(
     extra_css: str = "",
     extra_head: str = "",
     extra_script: str = "",
-    mention: str = MENTION,
+    mention: str = "",
 ) -> str:
     """Une page de lecture complète : en-tête, navigation, contenu, pied.
 
@@ -140,15 +140,10 @@ def chrome(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(titre)} — ComptagesFer</title>
-{extra_head}<style>{STYLE}{extra_css}</style>
+{extra_head}<style>{STYLE}{NAV_STYLE}{extra_css}</style>
 </head>
 <body>
-<header class="site">
-  <div class="barre">
-    <a class="marque" href="/">ComptagesFer</a>
-    <nav>{_nav(actif)}</nav>
-  </div>
-</header>
+{navigation_html(actif)}
 <main>
   <h1>{titre}</h1>
   {ligne_mention}
@@ -157,8 +152,7 @@ def chrome(
 <footer class="site">
   <div class="barre">
     <p>Comptages collaboratifs de fréquentation ferroviaire. Les chiffres viennent
-    de gens qui ont compté, dans leur train, à la main&nbsp;: ce n'est pas une
-    fréquentation officielle. Les données sont en Licence Ouverte 2.0, le logiciel
+    de gens qui ont compté, dans leur train, à la main. Les données sont en Licence Ouverte 2.0, le logiciel
     en GPL-3.0.
     <a href="/api/export.csv">Télécharger le CSV</a></p>
   </div>

@@ -385,7 +385,7 @@ def test_the_map_page_links_back_to_the_list_and_the_method(tmp_path):
     page = TestClient(create_app(tmp_path)).get("/carte")
     assert 'href="/comptages"' in page.text
     assert 'href="/methode"' in page.text
-    assert "pas une fréquentation officielle" in page.text
+    assert "pas une fréquentation officielle" not in page.text
     # Le réseau ferré est une limite de la donnée, pas un détail : elle est écrite.
     assert "suivent la voie ferrée réelle" in page.text
 
