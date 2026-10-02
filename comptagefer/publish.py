@@ -74,6 +74,8 @@ def render_csv(rows: list[dict]) -> str:
             "legs",
             "trip_id",
             "trajet",
+            "precedent_meme_type",
+            "suivant_meme_type",
         ]
     )
     for row in rows:
@@ -99,6 +101,8 @@ def render_csv(rows: list[dict]) -> str:
                 json.dumps(row["legs"], ensure_ascii=False) if row.get("legs") else "",
                 row.get("trip_id") or "",
                 _trajet_csv(row.get("trajet")),
+                _photo_status(row.get("snapshot"), "precedent_meme_type"),
+                _photo_status(row.get("snapshot"), "suivant_meme_type"),
             ]
         )
     return buffer.getvalue()
@@ -135,7 +139,8 @@ def _photo_status(snapshot: object, key: str) -> str:
     item = snapshot.get(key) or {}
     if not isinstance(item, dict):
         return ""
-    return str(item.get("status") or "")
+    status = item.get("status")
+    return "" if status is None else str(status)
 
 
 class Config:
