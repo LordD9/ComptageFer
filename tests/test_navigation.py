@@ -100,3 +100,15 @@ def test_chaque_libelle_de_la_navigation_est_affiche(tmp_path: Path):
 
     for _href, texte in NAVIGATION:
         assert texte in corps, f"le libellé « {texte} » n'est rendu nulle part"
+
+
+def test_la_page_de_comptage_partage_le_menu_complet_et_la_mise_en_page(tmp_path: Path):
+    client = TestClient(create_app(tmp_path))
+    page = client.get("/").text
+
+    assert page.count('class="site"') == 1
+    assert 'href="/" aria-current="page"' in page
+    for href, texte in NAVIGATION:
+        assert f'href="{href}"' in page, texte
+    assert "max-width: 72rem" in page
+    assert "pas une fréquentation officielle" not in page

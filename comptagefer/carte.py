@@ -41,7 +41,7 @@ TILE_MAX_ZOOM = 19
 # n'entre pas dans la couleur : deux comptages du même segment se superposent,
 # et c'est le mode qui distingue une observation d'un profil.
 COULEURS = {"count": "#1c1915", "serpent": "#1c6b4f", "missing": "#8a2b1b"}
-KIND_FR = {"count": "comptage unique", "serpent": "serpent", "missing": "train signalé"}
+KIND_FR = {"count": "comptage unique", "serpent": "serpent", "missing": "train signalé manquant"}
 
 
 def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
@@ -136,7 +136,7 @@ def _charge(row: dict, places: dict | None = None) -> tuple[list[int] | None, st
       charge qui varie. On ne comble rien : une descente non relevée arrête
       la courbe et nomme l'arrêt, plutôt que de tracer une valeur inventée.
 
-    Renvoie `(None, None)` quand il n'y a rien à dessiner : un train signalé
+    Renvoie `(None, None)` quand il n'y a rien à dessiner : un train signalé manquant
     n'a pas d'effectif, et un serpent sans nombre à bord au départ n'a pas de
     première valeur.
 
@@ -366,7 +366,6 @@ def map_page(features: list[dict], total: int) -> str:
     """
     return chrome(
         "Carte",
-        f"<p>Ce n'est pas une fréquentation officielle. Les partages sont sous Licence Ouverte 2.0.</p>"
         f"{_NOTE}"
         f"{_corps(features)}"
         f"<p id='carte-pied' class='pied'>{_pied(total, features)}</p>",

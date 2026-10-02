@@ -1,3 +1,6 @@
+from comptagefer.affichage import NAV_STYLE, navigation_html
+
+
 PAGE = """<!doctype html>
 <html lang="fr">
 <head>
@@ -54,14 +57,13 @@ PAGE = """<!doctype html>
 <body>
 <main>
   <h1>ComptagesFer</h1>
-  <p class="hint">Choisissez votre train, puis comptez. Le reste vient du flux. <a href="/comptages">Voir les comptages</a> · <a href="/carte">Carte</a> · <a href="/rechercher">Rechercher une ligne</a></p>
+  <p class="hint">Choisissez votre train, puis comptez. Le reste vient du flux.</p>
   <section id="origin-step">
-    <p class="hint">Indiquer les gares <strong>du trajet compté</strong>, et non pas celles de la ligne. En comptage unique&nbsp;: les deux gares encadrantes. En serpent de charge&nbsp;: la gare de début et la gare de fin, même si la ligne est plus longue.</p>
+    <p class="hint">Indiquer les gares <strong>du trajet compté</strong>, et non pas celles de la ligne.</p>
     <label for="origin-q">Origine</label>
     <input id="origin-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Gare de départ du comptage">
     <div id="origin-list" class="choices"></div>
     <button class="ghost" id="near" type="button">Gare la plus proche</button>
-    <p class="hint">Comptage en gare sans monter dans le train&nbsp;: indiquer la première gare desservie après le départ (gare d'origine) ou la dernière gare desservie avant l'arrivée (gare terminus), pour rattacher le compte à une interstation précise.</p>
   </section>
   <section id="destination-step" class="hidden">
     <div class="chip"><span id="origin-chip"></span><button class="ghost" id="change-origin" type="button">Changer</button></div>
@@ -819,3 +821,9 @@ def page_avec_pseudo(pseudo: str) -> str:
     if _CHAMP_PSEUDO not in PAGE:
         raise ValueError("le champ pseudo a changé de forme : page_avec_pseudo ne sait plus le remplir")
     return PAGE.replace(_CHAMP_PSEUDO, remplacement)
+
+
+def page_comptage(pseudo: str = "") -> str:
+    page = page_avec_pseudo(pseudo)
+    page = page.replace("</style>", f"{NAV_STYLE}</style>", 1)
+    return page.replace("<body>", f"<body>{navigation_html('/')}", 1)

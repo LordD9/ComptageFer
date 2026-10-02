@@ -66,13 +66,17 @@ def test_the_form_asks_for_the_od_of_the_counted_trip(tmp_path):
     for attendu in (
         "du trajet compté",
         "et non pas celles de la ligne",
-        "les deux gares encadrantes",
-        "même si la ligne est plus longue",
-        "gare terminus",
-        "gare d'origine",
+        "terminus",
+        "origine",
         'id="od-rappel"',
     ):
         assert attendu in page, f"la saisie ne dit pas : {attendu!r}"
+    for retire in (
+        "les deux gares encadrantes",
+        "même si la ligne est plus longue",
+        "Comptage en gare sans monter dans le train",
+    ):
+        assert retire not in page, f"le texte redondant est toujours visible : {retire!r}"
 
 
 def test_form_keeps_a_failed_count_and_asks_for_the_load_indicators(tmp_path):

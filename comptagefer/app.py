@@ -43,7 +43,7 @@ from comptagefer.filtres import (
     lire as lire_filtres,
 )
 from comptagefer.offer import nearest_stops, open_stops, search_stops, trips_serving
-from comptagefer.page import PAGE, page_avec_pseudo
+from comptagefer.page import page_comptage
 from comptagefer.publish import (
     Publication,
     config_from_env,
@@ -314,15 +314,15 @@ def create_app(
         """
         identifiant = _compte_de_cookie(request)
         if identifiant is None:
-            return PAGE
+            return page_comptage()
         try:
             pseudo = compte_module.pseudo_de(database, identifiant)
         except sqlite3.DatabaseError:
             # Une base verrouillée ne doit pas faire échouer la saisie, qui
             # est le chemin par défaut du site : on rend la page sans pseudo
             # pré-rempli, et le comptage reste possible.
-            return PAGE
-        return page_avec_pseudo(pseudo)
+            return page_comptage()
+        return page_comptage(pseudo)
 
     @app.get("/api/stops")
     def stops(q: str = "") -> list[dict]:
@@ -1850,7 +1850,7 @@ def _save_saisie(
             "SELECT client_id, kind FROM saisie WHERE client_id = ? AND kind = ?",
             (client_id, kind),
         ).fetchone()
-        # Le doublon ne vaut que s'il est du même genre. Un « train signalé »
+        # Le doublon ne vaut que s'il est du même genre. Un « train signalé manquant »
         # consomme le jeton du navigateur, et le comptage réel qui suit
         # arrive avec le même : le rejeter ici perdait le comptage sans rien
         # dire, pendant que l'écran affichait « c'est noté ».
@@ -1919,7 +1919,7 @@ def _freeze_trajet(
     copie, on ne peut pas distinguer « on l'a compté avant le rechargement » de
     « on l'a compté après ».
 
-    Un « train signalé » n'a pas de trajet : c'est un doute sur une ligne, pas
+    Un « train signalé manquant » n'a pas de trajet : c'est un doute sur une ligne, pas une charge mesurée.
     une observation, donc rien à figer. Sans `trip_id` non plus : on ne sait
     pas quel train on a compté, et deviner serait fabriquer de la donnée.
     """
@@ -3215,7 +3215,7 @@ def _filtres_html(filtres: Filtres, vue: str) -> str:
         f"<option value='{escape(nom)}'"
         + (" selected" if filtres.mode == nom else "")
         + f">{titre}</option>"
-        for nom, titre in (("", "tous"), ("unique", "comptage unique"), ("serpent", "serpent"), ("signale", "train signalé"))
+        for nom, titre in (("", "tous"), ("unique", "comptage unique"), ("serpent", "serpent"), ("signale", "train signalé manquant"))
     )
     # Les filtres écartés et les bornes inversées sont affichés ici, et pas
     # seulement dans l'écran « liste vide » : un filtre illisible sur une
