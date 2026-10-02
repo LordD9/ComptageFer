@@ -968,7 +968,7 @@ def test_the_load_snake_is_reachable(page, site):
 
 FAKE_LEAFLET = """
 window.L = {};
-const dessines = { segments: [], points: [], vues: [], styles: [], carte: null };
+const dessines = { segments: [], sections: [], points: [], vues: [], styles: [], carte: null };
 window.dessines = dessines;
 function latLng(lat, lon) { return { lat: lat, lon: lon }; }
 latLng.extend = function (autre) { return { extend: function () { return autre; } }; };
@@ -997,7 +997,15 @@ window.L.latLngBounds = function (un, deux) {
 window.L.layerGroup = function () { return { addTo: function () { return null; } }; };
 window.L.tileLayer = function (url) { return { url: url, addTo: function () { return null; } }; };
 window.L.polyline = function (points, options) {
-  dessines.segments.push({ points: points, options: options });
+  const trace = { points: points, options: options };
+  // Les couches du réseau réel sont différentes des tracés comptés : garder
+  // les deux catégories séparées pour que les assertions historiques portent
+  // sur les overlays métier, sans rendre invisibles les sections de voie.
+  if (options && options.className === "section-carte") {
+    dessines.sections.push(trace);
+  } else {
+    dessines.segments.push(trace);
+  }
   // `addTo` rend la main sur l'objet lui-même, comme Leaflet : la page range
   // ce qu'elle reçoit pour pouvoir le surligner plus tard. Renvoyer `null`
   // ici ferait échouer la synchronisation en silence, et le test vérifierait

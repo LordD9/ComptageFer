@@ -16,7 +16,9 @@ pas, la page doit le dire et rester lisible — pas laisser un cadre vide.
 
 import json
 from html import escape
+from itertools import pairwise
 from pathlib import Path
+from urllib.parse import urlencode
 
 from comptagefer.affichage import chrome
 
@@ -83,6 +85,8 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
                 # atterrit dans le même <script> que le reste. Un `</script>`
                 # dedans fermait la balise, et la suite était exécutée.
                 "client_id": escape(str(row["client_id"])),
+                "href": "/releve?" + urlencode({"client_id": row["client_id"], "kind": kind}),
+                "created_at": escape(str(row.get("created_at") or "")),
                 "kind": kind,
                 "kind_fr": KIND_FR.get(kind, kind),
                 "couleur": COULEURS.get(kind, "#5c554b"),
@@ -225,7 +229,7 @@ def _trace_reseau(
         return list(points), True
     trace: list[list[float]] = [points[0]]
     droite = False
-    for avant, apres in zip(points, points[1:]):
+    for avant, apres in pairwise(points):
         chemin = reseau.chemin(avant, apres)
         if chemin is None:
             droite = True
@@ -252,6 +256,68 @@ def _trace(row: dict) -> list[tuple[str, str]]:
         (str(row.get("origin_stop_id") or ""), str(row.get("origin_name") or "")),
         (str(row.get("destination_stop_id") or ""), str(row.get("destination_name") or "")),
     ]
+
+
+def _sections(features: list[dict]) -> list[dict]:
+    """Les portions de voie et les comptages qui les parcourent, sans sens.
+
+    Les traces du routeur partagent leurs sommets de réseau. On décompose
+    chaque trace en arêtes non orientées, puis on fusionne les arêtes
+    contiguës couvertes par le même ensemble de comptages. Les branches
+    restent distinctes ; un serpent partage donc ses arêtes communes sans
+    faire croire qu'il suit aussi les branches d'un autre trajet.
+    """
+    couverture: dict[tuple[tuple[float, float], tuple[float, float]], set[int]] = {}
+    for index, feature in enumerate(features):
+        trace: list[tuple[float, float]] = [
+            (float(point[0]), float(point[1])) for point in feature.get("trace", [])
+        ]
+        for avant, apres in pairwise(trace):
+            if avant != apres:
+                premier, second = sorted((avant, apres))
+                arete = (premier, second)
+                couverture.setdefault(arete, set()).add(index)
+
+    par_groupe: dict[tuple[int, ...], set[tuple[tuple[float, float], tuple[float, float]]]] = {}
+    for arete, membres in couverture.items():
+        par_groupe.setdefault(tuple(sorted(membres)), set()).add(arete)
+
+    sections = []
+    for membres, aretes in par_groupe.items():
+        voisins: dict[tuple[float, float], list[tuple[float, float]]] = {}
+        for avant, apres in aretes:
+            voisins.setdefault(avant, []).append(apres)
+            voisins.setdefault(apres, []).append(avant)
+        restantes = set(aretes)
+
+        for sommet in sorted(voisins):
+            if len(voisins[sommet]) == 2:
+                continue
+            for suivant in sorted(voisins[sommet]):
+                if (min(sommet, suivant), max(sommet, suivant)) in restantes:
+                    chemin = _parcours_section(sommet, suivant, voisins, restantes)
+                    sections.append({"trace": [list(point) for point in chemin], "features": list(membres)})
+        while restantes:
+            avant, apres = min(restantes)
+            chemin = _parcours_section(avant, apres, voisins, restantes)
+            sections.append({"trace": [list(point) for point in chemin], "features": list(membres)})
+
+    return sorted(sections, key=lambda section: (section["features"], section["trace"]))
+
+
+def _parcours_section(depart, suivant, voisins, restantes):
+    chemin = [depart, suivant]
+    restantes.remove((min(depart, suivant), max(depart, suivant)))
+    courant, precedent = suivant, depart
+    while len(voisins[courant]) == 2:
+        prochain = next(point for point in voisins[courant] if point != precedent)
+        arete_suivante = (min(courant, prochain), max(courant, prochain))
+        if arete_suivante not in restantes:
+            break
+        restantes.remove(arete_suivante)
+        chemin.append(prochain)
+        precedent, courant = courant, prochain
+    return chemin
 
 
 def _coordinates(stops_database: Path) -> dict[str, tuple[float, float]]:
@@ -325,6 +391,10 @@ def map_page(features: list[dict], total: int) -> str:
   .profil .repere { stroke: #e6e0d5; stroke-width: 1; }
   .profil .axe { fill: var(--gris); font-size: 9px; }
   .profil figcaption { color: var(--gris); font-size: 0.8rem; margin-top: 0.3rem; }
+  #section-comptages[hidden] { display: none; }
+  .liste-comptages[hidden] { display: none; }
+  #section-comptages { background: #fff; border-radius: 0.8rem; padding: 0.8rem; }
+  #section-comptages h2 { font-size: 1rem; margin-top: 0; }
   @media (min-width: 48rem) {
     /* La carte prend la hauteur de l'écran et la liste devient un panneau
        latéral. La grille est déclarée ici et pas sur `.corps` : la liste
@@ -335,6 +405,7 @@ def map_page(features: list[dict], total: int) -> str:
               align-items: start; }
     .traces ol { max-height: calc(100vh - 16rem); overflow-y: auto; background: #fff;
                  border-radius: 0.8rem; padding: 0.8rem 0.8rem 0.8rem 2rem; }
+    #section-comptages { grid-column: 2; grid-row: 1; max-height: calc(100vh - 16rem); overflow-y: auto; }
   }
 """,
         extra_head=f'<link rel="stylesheet" href="{LEAFLET_CSS}">',
@@ -397,11 +468,15 @@ def _corps(features: list[dict]) -> str:
             f'aria-pressed="false" aria-controls="profil-{index}">{texte}</button>'
         )
         lignes.append(f"<li>{bouton}{courbe}</li>")
-    liste = "<ol>" + "".join(lignes) + "</ol>" if len(lignes) <= 30 else ""
+    liste = "<ol class='liste-comptages'>" + "".join(lignes) + "</ol>" if len(lignes) <= 30 else ""
     # Le conteneur `traces` porte la grille du grand écran. Il entoure la
     # carte comme la liste : sur un téléphone il ne fait rien, sur un large
     # écran il met la liste à côté au lieu de sous le cadre.
-    return "<div class='traces'><div id='carte'></div>" + liste + "</div>"
+    panneau = (
+        "<section id='section-comptages' role='region' aria-label='Comptages sur la section ferroviaire' "
+        "aria-live='polite' hidden><h2>Comptages sur cette section</h2><ol></ol></section>"
+    )
+    return "<div class='traces'><div id='carte'></div>" + liste + panneau + "</div>"
 
 
 def _profil(feature: dict, index: int) -> str:
@@ -445,6 +520,7 @@ _NOTE = (
 _MAP_SCRIPT = """
 // Les trois valeurs sont du JSON, guillemets compris : on ne les requote pas.
 const FEATURES = __FEATURES__;
+const SECTIONS = __SECTIONS__;
 const TILE_URL = __TILE_URL__;
 const TILE_ATTRIBUTION = __TILE_ATTRIBUTION__;
 const TILE_SUBDOMAINS = __TILE_SUBDOMAINS__;
@@ -587,7 +663,7 @@ function dessineProfil(figure, feature) {
 }
 
 function dessine() {
-  const carte = L.map("carte", { scrollWheelZoom: false });
+  const carte = L.map("carte", { scrollWheelZoom: true });
   L.tileLayer(TILE_URL, {
     attribution: TILE_ATTRIBUTION,
     subdomains: TILE_SUBDOMAINS,
@@ -608,27 +684,32 @@ function dessine() {
     const points = feature.points.map((point) => [point[0], point[1]]);
     let ligne = null;
     if (trace.length > 1) {
-      ligne = L.polyline(trace, { color: feature.couleur, weight: 4, opacity: 0.7 }).addTo(groupe);
+      ligne = L.polyline(trace, {
+        color: feature.couleur, weight: 4, opacity: 0.7, interactive: false,
+      }).addTo(groupe);
     }
     TRACES_DESSINES.push({ ligne: ligne, points: points, couleur: feature.couleur });
     for (let index = 0; index < points.length; index += 1) {
-      const nombre = feature.passengers === null
-        ? "signale, sans effectif"
-        : feature.passengers + " voyageurs";
-      const contenu = "<strong>" + feature.origine + " &rarr; " + feature.destination
-        + "</strong><br>" + nombre + " &middot; " + feature.kind_fr + "<br>" + feature.pseudo
-        + (feature.stops.length > 1 ? "<br>" + feature.stops[index] : "");
       L.circleMarker(points[index], {
         radius: 5 + Math.min(7, Math.sqrt(feature.passengers || 0)),
         color: feature.couleur,
         fillColor: feature.couleur,
         fillOpacity: 0.6,
         weight: 1,
+        interactive: false,
       })
-        .bindPopup(contenu)
         .addTo(groupe);
       const coin = L.latLng(points[index][0], points[index][1]);
       bornes = bornes ? bornes.extend(coin) : L.latLngBounds(coin, coin);
+    }
+  }
+  for (const section of SECTIONS) {
+    const voie = L.polyline(section.trace, {
+      color: "#175a9c", weight: 10, opacity: 0.2, className: "section-carte",
+    }).addTo(groupe);
+    if (typeof voie.on === "function" && typeof voie.bindTooltip === "function") {
+      voie.on("click", function () { montreSection(section.features); });
+      voie.bindTooltip(contenuSection(section.features), { sticky: true, direction: "top" });
     }
   }
   if (bornes) {
@@ -638,6 +719,60 @@ function dessine() {
   }
   // Le conteneur vient d'être peint : Leaflet doit reprendre ses dimensions.
   carte.invalidateSize();
+}
+
+function detailComptage(index) {
+  const feature = FEATURES[index];
+  const item = document.createElement("li");
+  const decoder = document.createElement("textarea");
+  decoder.innerHTML = feature.origine;
+  const origine = decoder.value;
+  decoder.innerHTML = feature.destination;
+  const destination = decoder.value;
+  decoder.innerHTML = feature.pseudo;
+  const pseudo = decoder.value;
+  item.textContent = origine + " → " + destination + " · "
+    + (feature.passengers === null ? "sans effectif" : feature.passengers + " voyageurs")
+    + " · " + feature.kind_fr + " · " + pseudo;
+  if (feature.created_at) {
+    decoder.innerHTML = feature.created_at;
+    const date = document.createElement("time");
+    date.dateTime = decoder.value;
+    date.textContent = " · " + decoder.value;
+    item.appendChild(date);
+  }
+  const lien = document.createElement("a");
+  lien.href = feature.href;
+  lien.textContent = "Voir le relevé";
+  item.appendChild(document.createTextNode(" · "));
+  item.appendChild(lien);
+  return item;
+}
+
+function contenuSection(indices) {
+  const bulle = document.createElement("div");
+  if (indices.length > 3) {
+    bulle.textContent = indices.length + " comptages — cliquer pour les afficher";
+  } else {
+    for (const index of indices) {
+      const ligne = document.createElement("p");
+      ligne.textContent = detailComptage(index).textContent;
+      bulle.appendChild(ligne);
+    }
+  }
+  return bulle;
+}
+
+function montreSection(indices) {
+  const panneau = document.getElementById("section-comptages");
+  const liste = panneau.querySelector("ol");
+  liste.textContent = "";
+  for (const index of indices) liste.appendChild(detailComptage(index));
+  panneau.querySelector("h2").textContent = indices.length + " comptage"
+    + (indices.length === 1 ? "" : "s") + " sur cette section";
+  panneau.hidden = false;
+  const globale = document.querySelector(".liste-comptages");
+  if (globale) globale.hidden = true;
 }
 
 // --- la liste et la carte se suivent ----------------------------------------
@@ -717,7 +852,14 @@ function cableLaListe() {
   // tracé, il n'y a plus aucun geste pour revenir à la vue d'ensemble : il
   // faudrait cliquer sur le même bouton, ce qu'on ne devine pas.
   if (CARTE_COURANTE) {
-    CARTE_COURANTE.on("click", function () {
+    CARTE_COURANTE.on("click", function (evenement) {
+      const cible = evenement.originalEvent && evenement.originalEvent.target;
+      if ((evenement.layer && evenement.layer.options.className === "section-carte")
+          || (cible && cible.closest && cible.closest(".section-carte"))) return;
+      const panneau = document.getElementById("section-comptages");
+      if (panneau) panneau.hidden = true;
+      const globale = document.querySelector(".liste-comptages");
+      if (globale) globale.hidden = false;
       document.querySelectorAll(".ligne").forEach(function (autre) {
         const courbe = document.getElementById(autre.getAttribute("aria-controls"));
         autre.setAttribute("aria-pressed", "false");
@@ -763,6 +905,7 @@ def _script(features: list[dict]) -> str:
         _MAP_SCRIPT.replace(
             "__FEATURES__", json.dumps(features, ensure_ascii=False).replace("</", "<\\/")
         )
+        .replace("__SECTIONS__", json.dumps(_sections(features), ensure_ascii=False))
         .replace("__TILE_URL__", json.dumps(TILE_URL))
         .replace("__TILE_ATTRIBUTION__", json.dumps(TILE_ATTRIBUTION))
         .replace("__TILE_SUBDOMAINS__", json.dumps(TILE_SUBDOMAINS))

@@ -777,6 +777,13 @@ def create_app(
                 + "<h2>" + depart + " → " + arrivee + "</h2>"
                 + "<p>" + escape(titre) + "</p>"
                 + '<p class="mention">Fiabilité ' + fiabilite + "</p>"
+                + '<p><a href="/compte/modifier?client_id=' + quote(str(releve["client_id"]))
+                + '&amp;kind=' + quote(str(releve["kind"])) + '">Modifier</a></p>'
+                + '<form method="post" action="/compte/supprimer">'
+                + '<input type="hidden" name="client_id" value="' + escape(str(releve["client_id"])) + '">'
+                + '<input type="hidden" name="kind" value="' + escape(str(releve["kind"])) + '">'
+                + '<label><input type="checkbox" name="confirmation" value="oui" required> Confirmer la suppression</label>'
+                + '<button type="submit">Supprimer</button></form>'
                 + _bouton_signaler(deja, releve)
                 + "</article>"
             )
@@ -800,6 +807,100 @@ def create_app(
         )
         return chrome("Votre compte", corps, actif="/compte")
 
+    def releve_a_modifier(client_id: str, kind: str, compte_id: str | None = None) -> dict | None:
+        with sqlite3.connect(database) as connection:
+            connection.row_factory = sqlite3.Row
+            sql = "SELECT * FROM saisie WHERE client_id = ? AND kind = ?"
+            params: tuple = (client_id, kind)
+            if compte_id is not None:
+                sql += " AND compte_id = ?"
+                params += (compte_id,)
+            row = connection.execute(sql, params).fetchone()
+        return None if row is None else dict(row)
+
+    def compte_editeur(request: Request) -> str:
+        jeton = request.cookies.get(COOKIE_COMPTE, "")
+        if not jeton:
+            raise HTTPException(status_code=401, detail="connexion requise")
+        try:
+            identifiant = compte_de_session(database, jeton)
+        except sqlite3.DatabaseError:
+            raise HTTPException(status_code=503, detail="session temporairement indisponible") from None
+        if identifiant is None:
+            raise HTTPException(status_code=401, detail="connexion requise")
+        return identifiant
+
+    def mettre_a_jour_releve(
+        client_id: str, kind: str, values: dict, compte_id: str | None = None,
+        ancienne_structure: str | None = None, verifier_structure: bool = False,
+    ) -> bool:
+        sets = ", ".join(f"{name} = ?" for name in values)
+        params = tuple(values.values()) + (client_id, kind)
+        sql = f"UPDATE saisie SET {sets} WHERE client_id = ? AND kind = ?"
+        if compte_id is not None:
+            sql += " AND compte_id = ?"
+            params += (compte_id,)
+        if verifier_structure:
+            sql += " AND legs IS ?"
+            params += (ancienne_structure,)
+        with sqlite3.connect(database) as connection:
+            cursor = connection.execute(sql, params)
+            return cursor.rowcount == 1
+
+    @app.get("/compte/modifier", response_class=HTMLResponse)
+    def compte_modifier_page(request: Request, client_id: str = Query(""), kind: str = Query("")) -> str:
+        compte_id = compte_editeur(request)
+        if kind not in {"count", "serpent", "missing"}:
+            raise HTTPException(status_code=404, detail="relevé introuvable")
+        try:
+            row = releve_a_modifier(client_id, kind, compte_id)
+        except sqlite3.DatabaseError:
+            raise HTTPException(status_code=503, detail="relevés temporairement indisponibles") from None
+        if row is None:
+            raise HTTPException(status_code=404, detail="relevé introuvable")
+        return chrome("Modifier le relevé", _edition_page(row), actif="/compte", extra_css=_EDITION_CSS)
+
+    @app.post("/compte/modifier", response_class=HTMLResponse)
+    async def compte_modifier(request: Request) -> HTMLResponse:
+        compte_id = compte_editeur(request)
+        form = await request.form()
+        client_id, kind = str(form.get("client_id") or ""), str(form.get("kind") or "")
+        if kind not in {"count", "serpent", "missing"}:
+            raise HTTPException(status_code=422, detail="genre de relevé invalide")
+        try:
+            # Le contrôle d'accès et l'écriture filtrent tous deux par la clé et
+            # le propriétaire ; le compte fourni dans le formulaire est ignoré.
+            row = releve_a_modifier(client_id, kind, compte_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="relevé introuvable")
+            values = _edition_values(dict(form), kind, row.get("legs"))
+            if not mettre_a_jour_releve(client_id, kind, values, compte_id, row.get("legs"), kind == "serpent"):
+                raise HTTPException(status_code=409, detail="le relevé a changé, rechargez la page")
+        except sqlite3.DatabaseError:
+            raise HTTPException(status_code=503, detail="relevés temporairement indisponibles") from None
+        return HTMLResponse(status_code=303, headers={"location": "/compte"})
+
+    @app.post("/compte/supprimer", response_class=HTMLResponse)
+    async def compte_supprimer(request: Request) -> HTMLResponse:
+        compte_id = compte_editeur(request)
+        form = await request.form()
+        client_id, kind = str(form.get("client_id") or ""), str(form.get("kind") or "")
+        if kind not in {"count", "serpent", "missing"}:
+            raise HTTPException(status_code=422, detail="genre de relevé invalide")
+        if form.get("confirmation") != "oui":
+            raise HTTPException(status_code=422, detail="confirmation requise")
+        try:
+            with sqlite3.connect(database) as connection:
+                cursor = connection.execute(
+                    "DELETE FROM saisie WHERE client_id = ? AND kind = ? AND compte_id = ?",
+                    (client_id, kind, compte_id),
+                )
+                if cursor.rowcount != 1:
+                    raise HTTPException(status_code=404, detail="relevé introuvable")
+        except sqlite3.DatabaseError:
+            raise HTTPException(status_code=503, detail="relevés temporairement indisponibles") from None
+        return HTMLResponse(status_code=303, headers={"location": "/compte"})
+
     def admin_open(request: Request) -> bool:
         cookie = request.cookies.get("comptagefer_admin", "")
         if not cookie:
@@ -816,6 +917,40 @@ def create_app(
     def admin(request: Request) -> str:
         if not admin_open(request):
             return _admin_login()
+        return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
+
+    @app.get("/admin/modifier", response_class=HTMLResponse)
+    def admin_modifier_page(request: Request, client_id: str = Query(""), kind: str = Query("")) -> str:
+        if not admin_open(request):
+            raise HTTPException(status_code=401, detail="connexion requise")
+        if kind not in {"count", "serpent", "missing"}:
+            raise HTTPException(status_code=404, detail="relevé introuvable")
+        try:
+            row = releve_a_modifier(client_id, kind)
+        except sqlite3.DatabaseError:
+            raise HTTPException(status_code=503, detail="relevés temporairement indisponibles") from None
+        if row is None:
+            raise HTTPException(status_code=404, detail="relevé introuvable")
+        return chrome("Modifier le relevé", _edition_page(row, admin=True), actif="/admin", extra_css=_EDITION_CSS)
+
+    @app.post("/admin/modifier", response_class=HTMLResponse)
+    async def admin_modifier(request: Request) -> str:
+        if not admin_open(request):
+            raise HTTPException(status_code=401, detail="connexion requise")
+        form = await request.form()
+        client_id, kind = str(form.get("client_id") or ""), str(form.get("kind") or "")
+        if kind not in {"count", "serpent", "missing"}:
+            raise HTTPException(status_code=422, detail="genre de relevé invalide")
+        try:
+            row = releve_a_modifier(client_id, kind)
+            if row is None:
+                raise HTTPException(status_code=404, detail="relevé introuvable")
+            values = _edition_values(dict(form), kind, row.get("legs"))
+            if not mettre_a_jour_releve(client_id, kind, values, ancienne_structure=row.get("legs"),
+                                        verifier_structure=kind == "serpent"):
+                raise HTTPException(status_code=409, detail="le relevé a changé, rechargez la page")
+        except sqlite3.DatabaseError:
+            raise HTTPException(status_code=503, detail="relevés temporairement indisponibles") from None
         return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
 
     @app.post("/admin/login", response_class=HTMLResponse)
@@ -857,13 +992,18 @@ def create_app(
         """
         if not admin_open(request):
             raise HTTPException(status_code=401, detail="connexion requise")
-        if not kind:
-            raise HTTPException(status_code=422, detail="genre de relevé requis")
-        with sqlite3.connect(database) as connection:
-            connection.execute(
-                "DELETE FROM saisie WHERE client_id = ? AND kind = ?",
-                (client_id, kind),
-            )
+        if kind not in {"count", "serpent", "missing"}:
+            raise HTTPException(status_code=422, detail="genre de relevé invalide")
+        try:
+            with sqlite3.connect(database) as connection:
+                cursor = connection.execute(
+                    "DELETE FROM saisie WHERE client_id = ? AND kind = ?",
+                    (client_id, kind),
+                )
+                if cursor.rowcount != 1:
+                    raise HTTPException(status_code=404, detail="relevé introuvable")
+        except sqlite3.DatabaseError:
+            raise HTTPException(status_code=503, detail="relevés temporairement indisponibles") from None
         return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
 
     return app
@@ -1527,6 +1667,10 @@ def _admin_list(
             "<article class='card'>"
             f"<strong>{origin} → {destination}</strong>"
             f"<p>{passengers} voyageurs · {who}</p>{note}"
+            "<form method='get' action='/admin/modifier'>"
+            f"<input type='hidden' name='client_id' value='{client_id}'>"
+            f"<input type='hidden' name='kind' value='{genre}'>"
+            "<button type='submit'>Modifier</button></form>"
             "<form method='post' action='/admin/supprimer'>"
             f"<input type='hidden' name='client_id' value='{client_id}'>"
             f"<input type='hidden' name='kind' value='{genre}'>"
@@ -1837,6 +1981,157 @@ def _indicator(value: object) -> int | None:
     if not isinstance(value, int) or not 0 <= value <= 100:
         raise HTTPException(status_code=422, detail="indicateur invalide")
     return value
+
+
+def _edition_values(body: dict, kind: str, frozen_legs: str | None = None) -> dict[str, object]:
+    """Valider les seules colonnes qu'un relevé peut modifier."""
+    if kind not in {"count", "serpent", "missing"}:
+        raise HTTPException(status_code=422, detail="genre de relevé invalide")
+    values: dict[str, object] = {
+        "pseudo": (str(body.get("pseudo") or "")[:40] or None),
+        "comment": (str(body.get("comment") or "")[:280] or None),
+    }
+    if kind == "missing":
+        return values
+    def entier(nom: str, min_: int, max_: int | None = None) -> int:
+        raw = body.get(nom)
+        try:
+            parsed = int(str(raw))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=f"{nom} invalide") from None
+        if str(parsed) != str(raw).strip() or parsed < min_ or (max_ is not None and parsed > max_):
+            raise HTTPException(status_code=422, detail=f"{nom} invalide")
+        return parsed
+    if kind == "serpent":
+        try:
+            legs_body = body.get("legs")
+            if legs_body is None and frozen_legs:
+                legs_body = json.loads(frozen_legs)
+                for index, leg in enumerate(legs_body):
+                    names = ("onboard",) if index == 0 else ("boarded", "alighted", "standing", "seats_free", "imbalance")
+                    for name in names:
+                        raw = body.get(f"legs_{index}_{name}")
+                        if raw is None:
+                            continue
+                        if raw == "" and name in {"alighted", "standing", "seats_free", "imbalance"}:
+                            leg[name] = None
+                        else:
+                            leg[name] = int(str(raw))
+            elif isinstance(legs_body, str):
+                legs_body = json.loads(legs_body)
+            if isinstance(legs_body, list):
+                for leg in legs_body:
+                    if isinstance(leg, dict) and any(
+                        isinstance(leg.get(key), bool)
+                        for key in ("onboard", "boarded", "alighted", "standing", "seats_free", "imbalance")
+                    ):
+                        raise HTTPException(status_code=422, detail="valeur entière invalide")
+            legs_text = _clean_legs(legs_body)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="serpent invalide") from None
+        cleaned_legs = json.loads(legs_text)
+        if frozen_legs:
+            original_legs = json.loads(frozen_legs)
+            identity = lambda leg: (leg.get("stop_id"), leg.get("stop_name", ""))
+            if [identity(leg) for leg in cleaned_legs] != [identity(leg) for leg in original_legs]:
+                raise HTTPException(status_code=422, detail="les arrêts du trajet ne sont pas modifiables")
+        values["legs"] = legs_text
+        values["passengers"] = cleaned_legs[0]["onboard"]
+        values["reliability"] = entier("reliability", 0, 100)
+    else:
+        values["passengers"] = entier("passengers", 0)
+        values["reliability"] = entier("reliability", 0, 100)
+    for nom in ("standing", "seats_free", "imbalance"):
+        raw = body.get(nom)
+        if raw in (None, ""):
+            values[nom] = None
+        else:
+            try:
+                parsed = int(str(raw))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"{nom} invalide") from None
+            if str(parsed) != str(raw).strip():
+                raise HTTPException(status_code=422, detail=f"{nom} invalide")
+            values[nom] = _indicator(parsed)
+    materiel, composition, perimetre = _materiel(body)
+    values.update(materiel=materiel, composition=composition, perimetre=perimetre)
+    return values
+
+
+_EDITION_CSS = """
+  .edition { max-width: 40rem; }
+  .edition label { display: block; margin: 0.9rem 0; }
+  .edition input:not([type="hidden"]), .edition select, .edition textarea {
+    display: block; width: 100%; min-height: 2.8rem; font: inherit;
+    border: 1px solid var(--bord); border-radius: 0.5rem; padding: 0.5rem;
+  }
+  .edition textarea { min-height: 6rem; }
+  .edition fieldset { min-width: 0; margin: 1rem 0; border: 1px solid var(--bord); }
+  .edition button { font: inherit; padding: 0.7rem 1rem; cursor: pointer; }
+"""
+
+
+def _edition_page(row: dict, admin: bool = False) -> str:
+    """Formulaire d'édition : seules les données de comptage sont éditables."""
+    action = "/admin/modifier" if admin else "/compte/modifier"
+    inputs = []
+    champs = [("pseudo", "Pseudo"), ("comment", "Commentaire")]
+    if row.get("kind") != "missing":
+        if row.get("kind") == "count":
+            champs.append(("passengers", "Effectif"))
+        champs.extend((("reliability", "Fiabilité (%)"), ("standing", "Voyageurs debout (%)"),
+                       ("seats_free", "Places libres (%)"), ("imbalance", "Déséquilibre (%)"),
+                       ("materiel", "Matériel"), ("composition", "Composition"),
+                       ("perimetre", "Périmètre")))
+    for name, label in champs:
+        value = "" if row.get(name) is None else str(row[name])
+        if name == "comment":
+            inputs.append(f'<label>{escape(label)}<textarea name="comment" maxlength="280">{escape(value)}</textarea></label>')
+        elif name == "composition":
+            inputs.append(_edition_select(name, label, value, ("US", "UM2", "UM3")))
+        elif name == "perimetre":
+            inputs.append(_edition_select(name, label, value, ("voiture", "um")))
+        else:
+            maxlen = ' maxlength="40"' if name in {"pseudo", "materiel"} else ""
+            maximum = ' max="100"' if name in {"reliability", "standing", "seats_free", "imbalance"} else ""
+            numeric = name in {"passengers", "reliability", "standing", "seats_free", "imbalance"}
+            inputs.append(f'<label>{escape(label)}<input name="{name}" value="{escape(value)}"'
+                          + (' type="number" min="0"' if numeric else ' type="text"') + maximum + maxlen
+                          + (' required' if name in {"passengers", "reliability"} else '') + '></label>')
+    if row.get("kind") == "serpent":
+        legs = json.loads(row.get("legs") or "[]")
+        inputs.append('<fieldset><legend>Comptage par arrêt</legend>')
+        for index, leg in enumerate(legs):
+            nom = escape(str(leg.get("stop_name") or leg.get("stop_id") or f"Arrêt {index + 1}"))
+            inputs.append(f'<section><h2>{nom}</h2><p>{nom} · arrêt inchangé</p>')
+            keys = (("onboard", "Voyageurs à bord", None),) if index == 0 else (
+                ("boarded", "Montées", "voyageurs"), ("alighted", "Descentes", "voyageurs"),
+                ("standing", "Voyageurs debout", "%"), ("seats_free", "Places libres", "%"),
+                ("imbalance", "Déséquilibre", "%"),
+            )
+            for name, label, unit in keys:
+                value = "" if leg.get(name) is None else str(leg[name])
+                maxval = ' max="100"' if name in {"standing", "seats_free", "imbalance"} else ""
+                inputs.append(f'<label>{label}' + (f' ({unit})' if unit else '')
+                              + f'<input type="number" min="0"{maxval} name="legs_{index}_{name}" value="{escape(value)}"'
+                              + (' required' if name in {"onboard", "boarded"} else '') + '></label>')
+            inputs.append('</section>')
+        inputs.append('</fieldset>')
+    key = (f'<input type="hidden" name="client_id" value="{escape(str(row["client_id"]))}">'
+           f'<input type="hidden" name="kind" value="{escape(str(row["kind"]))}">')
+    origin = escape(str(row.get("origin_name") or row.get("origin_stop_id") or ""))
+    destination = escape(str(row.get("destination_name") or row.get("destination_stop_id") or ""))
+    return (f'<h1>Modifier le relevé : {origin} → {destination}</h1>'
+            f'<p>Trajet, train, contexte figé et date de création ne sont pas modifiables.</p>'
+            f'<form class="edition" method="post" action="{action}">{key}' + "".join(inputs)
+            + '<button type="submit">Enregistrer</button></form>'
+            + f'<a href="{("/admin" if admin else "/compte")}">Annuler</a>')
+
+
+def _edition_select(name: str, label: str, value: str, options: tuple[str, ...]) -> str:
+    choices = ''.join(f'<option value="{option}"{" selected" if value == option else ""}>{option}</option>'
+                      for option in options)
+    return f'<label>{escape(label)}<select name="{name}"><option value="">Non renseigné</option>{choices}</select></label>'
 
 
 # Les colonnes de `saisie`, dans l'ordre où `_ligne_saisie` les rend. La

@@ -224,7 +224,7 @@ Le flux temps réel ne donne pas le nom des gares, et il travaille surtout en St
 - `standing`, `seats_free`, `imbalance`, optionnels
 - `legs`, le profil du serpent, en JSON. La suite ordonnée des arrêts avec l'effectif de départ puis montées et descentes. Effectif suivant = effectif + montées − descentes.
 - `trajet`, le trajet **complet** du train, en JSON, figé au moment du comptage. La suite ordonnée de tous ses arrêts, avec l'heure de départ de chacun. Un comptage ne parle que du tronçon où l'on a compté ; le train venait d'ailleurs et continuait ailleurs, et c'est cette charge-là qu'une estimation de fréquentation cherche à l'étape suivante. On fige parce que le GTFS est rechargé : une ligne peut changer de gares, et la saisie doit dire ce qu'elle a vue. Sans `trip_id` il n'y a rien à figer — deviner le train serait fabriquer de la donnée — et un « train signalé » n'en a pas non plus, puisque c'est un doute sur une ligne, pas une observation.
-- `snapshot`, la photo du contexte, en JSON : le train choisi, le précédent, le suivant, leurs états, retards, sources et l'instant de la prise
+- `snapshot`, la photo du contexte, en JSON : le train choisi, le précédent, le suivant, et les voisins du même type commercial, avec leurs états, retards, sources et l'instant de la prise. Le CSV conserve les cinq états séparément ; les deux colonnes de voisins du même type sont ajoutées après les colonnes historiques. Une absence reste une cellule vide, pas un état déduit.
 - `created_at`, horodatage de réception
 
 Les pourcentages sont des estimations de l'utilisateur. On ne déduit pas l'un de l'autre.
@@ -345,6 +345,13 @@ La carte sert à voir les résultats, pas à saisir.
   - fond de plan : tuiles raster OpenStreetMap, aucune clé d'API. La politique d'usage d'OSM est le
     vrai plafond ; un fournisseur de tuiles se change en une constante
   - Leaflet vient d'un CDN : sans réseau, la page le dit et garde la liste des tracés
+  - le zoom à la molette est actif ; les comptages se consultent en cliquant sur
+    une section de voie, pas sur un marqueur de gare
+  - une section réunit les comptages qui la parcourent dans les deux sens,
+    y compris les parcours qui ne la recouvrent que partiellement
+  - jusqu'à trois comptages, l'infobulle les détaille ; au-delà, elle indique
+    « X comptages ». Le clic ouvre tous les comptages de la section dans une
+    liste latérale sur grand écran, sous la carte sur téléphone
 - recherche par nom — **fait**, c'est `/rechercher`, un seul champ pour une gare ou une ligne. Une gare trouvée est un **lien** vers `/gare`, qui montre ses comptages : avant, la liste affichait le nom en texte brut et la recherche était un cul-de-sac qui répondait 200
 - page ligne : liste brute, ou invitation à contribuer s'il n'y a rien — **fait**, c'est `/ligne`
 - page gare : les relevés dont la gare est une extrémité, ou un arrêt traversé par un serpent — **fait**, c'est `/gare`, ajouté le 1er octobre 2026 avec `/releve`
@@ -758,13 +765,27 @@ transaction qui ne couvre pas les deux. Le sauvegarder reste « copier
   n'efface rien et ne modifie rien : il crée une ligne que l'admin voit dans
   `/admin`, à côté des relevés, avec son motif. `/admin` reste derrière
   `ADMIN_TOKEN`, un jeton unique, pas une administration par compte
-- rien d'autre. Pas de droit sur les données des autres, pas de modification du
-  CSV depuis l'interface, pas de suppression
+- la modification et la suppression de ses propres relevés, depuis cet
+  historique. La session authentifiée prouve l'appartenance, pas le pseudo ni
+  l'identifiant fourni dans le formulaire. La clé complète `(client_id, kind)`
+  identifie le relevé, et chaque écriture vérifie aussi son propriétaire
+- aucun droit sur les relevés des autres, ni sur les anciens relevés anonymes.
+  L'administrateur connecté avec `ADMIN_TOKEN` peut modifier ou supprimer
+  n'importe quel relevé, y compris un relevé anonyme
 
 **Ce que le compte ne donne pas, et qu'il faut écrire parce que c'est
-invisible :** être connecté ouvre le droit de dire « ce relevé n'est pas le
-mien », pas le droit de le retirer. Un signalement n'est pas une suppression
-différée.
+invisible :** la correction porte sur les mesures, les indicateurs, le matériel,
+le pseudo publié et le commentaire. Pour un serpent, elle porte aussi sur les
+montées et descentes. Elle ne réattribue pas le relevé et ne change ni son
+horodatage, ni le train et le parcours figés, ni la photo du temps réel.
+La suppression demande une confirmation explicite. Les lectures, le CSV et
+le classement reflètent ensuite la base corrigée ; un export déjà téléchargé
+ou publié ne peut pas être retiré de chez ses lecteurs. La prochaine publication
+automatique reprendra les données corrigées.
+
+Un signalement reste une action distincte : il ne modifie et ne supprime rien.
+La demande de correction ou de retrait d'un relevé appartenant à quelqu'un
+d'autre ne devient pas un droit d'écriture.
 
 **La saisie hors ligne et le compte.** Le payload en file ne transporte que ce
 que le navigateur a sous la main, et le cookie part avec le `POST` au moment
