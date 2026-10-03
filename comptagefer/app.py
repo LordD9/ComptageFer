@@ -3431,7 +3431,7 @@ etc.</p>
 <p>À chaque comptage, l'outil enregistre aussi le <strong>trajet complet du
 train</strong>, pas seulement le tronçon que vous avez compté&nbsp;: toutes les
 gares qu'il dessert, du départ à l'arrivée, avec l'heure de chacune. Vous ne
-faites rien de plus, et la saisie ne change pas. C'est pour plus tard, quand on
+faites rien de plus, et la saisie ne change pas.
 
 
 <h2>D'où viennent les données</h2>
