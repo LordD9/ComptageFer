@@ -53,6 +53,14 @@ def test_chaque_lien_de_la_navigation_repond(tmp_path: Path):
         assert reponse.status_code == 200, f"le lien « {texte} » pointe sur {href} : {reponse.status_code}"
 
 
+def test_la_recherche_gtfs_par_gare_ou_ligne_n_est_plus_exposee(tmp_path: Path):
+    client = TestClient(create_app(tmp_path))
+
+    for path in ("/rechercher", "/ligne", "/api/lignes"):
+        assert client.get(path).status_code == 404, path
+    assert all(href not in {"/rechercher", "/ligne"} for href, _ in NAVIGATION)
+
+
 def test_les_libelles_de_la_navigation_sont_distincts():
     libelles = [texte for _, texte in NAVIGATION]
 

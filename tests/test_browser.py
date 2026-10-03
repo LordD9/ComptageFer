@@ -61,7 +61,7 @@ def _ecrire_releve(
     """Un relevé dont on choisit la paire et la ligne.
 
     Séparé de `_poster_releve` parce que la vue par paire a besoin de
-    corridors distincts et que la page ligne a besoin d'un `trip_id`
+    corridors distincts et que le filtre ligne a besoin d'un `trip_id`
     connu : un seul helper ne peut pas servir les deux sans paramètres
     que l'autre n'a aucun sens à prendre.
     """
@@ -643,14 +643,14 @@ def test_the_header_navigates_from_every_reading_page(page, site):
     garde son ancien paragraphe de liens, elle perd le repère sans qu'aucun
     test de contenu ne s'en aperçoive.
     """
-    for chemin in ("/comptages", "/carte", "/rechercher", "/methode", "/ligne?ligne=R-TER-1"):
+    for chemin in ("/comptages", "/carte", "/methode"):
         page.goto(site + chemin)
         entete = page.locator("header.site")
         assert entete.count() == 1, f"{chemin} n'a pas l'en-tête commun"
         # Chaque destination est là. `/` apparaît deux fois, et c'est
         # voulu : la marque du site et le lien « Compter » mènent au même
         # formulaire, et on ne retire pas le nom du site de sa propre page.
-        for cible in ("/comptages", "/carte", "/rechercher", "/methode"):
+        for cible in ("/comptages", "/carte", "/methode"):
             assert entete.locator(f'a[href="{cible}"]').count() == 1, (
                 f"{chemin} : le lien {cible} manque dans l'en-tête, ou y est en double"
             )

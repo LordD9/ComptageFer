@@ -352,8 +352,7 @@ La carte sert à voir les résultats, pas à saisir.
   - jusqu'à trois comptages, l'infobulle les détaille ; au-delà, elle indique
     « X comptages ». Le clic ouvre tous les comptages de la section dans une
     liste latérale sur grand écran, sous la carte sur téléphone
-- recherche par nom — **fait**, c'est `/rechercher`, un seul champ pour une gare ou une ligne. Une gare trouvée est un **lien** vers `/gare`, qui montre ses comptages : avant, la liste affichait le nom en texte brut et la recherche était un cul-de-sac qui répondait 200
-- page ligne : liste brute, ou invitation à contribuer s'il n'y a rien — **fait**, c'est `/ligne`
+- recherche par gare ou par ligne — **retirée** : les informations GTFS sur les lignes ne sont pas assez fiables pour une recherche utile. Les filtres de comptages restent dans `/comptages`
 - page gare : les relevés dont la gare est une extrémité, ou un arrêt traversé par un serpent — **fait**, c'est `/gare`, ajouté le 1er octobre 2026 avec `/releve`
 - fiche d'un relevé : la page `/comptages` est un résumé, et le reste (rame, périmètre, indicateurs, commentaire, arrêts du serpent) n'était lisible qu'en téléchargeant le CSV — **fait**, c'est `/releve?client_id=&kind=`, adossée à la clé primaire. La carte et la ligne du tableau y mènent toutes les deux, parce que ce ne sont pas deux rendus de la même chose sur un écran donné
 
@@ -373,7 +372,7 @@ Le chrome est donc écrit une fois, dans `comptagefer/affichage.py` : en-tête, 
 - **Un relevé sans valeur sort en dernier, dans les deux sens.** Un « train signalé » n'a pas d'effectif : trié décroissant, il remonterait en tête et se lirait comme le relevé le plus chargé. `reverse=True` portant sur un « la valeur manque » booléen fait exactement ça, donc ils sont retirés, triés, puis remis à la fin.
 - **Ce qui est dans la base est sur la page.** `created_at`, `reliability`, `comment`, `standing`, `seats_free`, `imbalance` sortaient dans le CSV sans qu'un lecteur du site puisse les voir. La date est en heure de Paris, pas en ISO UTC.
 
-La carte prend la hauteur de l'écran sur grand écran, la liste des tracés passe à côté. La page ligne lit ses arrêts et ses comptages côte à côte. C'est une media query, pas une refonte : rien n'a été ajouté au-delà de 48 rem, et le téléphone ne change pas.
+La carte prend la hauteur de l'écran sur grand écran, la liste des tracés passe à côté. C'est une media query, pas une refonte : rien n'a été ajouté au-delà de 48 rem, et le téléphone ne change pas.
 
 #### Filtrer, et comparer par paire de gares
 
@@ -381,7 +380,7 @@ Un écran large sert d'abord à comparer, donc `comptagefer/filtres.py` porte le
 
 - **Les filtres sont dans l'URL, et tous les liens de la page les conservent.** C'est le prolongement du tri : une liste filtrée se partage et se teste. Le corollaire est la faute que pytest ne voit pas — un lien de tri qui reconstruit son URL perd le `ligne=` courant, et le lecteur voit les relevés qu'il vient d'exclure. Toutes les URL passent donc par une seule fabrique, qui prend l'état courant et le modifie au lieu de le reconstruire.
 - **Un filtre illisible est écarté *et nommé*.** L'écarter en silence est pire que ne pas l'écarter : le lecteur qui filtre par « laisse-passer » verrait la liste entière et croirait que son filtre n'a rien donné. La page affiche donc la raison de l'écart dans le formulaire, et les chips disent ce qui est *appliqué*.
-- **`?ligne=` passe par le `trip_id`**, comme `/ligne`, et pour la même raison : deux lignes se partagent souvent le corridor. Le champ est un texte libre et non une liste déroulante, parce que le GTFS national attribue le même « C13 » à six lignes — une liste de noms courts ouvrirait une page au hasard.
+- **`?ligne=` passe par le `trip_id`** : deux lignes se partagent souvent le corridor. Le champ reste libre, parce que le GTFS national attribue le même « C13 » à plusieurs lignes ; il filtre les comptages, sans prétendre proposer une recherche fiable du réseau.
 - **La vue par paire est un paramètre, pas une page.** Elle répond à une question qu'aucune page ne posait — « la charge typique sur Lyon–Chambéry » — en HTML, sans JavaScript, pour la même raison que le tri. Son tri par défaut est le **nombre de relevés décroissant** : un corridor en tête avec 40 relevés est mieux documenté qu'un corridor en tête avec 2. Le mettre en tête par effectif moyen répondrait à une autre question, « le plus chargé », qui mélange ce que la base sait et ce que la circulation fait. Un train signalé compte dans `releves` et pas dans la moyenne : le compter comme 0 ferait passer « non mesuré » pour « vide ».
 - **La pagination est mesurée, pas anticipée.** À 6 000 relevés, `/comptages` rendait 2,38 Mo de HTML en 227 ms. La liste est coupée après le tri — une page affichée avant tri se reconnaît à rien — à 200 par page, et la page dit « 200 sur 5 000 » pour que la tranche ne se prenne pas pour le jeu entier. Le total est compté en SQL, pas déduit de la liste rendue. Sous 200 relevés, aucun sélecteur de page : un bouton « page 1 » unique se lit comme cassé.
 
@@ -389,11 +388,9 @@ Le verrou que le plan posait tient : un filtre qui vide la liste dit ce qu'il a 
 
 Deux décisions ne sont pas de l'implémentation mais de la suite : le tri reste en Python, pas dans la requête, pour que `_list_saisies` — qui rend aussi le CSV publié — reste hors de tout paramètre d'affichage ; et la vue par paire est coupée au même seuil que la liste, pour la même raison. J'avais écrit le contraire, en arguant qu'il y a au plus autant de paires que de relevés et que la vue serait donc plus légère : **la mesure refute cet argument**. Sur 6 000 relevés répartis sur 90 × 37 gares, la vue par paire rendait 0,60 Mo et 148 ms — six fois le poids d'une page de liste. Une justification écrite sans mesure coûte une page à 0,6 Mo le jour où la base grossit.
 
-Deux faits de la source ont décidé la forme de la page ligne, et il vaut mieux les écrire ici qu'un jour dans un ticket :
+Deux faits de la source expliquent pourquoi les filtres restent dans les comptages, mais la recherche de lignes a été retirée :
 
-- **Les noms de ligne ne sont pas uniques.** Le GTFS national compte 725 lignes pour 423 noms courts : `C13` désigne six lignes différentes, `INCONNU` cinquante-trois. Une URL construite sur le nom court ouvrirait donc une page au hasard. Tout ce qui identifie une ligne passe par le `route_id`, et le titre affiché porte toujours le nom long, parce que « C13 » ne veut rien dire pour quelqu'un qui ne connaît pas la numérotation SNCF.
-- Le réimport se fait une fois : une base installée avant les pages ligne est détectée au démarrage suivant et réimportée, parce qu'une recherche de ligne muette serait pire qu'une attente. Le `routes.txt` ajoute environ 20 Mo à `timetable.db`, qui pèse déjà 200 Mo.
-- **Le rattachement d'un comptage à une ligne passe par le `trip_id`**, le seul lien écrit au moment du comptage. Une paire origine-destination ne suffirait pas : deux lignes se partagent souvent le même corridor. Un « train signalé », lui, n'a pas de trip et n'apparaît sur aucune page ligne — on ne lui invente pas de ligne.
+- **Les noms de ligne ne sont pas uniques et le GTFS est incomplet.** Le nom court seul ne suffit pas à identifier une ligne ; la recherche par noms n'est donc plus proposée. Les filtres dans `/comptages` restent précis : le rattachement passe par le `trip_id`, pas par la seule paire origine-destination. Un « train signalé » n'a pas de trip et n'est associé à aucune ligne.
 
 #### Le tracé suit la voie, et trois mesures ont décidé comment
 
@@ -491,7 +488,7 @@ dans une seule PR (#40), parce qu'elles se servent l'une l'autre : on ne peut
 pas comparer des corridors sans pouvoir d'abord les choisir.
 
 **Vague 1 — la lecture s'ouvre sur un écran large.** Carte à côté de la liste
-sur grand écran, page ligne à côté de ses arrêts. Une media query, pas une
+sur grand écran. Une media query, pas une
 refonte : rien au-delà de 48 rem, le téléphone ne change pas. **Livrée** (`84e79a0`).
 
 **Vague 2 — filtrer, et comparer.** `?depuis=&jusqu=&mode=&ligne=` filtrent la
@@ -566,8 +563,7 @@ Deux choses que les vagues 1 et 2 ont apprises et qui ne se devinent pas :
   sur les deux vues.
 
 Une limite, dite : le filtre ligne a bien sa clause `trip_id IN (...)`, et
-elle est maintenant vérifiée avec une vraie base d'horaires — voir la suite
-plus bas. La page `/ligne`, qui utilise la même lecture, l'est aussi.
+elle est vérifiée avec une vraie base d'horaires — voir la suite plus bas.
 
 ### Phase 9 — Compte facultatif, et un classement qui récompense l'utilité
 

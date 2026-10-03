@@ -29,7 +29,6 @@ from html import escape
 NAVIGATION = (
     ("/comptages", "Comptages"),
     ("/carte", "Carte"),
-    ("/rechercher", "Rechercher"),
     ("/", "Compter"),
     ("/classement", "Classement"),
     ("/compte", "Compte"),

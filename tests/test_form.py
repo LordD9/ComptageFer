@@ -22,7 +22,6 @@ def test_no_page_talks_to_the_visitor_in_the_second_person(tmp_path):
     pages = {
         "/": client.get("/").text,
         "/methode": client.get("/methode").text,
-        "/rechercher": client.get("/rechercher").text,
         "/comptages": client.get("/comptages").text,
     }
     for chemin, texte in pages.items():

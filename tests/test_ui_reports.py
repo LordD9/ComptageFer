@@ -15,7 +15,7 @@ le HTML suffit parce que le défaut était dans le HTML.
 
 - Les filtres : le libellé d'un champ n'était plus au-dessus de son champ.
 - Les cartes : aucun lien vers le relevé, donc rien à cliquer.
-- `/rechercher` : les gares trouvées n'étaient pas cliquables.
+- Les routes `/rechercher` et `/ligne` ont été retirées ; les filtres restent dans `/comptages`.
 - `/` : le pseudo du compte connecté n'était pas repris dans le formulaire.
 - `/classement` : une pile de cartes illisibles les unes par rapport aux
   autres.
@@ -299,32 +299,6 @@ def test_le_client_id_ne_peut_pas_s_echapper_de_la_page_d_un_releve(tmp_path):
     )
 
 
-# --- 3. `/rechercher` : une gare trouvée doit s'ouvrir ------------------------
-
-
-def test_une_gare_trouvee_est_un_lien_vers_ses_comptages(tmp_path):
-    """Les gares trouvées étaient du texte brut, donc la page était un cul-de-sac.
-
-    `/rechercher` répondait 200, affichait « Annecy » — et rien ne se passait
-    quand on le tapait. La recherche donne l'impression d'avoir trouvé,
-    puis ne mène nulle part : c'est le pire des deux, pire qu'un « rien
-    trouvé » qui aurait au moins été honnête.
-
-    Le lien porte le `stop_id`, jamais le nom : le nom n'est pas une clé et
-    deux gares peuvent porter le même nom.
-    """
-    _stops(tmp_path)
-    client = TestClient(create_app(tmp_path))
-    _poster(client, client_id="jeton-1")
-
-    page = client.get("/rechercher?q=Annecy")
-
-    assert page.status_code == 200
-    assert "href='/gare?stop=StopArea%3AAnnecy'" in page.text, (
-        "le nom de la gare n'est pas un lien vers ses comptages"
-    )
-
-
 def test_la_page_d_une_gare_donne_ses_comptages(tmp_path):
     """Le clic sur une gare mène à ses comptages, pas à une page vide.
 
@@ -423,15 +397,11 @@ def test_une_gare_hors_catalogue_le_dis_plutot_que_d_inventer_un_nom(tmp_path):
 
     assert page.status_code == 200
     assert "pas dans le catalogue" in _corps(page.text)
-    assert 'href="/rechercher"' in page.text, "la page doit offering la recherche"
 
 
-def test_la_recherche_sans_gare_trouvee_ne_permet_pas_de_cliquer(tmp_path):
-    """Une liste de gares n'est cliquable que si elle mène quelque part.
 
-    Le cas « gares trouvées mais aucune ligne » ne doit pas laisser un lien
-    vers une gare qui n'a pas de page.
-    """
+def test_la_page_gare_sans_identifiant_demande_une_gare(tmp_path):
+    """Sans identifiant de gare, la page ne doit pas inventer de résultat."""
     _stops(tmp_path)
     client = TestClient(create_app(tmp_path))
 

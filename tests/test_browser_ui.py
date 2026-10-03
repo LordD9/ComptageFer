@@ -234,28 +234,6 @@ def test_le_trajet_du_tableau_s_ouvre_le_releve(page, site):
     assert "123 voyageurs" in page.text_content("dl.faits")
 
 
-def test_une_gare_trouvee_mene_a_ses_comptages(page, site):
-    """Le parcours complet de la recherche, tel qu'il se fait à la main.
-
-    Chercher, cliquer sur le nom, lire les comptages. Les trois étapes dans
-    un seul test : les séparer laisserait passer une recherche qui trouve et
-    un lien qui mène ailleurs, ce qui est précisément le défaut signalé.
-    """
-    page.set_viewport_size(LARGE)
-    page.goto(site + "/rechercher?q=Valence")
-
-    lien = page.locator("ul.stops a", has_text="Valence").first
-    assert lien.count() > 0, "le nom de la gare n'est pas cliquable dans les résultats"
-
-    with page.expect_navigation():
-        lien.click()
-    page.wait_for_selector("h1")
-
-    assert "Valence" in page.text_content("h1")
-    # La page existe et dit ce qu'elle est : « aucun comptage » est une
-    # réponse, une page muette n'en est pas une.
-    assert "comptage" in page.locator("main").inner_text().lower()
-
 
 def test_le_classement_aligne_les_nombres_en_colonne(page, site):
     """Un classement se compare : les nombres doivent être à la même hauteur.
