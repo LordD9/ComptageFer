@@ -3381,12 +3381,7 @@ départ, ou descendant d'un train qui termine son trajet là. Ce dernier cas est
 intéressant, car c'est souvent à la gare « centrale », origine ou terminus, que
 le train est le plus chargé.</p>
 
-<div class="note">
-<p><strong>Ce n'est pas une fréquentation officielle.</strong> Les données officielles
-de fréquentation des trains régionaux ne sont pas publiques, ou le sont sous des
-conditions étroites. Ce que vous voyez ici vient de gens qui ont compté, dans
-leur train, à leur main.</p>
-</div>
+
 
 <h2>Comment ça marche</h2>
 
@@ -3437,12 +3432,7 @@ etc.</p>
 train</strong>, pas seulement le tronçon que vous avez compté&nbsp;: toutes les
 gares qu'il dessert, du départ à l'arrivée, avec l'heure de chacune. Vous ne
 faites rien de plus, et la saisie ne change pas. C'est pour plus tard, quand on
-voudra estimer une fréquentation&nbsp;: la charge qu'un train emporte au-delà du
-tronçon compté est exactement ce qu'un effectif à un endroit ne dit pas. Ce
-trajet est une copie figée au moment du comptage, et non une lecture de
-l'horaire au moment où vous consultez cette page&nbsp;: si une ligne change de
-gares plus tard, votre comptage dira toujours ce que vous avez vu ce jour-là. Si
-vous n'avez pas choisi de train, il n'y a rien&nbsp;: l'outil ne devine pas.</p>
+
 
 <h2>D'où viennent les données</h2>
 
