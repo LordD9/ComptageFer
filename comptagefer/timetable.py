@@ -270,45 +270,6 @@ def _pairs(database, origin_stop_id, destination_stop_id, local, window, stops_d
     return found
 
 
-def search_lines(database: Path, query: str, limit: int = 12) -> list[dict]:
-    """Les lignes dont le nom court ou le nom long contient la recherche.
-
-    « Lyon » trouve donc C13 et aussi « Saint-Étienne - Roanne » si elle passe
-    par Lyon, parce que le nom long est le deuxième nom qu'un voyageur connaît.
-    """
-    needle = query.strip()
-    if len(needle) < 2:
-        return []
-    escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    motif = f"%{escaped}%"
-    if not Path(database).exists() or not _has_lines(database):
-        return []
-    with sqlite3.connect(database) as connection:
-        rows = connection.execute(
-            """
-            SELECT route_id, nom_court, nom_long, mode FROM ligne
-            WHERE nom_court LIKE ? ESCAPE '\\' OR (nom_long IS NOT NULL AND nom_long LIKE ? ESCAPE '\\')
-            ORDER BY
-                CASE WHEN lower(nom_court) = lower(?) THEN 0
-                     WHEN lower(nom_court) LIKE lower(?) || '%' ESCAPE '\\' THEN 1
-                     ELSE 2 END,
-                nom_court
-            LIMIT ?
-            """,
-            (motif, motif, needle, escaped + "%", limit),
-        ).fetchall()
-    return [
-        {
-            "route_id": route_id,
-            "nom_court": nom_court,
-            "nom_long": nom_long,
-            "mode": mode,
-            "titre": _titre(nom_court, nom_long),
-        }
-        for route_id, nom_court, nom_long, mode in rows
-    ]
-
-
 def find_line(database: Path, route_id: str) -> dict | None:
     if not Path(database).exists() or not _has_lines(database):
         return None
@@ -325,39 +286,6 @@ def find_line(database: Path, route_id: str) -> dict | None:
         "mode": row[3],
         "titre": _titre(row[1], row[2]),
     }
-
-
-def line_stops(database: Path, route_id: str, stops_database: Path | None) -> list[dict]:
-    """Les arrêts de la ligne, dans l'ordre d'un de ses trips.
-
-    On prend le premier trip comme ordre de référence : l'ordre des arrêts est
-    le même sur toute la ligne, et le GTFS national ne donne pas de séquence
-    globale. Les arrêts sont ramenés à leur gare, sinon la page afficherait
-    « Lyon Part-Dieu voie A » deux fois.
-    """
-    if not Path(database).exists() or not _has_lines(database):
-        return []
-    with sqlite3.connect(database) as connection:
-        trip_id = connection.execute(
-            "SELECT trip_id FROM trip_ligne WHERE route_id = ? ORDER BY trip_id LIMIT 1",
-            (route_id,),
-        ).fetchone()
-        if trip_id is None:
-            return []
-        rows = connection.execute(
-            "SELECT stop_id FROM passage WHERE trip_id = ? ORDER BY depart_sec",
-            (trip_id[0],),
-        ).fetchall()
-    names = _station_names(stops_database)
-    found = []
-    seen = set()
-    for (stop_id,) in rows:
-        name, key = names.get(stop_id, (stop_id, stop_id))
-        if key in seen:
-            continue
-        seen.add(key)
-        found.append({"stop_id": key, "name": name})
-    return found
 
 
 def _has_lines(database: Path) -> bool:

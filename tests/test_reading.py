@@ -258,7 +258,7 @@ def test_every_reading_page_shares_one_header_and_one_navigation(tmp_path):
     qui cesse de l'être ne se voit pas à l'œil sur cinq pages.
     """
     client = TestClient(create_app(tmp_path))
-    for chemin in ("/comptages", "/carte", "/rechercher", "/methode", "/ligne?ligne=R-TER-1"):
+    for chemin in ("/comptages", "/carte", "/methode"):
         page = client.get(chemin)
         assert page.status_code == 200, chemin
         assert page.text.count('class="barre"') == 2, f"{chemin} n'a pas l'en-tête ni le pied communs"

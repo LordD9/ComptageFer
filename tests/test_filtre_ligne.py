@@ -1,7 +1,7 @@
 """Le filtre `?ligne=`, vérifié avec une vraie base d'horaires.
 
 Le plan l'annonçait comme une limite : la clause `trip_id IN (...)` existe
-dans `filtres.py`, et la page `/ligne` fait la même lecture, mais la suite
+dans `filtres.py`, et la suite
 n'avait pas de `timetable.db` — donc `_trips_de_ligne` renvoyait toujours un
 ensemble vide, et la clause que tout le monde croyait testée ne l'était pas.
 
@@ -229,7 +229,7 @@ def test_a_count_without_trip_id_disappears_when_a_line_is_filtered(tmp_path):
     """Un comptage sans `trip_id` n'appartient a aucune ligne.
 
     On ne lui invente pas une ligne, pas plus qu'on ne lui invente un
-    effectif. C'est le meme principe que pour la page `/ligne`.
+    effectif. C'est le même principe que pour le filtre par ligne.
     """
     client = TestClient(create_app(tmp_path))
     _timetable(tmp_path)

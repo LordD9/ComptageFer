@@ -59,9 +59,7 @@ from comptagefer.rt import (
 from comptagefer.securite import https_actif, origine_autorisee
 from comptagefer.timetable import (
     find_line,
-    line_stops,
     listed_trips,
-    search_lines,
     stops_between,
     trip_stops_all,
 )
@@ -435,58 +433,16 @@ def create_app(
         # « 0 comptage au total, 1 sur la carte ».
         return carte_page(counted_features(data_dir / "stops.db", rows), len(rows))
 
-    @app.get("/api/lignes", response_class=PlainTextResponse)
-    def api_lignes(q: str = Query("", max_length=80)) -> PlainTextResponse:
-        """Les lignes dont le nom court ou le nom long contient la recherche.
-
-        La clé est le `route_id`, jamais le nom court : le GTFS national
-        attribue le même « C13 » à six lignes différentes, donc une URL
-        construite sur le nom court ouvrirait une page au hasard.
-        """
-        return PlainTextResponse(
-            json.dumps(search_lines(timetable, q), ensure_ascii=False),
-            media_type="application/json",
-        )
-
-    @app.get("/ligne", response_class=HTMLResponse)
-    def ligne(ligne_id: str = Query("", alias="ligne", max_length=120)) -> str:
-        """Les comptages d'une ligne, ou une invitation à en faire un.
-
-        Une ligne sans comptage n'est pas une page vide : la liste des arrêts
-        est déjà là, et c'est exactement ce qu'il faut pour partir compter.
-        """
-        identifiant = ligne_id.strip()
-        if not identifiant:
-            return _plain_reading_page("Quelle ligne ?", _link("/rechercher", "Rechercher une ligne"))
-        trouvee = find_line(timetable, identifiant)
-        if trouvee is None:
-            return _plain_reading_page(
-                "Cette ligne n'est pas dans le GTFS national.",
-                _link("/rechercher", "Rechercher une ligne"),
-            )
-        return _line_page(
-            trouvee,
-            _saisies_de_ligne(database, timetable, identifiant),
-            line_stops(timetable, identifiant, data_dir / "stops.db"),
-        )
-
-    @app.get("/rechercher", response_class=HTMLResponse)
-    def rechercher(q: str = Query("", max_length=80)) -> str:
-        return _search_page(q, stops_database, timetable)
-
     @app.get("/gare", response_class=HTMLResponse)
     def gare(stop: str = Query("", alias="stop", max_length=120)) -> str:
         """Les comptages d'une gare, et rien d'autre.
 
-        `/rechercher` trouvait une gare et n'affichait qu'un nom en texte
-        brut : la liste ne pouvait se sélectionner, donc la gare trouvée
-        était un cul-de-sac. Cette route est la sortie de cette impasse —
-        le nom devient un lien, et le lien mène ici.
+        Cette page reste accessible par identifiant de gare et montre les
+        comptages qui la touchent.
 
         Une gare sans comptage n'est pas une page d'erreur : la page dit
-        qu'il n'y en a pas encore et propose d'en compter un. C'est la même
-        règle que `/ligne`, et pour la même raison — une gare muette est
-        une gare qui attend son premier comptage, pas une gare inexistante.
+        qu'il n'y en a pas encore et propose d'en compter un. Une gare muette
+        attend son premier comptage, ce n'est pas une gare inexistante.
         """
         return _gare_page(database, stops_database, stop.strip())
 
@@ -2351,9 +2307,7 @@ def _gare_page(database: Path, stops_database: Path, stop_id: str) -> str:
     devine pas un nom.
     """
     if not stop_id:
-        return _plain_reading_page(
-            "Quelle gare ?", _link("/rechercher", "Rechercher une gare ou une ligne")
-        )
+        return _plain_reading_page("Quelle gare ?", _link("/comptages", "Voir les comptages"))
     nom = _nom_de_gare(stops_database, stop_id)
     if nom is None:
         return _plain_reading_page(
@@ -2386,14 +2340,6 @@ def _gare_page(database: Path, stops_database: Path, stop_id: str) -> str:
     return chrome(
         nom,
         contenu,
-        actif="/rechercher",
-        extra_css="""
-  /* Un nom de gare qui part la recherche : sans cela, le lecteur cherche
-     « Lyon », lit « Lyon Part-Dieu » en noir sur fond crème, et ne voit pas
-     que ce mot est une destination. */
-  ul.stops a { display: block; color: var(--encre); text-decoration: none; }
-  ul.stops a:hover, ul.stops a:focus-visible { text-decoration: underline; }
-""",
     )
 
 
@@ -2558,9 +2504,8 @@ def _page_depuis(valeur: str) -> int:
 def _trips_de_ligne(timetable: Path, route_id: str) -> frozenset[str]:
     """Les circulations d'une ligne, pour le filtre `?ligne=`.
 
-    La même lecture que dans `_saisies_de_ligne`, mais pour le filtre au
-    lieu de la page ligne. Elle est ici pour que le filtre n'ait pas à
-    connaître la base timetable : `filtres.py` ne lit aucun fichier.
+    Cette lecture est ici pour que le filtre n'ait pas à connaître la base
+    timetable : `filtres.py` ne lit aucun fichier.
     """
     if not route_id or not _lignes_disponibles(timetable):
         return frozenset()
@@ -2573,227 +2518,17 @@ def _trips_de_ligne(timetable: Path, route_id: str) -> frozenset[str]:
         )
 
 
-def _saisies_de_ligne(database: Path, timetable: Path, route_id: str) -> list[dict]:
-    """Les comptages rattachés à une ligne.
-
-    Le rattachement passe par le trip : c'est le seul lien écrit quand le
-    comptage a été fait, et il dit la ligne exacte, ce qu'une paire
-    origine-destination ne dit pas — deux lignes se partagent souvent le même
-    corridor. Un comptage sans trip_id, et un « train signalé », n'ont pas de
-    ligne : on ne les invente pas, on ne les affiche pas ici.
-    """
-    from comptagefer.timetable import _has_lines
-
-    if not timetable.exists() or not _has_lines(timetable):
-        return []
-    with sqlite3.connect(timetable) as connection:
-        trips = {row[0] for row in connection.execute(
-            "SELECT trip_id FROM trip_ligne WHERE route_id = ?", (route_id,)
-        )}
-    if not trips:
-        return []
-    marques = ",".join("?" for _ in trips)
-    with sqlite3.connect(database) as connection:
-        rows = connection.execute(
-            f"""
-            SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
-                   trip_id, passengers, reliability, pseudo, standing, seats_free, imbalance,
-                   materiel, composition, perimetre,
-                   snapshot, kind, created_at, legs
-            FROM saisie
-            WHERE trip_id IN ({marques}) AND kind IN ('count', 'serpent')
-            ORDER BY created_at
-            """,
-            tuple(trips),
-        ).fetchall()
-    return _saisie_dicts(rows)
-
-
-def _saisie_dicts(rows: list) -> list[dict]:
-    listed = []
-    for row in rows:
-        listed.append(
-            {
-                "client_id": row[0],
-                "origin_stop_id": row[1],
-                "destination_stop_id": row[2],
-                "origin_name": row[3],
-                "destination_name": row[4],
-                "trip_id": row[5],
-                "passengers": row[6],
-                "reliability": row[7],
-                "pseudo": row[8],
-                "standing": row[9],
-                "seats_free": row[10],
-                "imbalance": row[11],
-                "materiel": row[12],
-                "composition": row[13],
-                "perimetre": row[14],
-                "snapshot": json.loads(row[15]) if row[15] else None,
-                "kind": row[16],
-                "created_at": row[17],
-                "legs": json.loads(row[18]) if row[18] else None,
-            }
-        )
-    return listed
-
-
-def _line_page(ligne: dict, rows: list[dict], arrets: list[dict]) -> str:
-    """La page d'une ligne : ses arrêts, ses comptages, ou une invitation.
-
-    Sur un écran large, les arrêts et les comptages se lisent côte à côte : la
-    colonne de gauche dit où la ligne va, celle de droite ce qu'on y a
-    compté. Empilés sur un téléphone, ils se lisent dans l'ordre, ce qui est
-    le bon ordre là-bas.
-    """
-    titre = escape(ligne["titre"])
-    mode = {"train": "train", "car": "car", "tramway": "tramway"}.get(ligne.get("mode") or "", "")
-
-    if arrets:
-        liste_arrets = "<ol class='stops'>" + "".join(
-            f"<li>{escape(arret['name'])}</li>" for arret in arrets
-        ) + "</ol>"
-    else:
-        liste_arrets = "<p>Les arrêts de cette ligne ne sont pas dans l'horaire importé.</p>"
-
-    if rows:
-        # La page ligne n'a pas de tableau : ses comptages sont déjà dans le
-        # contexte d'une ligne et de ses arrêts, et deux colonnes de cartes
-        # se lisent mieux qu'un tableau qui perdrait le trajet complet.
-        corps = f"<div class='grille'>{_reading_cards(rows)}</div>"
-    else:
-        # Pas de carte blanche : l'invitation à compter est la page, et la
-        # liste des arrêts est déjà ce qu'il faut pour savoir où monter. Le
-        # lien est un bouton visible : un lien en fin de paragraphe, dans une
-        # page faite pour être lue dans un train, passe inaperçu.
-        corps = (
-            "<div class='card'>"
-            "<p><strong>Aucun comptage sur cette ligne pour l'instant.</strong></p>"
-            "<p>Les lignes se comptent dans le train, sur un trajet. "
-            "Une ligne sans comptage n'est pas une ligne vide : elle est "
-            "simplement encore muette.</p>"
-            "<p><a class='bouton' href='/'>Compter un train</a></p>"
-            "</div>"
-        )
-
-    ligne_mode = f"<p class='mode'>{mode}</p>" if mode else ""
-    contenu = (
-        f"{ligne_mode}"
-        "<div class='colonnes'>"
-        f"<section><h2>Arrêts</h2>{liste_arrets}</section>"
-        f"<section><h2>Comptages</h2>{corps}</section>"
-        "</div>"
-    )
-    return chrome(
-        ligne["titre"],
-        contenu,
-        actif="",
-        extra_css="""
-  .mode { font-size: 0.85rem; color: var(--gris); text-transform: uppercase; letter-spacing: 0.04em; }
-  ol.stops { padding-left: 1.2rem; }
-  ol.stops li { margin: 0.25rem 0; }
-  @media (min-width: 48rem) {
-    /* Deux colonnes dès qu'il y a de la place : sur une page ligne, le
-       rapport arrêts/comptages se lit côte à côte, ce qu'une colonne
-       unique interdit. */
-    .colonnes { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 1.6rem; }
-  }
-""",
-    )
-
-
 def _link(href: str, text: str) -> str:
     return f'<a href="{href}">{escape(text)}</a>'
 
 
 def _plain_reading_page(titre: str, corps: str) -> str:
-    """Une page de lecture sans liste : ni ligne inconnue, ni paramètre oublié.
+    """Une page de lecture sans liste, ni paramètre oublié.
 
     Elle garde les mentions et la navigation, sinon on pourrait atterrir sur une
     page qui ne dit ni ce que sont ces chiffres, ni comment revenir.
     """
     return chrome(titre, f"<div class='card'><p>{corps}</p></div>")
-
-
-def _search_page(query: str, stops_database: Path, timetable: Path) -> str:
-    """Un seul champ pour une gare ou une ligne.
-
-    Le cas d'usage est « Lyon » sans savoir si c'est une gare ou un nom de
-    ligne : deux champs feraient choisir avant de savoir quoi chercher.
-    """
-    requete = query.strip()
-    gares = search_stops(stops_database, requete) if requete else []
-    lignes = search_lines(timetable, requete) if requete and _lignes_disponibles(timetable) else []
-
-    if not requete:
-        corps = (
-            "<div class='card'><p>Écrivez un nom de gare ou de ligne. "
-            "« Lyon » trouve les deux : la gare, et les lignes qui la traversent.</p></div>"
-        )
-    else:
-        morceaux = []
-        if gares:
-            # Les gares étaient du texte brut : une liste qu'on ne peut pas
-            # sélectionner est une liste qui ne mène nulle part, et la page
-            # répondait 200 en donnant l'impression d'avoir trouvé. Le nom
-            # porte maintenant l'identifiant, donc le lien ouvre les
-            # comptages de **cette** gare.
-            morceaux.append(
-                "<h2>Gares</h2><ul class='stops'>"
-                + "".join(
-                    f"<li><a href='{_lien_gare(gare['stop_id'])}'>{escape(gare['name'])}</a></li>"
-                    for gare in gares
-                )
-                + "</ul>"
-            )
-        if lignes:
-            morceaux.append(
-                "<h2>Lignes</h2><ul class='stops'>"
-                + "".join(
-                    f"<li><a href=\"/ligne?ligne={quote(found['route_id'])}\">{escape(found['titre'])}</a></li>"
-                    for found in lignes
-                )
-                + "</ul>"
-            )
-        if not morceaux:
-            corps = (
-                "<div class='card'><p>Rien pour cette recherche.</p>"
-                "<p>Les gares viennent du GTFS national. Les lignes aussi, "
-                "mais seulement si l'import a été refait depuis la dernière mise à jour.</p></div>"
-            )
-        else:
-            # Le conteneur existe même avec une seule des deux listes : la
-            # grille doit savoir qu'il y a deux enfants possibles, sinon une
-            # recherche qui ne trouve que des lignes les étire sur toute la
-            # largeur.
-            corps = f"<div class='resultats'>{''.join(morceaux)}</div>"
-
-    form = (
-        "<form action='/rechercher' method='get'>"
-        "<label for='q'>Gare ou ligne</label>"
-        "<input id='q' type='search' name='q' enterkeyhint='search' autocomplete='off'"
-        f" value='{escape(requete, quote=True)}' placeholder='Lyon, C13, Bourg-en-Bresse'>"
-        "<button type='submit'>Chercher</button>"
-        "</form>"
-    )
-    return chrome(
-        "Rechercher",
-        form + corps,
-        actif="/rechercher",
-        extra_css="""
-  input[type="search"] { width: 100%; box-sizing: border-box; font: inherit; padding: 0.7rem;
-                         border-radius: 0.6rem; border: 1px solid #b9b2a6; background: #fff; }
-  button { font: inherit; padding: 0.7rem 1rem; border: 0; border-radius: 0.6rem;
-           background: var(--encre); color: #fff; margin-top: 0.4rem; }
-  ul.stops { list-style: none; padding: 0; }
-  ul.stops li { background: #fff; border-radius: 0.6rem; padding: 0.6rem 0.8rem; margin: 0.3rem 0; }
-  @media (min-width: 48rem) {
-    /* Deux colonnes : gares d'un côté, lignes de l'autre. Sur un téléphone
-       les deux listes s'empilent, et c'est la bonne lecture. */
-    .resultats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; }
-  }
-""",
-    )
 
 
 def _lignes_disponibles(timetable: Path) -> bool:
@@ -2806,7 +2541,7 @@ def _materiel_texte(row: dict) -> str:
     """Le matériel, sa composition et le périmètre, en une phrase lisible.
 
     « UM3, compté sur une voiture » est plus clair que trois cases vides pour
-    celui qui relit un comptage sur une page ligne. Rien ne s'affiche quand les
+    celui qui relit un comptage. Rien ne s'affiche quand les
     trois sont absents : un relevé sans matériel ne doit pas laisser une ligne
     vide qui ressemble à une information manquante alors que c'est un choix.
     """
@@ -3205,11 +2940,9 @@ def _filtres_html(filtres: Filtres, vue: str) -> str:
     donc c'est un formulaire natif qui les produit, et la même URL peut
     être partagée, signetée et testée.
 
-    Le champ « ligne » est un texte libre et non une liste déroulante,
-    pour une raison qui tient au GTFS national : il attribue le même
-    « C13 » à six lignes différentes, donc une liste déroulante de noms
-    courts ouvrirait une page au hasard. Le champ prend le `route_id`,
-    que donne `/ligne`, et le résultat est annoncé en cas d'erreur.
+    Le champ « ligne » est un texte libre, parce que le GTFS national
+    attribue le même « C13 » à plusieurs lignes. Il prend le `route_id`
+    quand il est connu et annonce le résultat en cas d'erreur.
     """
     mode_options = "".join(
         f"<option value='{escape(nom)}'"

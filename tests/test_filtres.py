@@ -372,7 +372,7 @@ def test_the_paired_view_is_cut_into_pages_too(tmp_path):
 
 
 def test_the_line_filter_uses_the_trip_and_not_the_station_pair(tmp_path):
-    """Le filtre ligne passe par le trip, comme la page `/ligne`.
+    """Le filtre ligne passe par le trip, pas par le corridor.
 
     Deux lignes se partagent souvent le même corridor : un filtre par
     paire de gares afficherait les comptages de l'autre ligne. On ne

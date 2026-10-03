@@ -140,8 +140,8 @@ def test_the_two_sets_share_no_key(tmp_path, gtfs):
     assert f"{TRANSILIEN}abc" in trips, "le francilien a écrasé le national, ou n'est pas là"
 
 
-def test_a_line_page_exists_for_a_francilien_route(tmp_path, gtfs):
-    """Le but de la PR : le RER A a une page de ligne, avec ses comptages."""
+def test_the_timetable_keeps_the_francilien_route_names(tmp_path, gtfs):
+    """Le RER A reste rattaché à son nom GTFS pour le filtre des comptages."""
     ensure_referential(tmp_path)
     with sqlite3.connect(tmp_path / "timetable.db") as connection:
         ligne = connection.execute(
