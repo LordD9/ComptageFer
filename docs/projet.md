@@ -32,7 +32,7 @@ Le cas d'usage est un téléphone, dans un train, souvent avec un réseau médio
 2. Je donne ma destination.
 3. L'outil liste les circulations qui desservent cette origine-destination, sur une plage de 4 heures centrée sur maintenant : les deux heures passées, les deux heures à venir. L'heure et l'état viennent du flux temps réel, pas de l'horaire théorique. Je sélectionne mon train. S'il n'y est pas, je signale une offre manquante. Je ne l'invente pas dans le référentiel.
 4. Je passe au formulaire. Le retard, l'heure et la suppression ne se tapent pas.
-   - **Comptage unique.** Une interstation (les deux arrêts qui l'encadrent), un effectif, et trois indicateurs approximatifs : part de gens debout, part de places assises restantes, écart de charge entre la partie la plus chargée et la moins chargée.
+   - **Comptage unique.** Un tronçon délimité par deux arrêts, un effectif, et trois indicateurs approximatifs : part de gens debout, part de places assises restantes, écart de charge entre la partie la plus chargée et la moins chargée. Pour l'agrégation, le même effectif est attribué à chacun des segments compris dans ce tronçon : c'est une convention explicite, pas une mesure supplémentaire à chaque arrêt.
    - **Serpent de charge.** Je monte, je compte une fois les portes fermées, puis à chaque arrêt j'indique montées et descentes jusqu'à ma descente. Les indicateurs du mode unique sont optionnels sur chaque interstation. Compter sa propre descente est optionnel.
 5. Pseudo, si je veux. Facultatif. Un compte, si je veux aussi : facultatif lui aussi, jamais demandé, et il ne donne aucun droit sur les données des autres. La connexion se fait par un secret long que l'outil affiche une fois — rien à retenir, et aucune adresse email n'est demandée.
 6. En quittant, j'indique un pourcentage de fiabilité. Commentaire et modèle de véhicule seulement si j'ai quelque chose à ajouter.
@@ -245,7 +245,7 @@ On ne stocke pas de position GPS.
 - Mots de passe à retenir, et tout ce qui en dépend : OAuth, fournisseurs externes d'identité. Le compte de la phase 9 affiche un **secret long** une seule fois, à conserver soi-même. Il n'y a ni mot de passe, ni adresse email, ni fournisseur d'identité : le dépôt est personnel, et un compte qui se connecte chez quelqu'un d'autre n'est plus un compte du projet.
 - Passkey WebAuthn pour la connexion. Noté ici parce que c'est **la bonne réponse** à ce que la phase 9 règle de travers — le serveur ne stockerait qu'une clé publique, et la clé privée ne quitterait jamais le téléphone — et qu'elle est écartée pour une raison concrète, écrite plus bas : c'est du JavaScript, donc du travail que la suite de tests n'exerce pas encore sur cette page.
 - Messagerie : aucune notification, aucun récapitulatif, aucune relance. Le compte n'écrit pas à personne.
-- Estimation annuelle de voyageurs et de voyageurs.kilomètres.
+- Mise en œuvre de l'estimation annuelle de passages de voyageurs et de voyageurs.kilomètres. La méthode de la phase 10 est écrite, mais aucun calcul annuel n'est encore livré.
 - Comparaison de lignes, agrégats région ou agglomération.
 - Géométrie réelle des lignes.
 - Archivage permanent de tout le flux national. Seuls le cache court et les photos liées à un comptage sont gardés.
@@ -1169,11 +1169,67 @@ qu'on les cherche :
   la liste vide — le même refus de parler d'une absence de données que
   `tools/calibrer_score.py`
 
+### Phase 10 — Méthode de fréquentation annuelle, avant le calcul
+
+**Cadrage uniquement.** La [méthode détaillée](frequentation-annuelle.md)
+définit l'estimation par segment et par sens. Cette étape ne change ni le
+calcul, ni l'export, ni la page `/methode` de l'application.
+
+Les décisions arrêtées sont l'année civile, la publication stricte et la
+recherche de comptages variés dans le temps. Un comptage unique fournit le même
+effectif sur chaque segment qu'il englobe, jamais au-delà. Un total annuel
+complet exige une offre annuelle documentée et des comptages dans tous les
+groupes de circulations actifs ; les groupes sans données ne sont pas remplis
+par la moyenne des autres. Une estimation partielle peut commencer avec cinq
+circulations distinctes admissibles au total, réparties entre pointe du matin,
+pointe du soir et heures creuses de semaine, avec au moins une dans chaque
+catégorie. Elle annonce uniquement le volume annuel des catégories couvertes,
+avec un indicateur `partial` et un `commentaire` expliquant les lacunes. Un
+segment sans valeur n'est pas affiché ; une absence n'est jamais un zéro.
+
+Le comptage porte par défaut sur le train entier, sauf indication contraire.
+US, UM2 et UM3 désignent des rames complètes, pas leurs voitures ou caisses.
+Plusieurs personnes comptant la même circulation le même jour sur le même
+segment fournissent une moyenne pondérée par leur fiabilité, pas plusieurs
+circulations : un score nul n'a aucun poids, et des scores tous nuls ne donnent
+pas de valeur. Seuls les comptages entrent dans l'estimation.
+
+Hors vacances : semaine en pointe du matin [07h, 10h[, en pointe du soir
+[16h, 19h[ ou en heures creuses ; samedi ; dimanche et jours fériés. Les
+vacances scolaires remplacent ces catégories, tous jours et horaires confondus,
+avec un groupe distinct pour les vacances d'été. La classification scolaire
+devra être obtenue automatiquement à partir de la date et du calendrier
+géographique applicable, puis figée avec le comptage.
+
+Le ratio de trois entre train moyen et train le plus chargé, rapporté par
+Balraj, motive la séparation des horaires. Ce n'est ni un ratio pointe/creux
+universel, ni un coefficient qui permet de compléter les périodes manquantes.
+Les facteurs pour une seule rame complète comptée en UM2 (×1,75) ou UM3
+(×2,7) sont des valeurs provisoires non sourcées, retenues pour expérimenter
+plutôt qu'un simple ×2 ou ×3. Ils pourront être affinés ; ils ne constituent
+pas une calibration validée. Le brut reste inchangé et un train entier déjà
+compté n'est pas remultiplié.
+
+Restent à préciser avant l'implémentation : l'historique compressé de l'offre
+théorique SNCF, la source et le rattachement géographique du calendrier scolaire,
+le poids représentatif d'une circulation après fusion de plusieurs relevés,
+et l'heure de classement d'un segment. Le trajet GTFS figé contient les gares
+desservies, pas nécessairement toutes les gares traversées sans arrêt : celles-ci
+doivent être retrouvées pour respecter les segments élémentaires, sans gare
+intermédiaire. La précision statistique devra être étudiée, sans présenter les
+seuils pragmatiques comme une garantie de représentativité.
+
+Le futur CSV conserve uniquement les statuts du précédent, du précédent du
+même type, du courant, du suivant et du suivant du même type, à partir du
+contexte figé. Il n'est pas demandé d'ajouter leurs identités ou toutes leurs
+métadonnées. Le CSV actuel ne fournit que les états du précédent, du courant
+et du suivant ; cette PR ne le modifie pas.
+
 ### Ensuite, dans cet ordre
 
 1. Géométries de lignes, si les segments droits ne suffisent plus. Jointure OSM, ou GTFS régionaux qui ont un `shapes.txt`.
 2. Autres GTFS : cars d'AOM, TER non SNCF. Leur temps réel viendra avec, sur le même poller, seulement s'il existe un flux.
-3. Méthode d'estimation annuelle, écrite avant d'être codée. Jours types, biais de qui compte, seuil minimal de comptages, voyageurs.kilomètres. Le chiffre affiche toujours son dénominateur. Une suppression conservée ne devient pas, à elle seule, un report chiffré.
+3. Mise en œuvre de la phase 10, après validation de la [méthode d'estimation annuelle](frequentation-annuelle.md) et de ses paramètres encore ouverts. Le chiffre affiche toujours son dénominateur. Une suppression conservée ne devient pas, à elle seule, un report chiffré.
 4. Comparaison de lignes et agrégats géographiques.
 5. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton. **Fait, c'est la phase 9** — déclenché par l'historique : rattacher ses relevés à soi est ce qui manquait, et le signalement d'un relevé est la modération qui ne tenait pas dans `ADMIN_TOKEN`.
 
@@ -1189,6 +1245,7 @@ qu'on les cherche :
 8. Ouverte, phase 9. Le compte est facultatif à 100 %, et **aucune adresse email n'est stockée**. La connexion se fait par un secret long aléatoire, rendu dans le corps du POST de création, jamais en URL. L'option passkeys WebAuthn est étudiée dans [securite-comptes.md](securite-comptes.md) : le JavaScript de copie a déjà ses tests Chromium ; restent la cérémonie, la migration et la récupération. Aucun remplacement du secret n'est livré par cet audit.
 9. Ouverte, phase 9. Le classement récompense l'utilité, pas le volume. Un point par relevé récompenserait quelqu'un qui revient compter le même train vide dix fois. Les coefficients se calibrent sur la base réelle, pas dans une intuition. À l'intérieur de cette utilité, deux formes rapportent plus que les autres parce qu'elles sont plus interprétables : le serpent de charge, qui dit où la charge monte et descend, et le relevé à périmètre `um`, qui donne la charge de la rame entière.
 10. Ouverte, phase 9. `compte_id` n'est exporté nulle part — ni CSV, ni URL, ni journal, ni page. Le jeu est ouvert et republicisé chaque nuit ; y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent.
+11. Fermée, phase 10. L'estimation porte sur l'année civile et les passages de voyageurs par segment et par sens. Un comptage concerne le train entier par défaut ; un comptage unique fournit la même valeur sur tous les segments qu'il englobe. Les comptages d'une même circulation sont fusionnés par moyenne pondérée de fiabilité. Une estimation partielle des seules catégories couvertes démarre avec cinq circulations admissibles réparties entre les trois catégories de semaine, au moins une dans chacune ; elle porte `partial` et un `commentaire`. Les catégories de vacances remplacent les catégories ordinaires. Les facteurs d'une rame dans une UM2 (×1,75) ou une UM3 (×2,7) sont expérimentaux et non sourcés. Les choix techniques encore ouverts figurent dans la [méthode](frequentation-annuelle.md).
 
 ## 9. Ce qui n'est pas une promesse
 
