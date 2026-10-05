@@ -1187,15 +1187,19 @@ permettre de distinguer.
 
 #### Les trois étapes
 
-1. **Le matériel, la composition, les rames.** Le type de matériel se choisit
-   dans une **liste fermée de formations TER** (`comptagefer/materiel.py`), avec
-   auto-complétion et recherche dans la liste. Chaque entrée porte son nombre de
-   voitures et son mot : un AGC se compte **par caisse**, une rame tractée ou un
-   Regio 2N **par voiture**. Choisir une formation ouvre le schéma des rames
-   (US, UM2, UM3) : on y touche les rames que l'on va compter. L'écran oblige
-   donc à dire si l'on compte tout le train ou seulement une rame d'une UM, au
-   lieu de le laisser déduire. Le matériel reste facultatif ; la composition et
-   le périmètre restent liés comme avant.
+1. **La composition, ce que l'on compte, puis le matériel en option.**
+   L'obligatoire vient en premier : la composition du train (US, UM2, UM3 ou
+   « Je ne sais pas »), les rames que l'on va compter sur le schéma, et, sans
+   matériel, ce que l'on compte (une seule voiture ou toute la rame). Le bouton
+   « Passer au comptage » est juste dessous : on peut partir directement au
+   comptage, sans matériel. Sinon, « Préciser le matériel roulant » déplie la
+   recherche dans la **liste fermée de formations TER**
+   (`comptagefer/materiel.py`), avec auto-complétion. Chaque entrée porte son
+   nombre de voitures et son mot : un AGC se compte **par caisse**, une rame
+   tractée ou un Regio 2N **par voiture**. Avec un matériel, le comptage se fait
+   voiture par voiture et le périmètre en découle. Le matériel reste
+   facultatif ; la composition n'est pas exigée par le serveur, et « Je ne
+   sais pas » mène au comptage unique.
 2. **Le comptage.** Trois chemins :
    - *par voiture*, quand un matériel a été reconnu : le schéma de la rame
      courante montre ses voitures, on compte l'une après l'autre, on revient en
@@ -1208,6 +1212,18 @@ permettre de distinguer.
    puis `−1 −10`.
 3. **Les autres renseignements.** Fiabilité, indicateurs, pseudo, commentaire :
    ce qui existe aujourd'hui, à la fin et non plus au milieu.
+
+**Vérification hors ligne.** Un test navigateur coupe le réseau du navigateur
+(`context.set_offline(True)`) après le choix du train, puis fait le comptage
+complet, avec et sans matériel. Le comptage reste dans la file locale, photo
+comprise, puis part une seule fois au retour du réseau.
+
+Ce test a trouvé une course, environ une fois sur cinq : l'événement `online`
+et le vidage du chargement envoyaient la file deux fois en parallèle. Le second
+`INSERT` butait sur la clé primaire et rendait un 500 ; le navigateur gardait
+donc en file un comptage déjà écrit. Le vidage est maintenant unique côté page,
+et l'`INSERT` passe en `ON CONFLICT DO NOTHING` côté serveur : un doublon rend
+`stored: false`, jamais un 500.
 
 #### Le contrat
 

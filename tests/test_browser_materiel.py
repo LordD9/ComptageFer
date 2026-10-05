@@ -22,13 +22,14 @@ def _sessions(site):
 
 def test_material_composition_car_details_and_total_are_sent(page, site):
     _reach_material(page, site)
-    page.fill("#materiel-q", "TER 2N 2")
-    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
-    assert "2 voitures" in page.text_content("#formation-resume")
     page.click("#compo-UM2")
     page.click('.rame-box[data-rame="1"]')
     page.click('.rame-box[data-rame="2"]')
-    page.click("#materiel-next")
+    page.click("#materiel-ouvrir")
+    page.fill("#materiel-q", "TER 2N 2")
+    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
+    assert "2 voitures" in page.text_content("#formation-resume")
+    page.click("#materiel-compter")
     page.wait_for_selector("#comptage-step:not(.hidden)")
     assert page.locator('.voiture-box[data-rame="1"]').count() == 2
 
@@ -70,7 +71,6 @@ def test_material_composition_car_details_and_total_are_sent(page, site):
 
 def test_counter_has_twenty_minus_ten_and_free_entry(page, site):
     _reach_material(page, site)
-    page.click("#materiel-clear")
     page.click("#compo-none")
     page.click("#materiel-next")
     page.click("#mode-unique")
@@ -89,10 +89,10 @@ def test_counter_has_twenty_minus_ten_and_free_entry(page, site):
 
 def test_rame_mode_records_each_selected_rame_and_total(page, site):
     _reach_material(page, site)
-    page.click("#materiel-clear")
     page.click("#compo-UM2")
     page.click('.rame-box[data-rame="1"]')
     page.click('.rame-box[data-rame="2"]')
+    page.select_option("#perimetre", "um")
     page.click("#materiel-next")
     assert page.locator("#mode-rame").is_visible()
     page.click("#mode-rame")
@@ -129,11 +129,13 @@ def test_each_counting_step_fits_a_phone_viewport(page, site):
 
     # Le schéma des voitures : c'est la nouvelle étape, et c'est elle qui a le
     # plus de cases à faire tenir sur 390 px.
-    page.fill("#materiel-q", "TER 2N 2")
-    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
     page.click("#compo-UM3")
     page.click("#rames-tout")
-    page.click("#materiel-next")
+    page.click("#materiel-ouvrir")
+    page.fill("#materiel-q", "TER 2N 2")
+    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
+    assert pas_de_debordement() == 0, "le bloc matériel déborde"
+    page.click("#materiel-compter")
     assert pas_de_debordement() == 0, "le schéma des voitures déborde"
 
     # Et le comptage sans matériel, avec sa liste de formations dépliée.
@@ -142,6 +144,7 @@ def test_each_counting_step_fits_a_phone_viewport(page, site):
     page.click("#trains button:has-text('TER')")
     page.click("#materiel-clear")
     assert pas_de_debordement() == 0, "la liste des formations déborde"
+    page.click("#compo-none")
     page.click("#materiel-next")
     page.click("#mode-unique")
     assert pas_de_debordement() == 0, "le comptage unique déborde"
@@ -150,7 +153,236 @@ def test_each_counting_step_fits_a_phone_viewport(page, site):
 def test_rame_mode_is_hidden_for_a_us(page, site):
 
     _reach_material(page, site)
-    page.click("#materiel-clear")
     page.click("#compo-US")
+    page.select_option("#perimetre", "voiture")
     page.click("#materiel-next")
     assert page.locator("#mode-rame").is_hidden()
+
+
+def _compter_quatre_voitures(page):
+    for _ in range(4):
+        page.click("#plus10")
+        page.click("#voiture-next")
+
+
+def test_the_mandatory_part_comes_first_and_the_material_is_folded(page, site):
+    """Composition et périmètre précèdent le matériel, qui reste replié."""
+    _reach_material(page, site)
+    ordre = page.evaluate(
+        """() => {
+            const pos = (id) => [...document.querySelectorAll('#materiel-step *')]
+                .indexOf(document.getElementById(id));
+            const bloc = document.getElementById('materiel-bloc');
+            const avant = (id) => !!(document.getElementById(id).compareDocumentPosition(bloc)
+                & Node.DOCUMENT_POSITION_FOLLOWING);
+            return {composition: avant('composition-choices'), perimetre: avant('perimetre'),
+                    next: avant('materiel-next')};
+        }"""
+    )
+    assert ordre == {"composition": True, "perimetre": True, "next": True}
+    assert page.locator("#materiel-bloc").is_hidden()
+    assert page.locator("#materiel-q").is_hidden()
+    page.click("#materiel-ouvrir")
+    assert page.locator("#materiel-bloc").is_visible()
+    assert page.locator("#materiel-q").is_visible()
+
+
+def test_the_scope_is_asked_only_with_a_composition_and_without_material(page, site):
+    _reach_material(page, site)
+    assert page.locator("#perimetre").is_hidden()
+    page.click("#compo-UM2")
+    assert page.locator("#perimetre").is_visible()
+    page.click("#materiel-ouvrir")
+    page.fill("#materiel-q", "TER 2N 2")
+    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
+    assert page.locator("#perimetre").is_hidden()
+    page.click("#materiel-clear")
+    assert page.locator("#perimetre").is_visible()
+
+
+def test_one_can_go_straight_to_counting_without_material(page, site):
+    _reach_material(page, site)
+    page.click("#compo-UM2")
+    page.click('.rame-box[data-rame="1"]')
+    page.click('.rame-box[data-rame="2"]')
+    page.select_option("#perimetre", "um")
+    page.click("#materiel-next")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
+    page.click("#mode-rame")
+    page.click("#plus20")
+    page.click("#count-next")
+    page.click("#plus10")
+    page.click("#count-next")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    ligne = _sessions(site)[0]
+    assert ligne["composition"] == "UM2"
+    assert ligne["perimetre"] == "um"
+    assert ligne["materiel"] in (None, "")
+    assert ligne["voitures"] is None
+    assert ligne["rames"] == [{"rame": 1, "passengers": 20}, {"rame": 2, "passengers": 10}]
+
+
+def test_a_composition_without_a_rame_keeps_the_step(page, site):
+    _reach_material(page, site)
+    page.click("#compo-UM2")
+    page.select_option("#perimetre", "um")
+    page.click("#materiel-next")
+    assert page.locator("#materiel-step").is_visible()
+    assert page.locator("#comptage-step").is_hidden()
+    assert page.locator("#rames-error").is_visible()
+    assert "rame" in page.text_content("#rames-error")
+
+
+def test_a_composition_without_a_scope_keeps_the_step(page, site):
+    _reach_material(page, site)
+    page.click("#compo-UM2")
+    page.click("#rames-tout")
+    page.click("#materiel-next")
+    assert page.locator("#materiel-step").is_visible()
+    assert page.locator("#comptage-step").is_hidden()
+    assert page.locator("#scope-error").is_visible()
+    assert "voiture" in page.text_content("#scope-error")
+
+
+def test_a_material_without_a_composition_keeps_the_step(page, site):
+    _reach_material(page, site)
+    page.click("#materiel-ouvrir")
+    page.fill("#materiel-q", "TER 2N 2")
+    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
+    page.click("#compo-none")
+    page.click("#materiel-compter")
+    assert page.locator("#comptage-step").is_hidden()
+    assert page.locator("#rames-error").is_visible()
+
+
+def test_i_do_not_know_the_composition_goes_straight_to_a_single_count(page, site):
+    _reach_material(page, site)
+    page.click("#compo-none")
+    page.click("#materiel-next")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
+    page.click("#mode-unique")
+    page.click("#plus10")
+    page.click("#count-next")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+    ligne = _sessions(site)[0]
+    assert ligne["composition"] is None and ligne["perimetre"] is None
+
+
+def _queue(page):
+    return page.evaluate("() => JSON.parse(localStorage.getItem('comptagefer-queue') || '[]')")
+
+
+def _attendre_file_vide(page):
+    page.wait_for_function(
+        "() => JSON.parse(localStorage.getItem('comptagefer-queue') || '[]').length === 0",
+        timeout=10000,
+    )
+
+
+def _suivre_le_reseau(page):
+    """Les requêtes qui échouent et les erreurs de console, hors /api/sessions."""
+    echecs: list[str] = []
+    console: list[str] = []
+    page.on("requestfailed", lambda req: echecs.append(req.url))
+    page.on("console", lambda msg: console.append(msg.text) if msg.type == "error" else None)
+    return echecs, console
+
+
+def _revenir_en_ligne(page):
+    page.context.set_offline(False)
+    page.evaluate("() => window.dispatchEvent(new Event('online'))")
+    _attendre_file_vide(page)
+
+
+def test_a_full_count_with_material_works_offline_and_is_sent_once_back_online(page, site):
+    """Le comptage complet ne demande aucun réseau après le choix du train."""
+    _reach_material(page, site)
+    echecs, console = _suivre_le_reseau(page)
+    page.context.set_offline(True)
+
+    page.click("#compo-UM2")
+    page.click('.rame-box[data-rame="1"]')
+    page.click('.rame-box[data-rame="2"]')
+    page.click("#materiel-ouvrir")
+    page.fill("#materiel-q", "TER 2N 2")
+    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
+    page.click("#materiel-compter")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
+    _compter_quatre_voitures(page)
+    page.click("#form-step summary")
+    page.fill("#pseudo", "horsligne")
+    page.fill("#comment", "tunnel")
+    page.click("#send")
+    page.wait_for_function("() => document.getElementById('error').textContent.includes('Pas de réseau')")
+
+    assert page.locator("#done-step").is_hidden()
+    assert "Pas de réseau" in page.text_content("#error")
+    file = _queue(page)
+    assert len(file) == 1
+    corps = file[0]
+    assert corps["materiel"] == "TER 2N 2 voitures"
+    assert corps["composition"] == "UM2"
+    assert corps["perimetre"] == "voiture"
+    assert corps["passengers"] == 40
+    assert len(corps["voitures"]) == 4
+    assert corps["snapshot"]
+    assert corps["pseudo"] == "horsligne"
+    assert [u for u in echecs if "/api/sessions" not in u] == []
+    assert [c for c in console if "/api/sessions" not in c and "ERR_INTERNET_DISCONNECTED" not in c] == []
+    assert page.errors == []
+    assert _sessions(site) == []
+
+    _revenir_en_ligne(page)
+    lignes = _sessions(site)
+    assert len(lignes) == 1
+    ligne = lignes[0]
+    assert ligne["passengers"] == 40
+    assert len(ligne["voitures"]) == 4
+    assert ligne["materiel"] == "TER 2N 2 voitures"
+    assert ligne["composition"] == "UM2"
+    assert ligne["pseudo"] == "horsligne"
+
+
+def test_a_direct_count_without_material_works_offline_and_is_sent_once(page, site):
+    _reach_material(page, site)
+    echecs, console = _suivre_le_reseau(page)
+    page.context.set_offline(True)
+
+    page.click("#compo-UM2")
+    page.click("#rames-tout")
+    page.select_option("#perimetre", "um")
+    page.click("#materiel-next")
+    page.click("#mode-rame")
+    page.click("#plus20")
+    page.click("#count-next")
+    page.click("#plus10")
+    page.click("#count-next")
+    page.click("#form-step summary")
+    page.fill("#pseudo", "direct")
+    page.fill("#comment", "sans matériel")
+    page.click("#send")
+    page.wait_for_function("() => document.getElementById('error').textContent.includes('Pas de réseau')")
+
+    assert page.locator("#done-step").is_hidden()
+    file = _queue(page)
+    assert len(file) == 1
+    corps = file[0]
+    assert corps["composition"] == "UM2" and corps["perimetre"] == "um"
+    assert corps["materiel"] == ""
+    assert corps["passengers"] == 30
+    assert corps["rames"] == [{"rame": 1, "passengers": 20}, {"rame": 2, "passengers": 10}]
+    assert corps["snapshot"]
+    assert [u for u in echecs if "/api/sessions" not in u] == []
+    assert [c for c in console if "/api/sessions" not in c and "ERR_INTERNET_DISCONNECTED" not in c] == []
+    assert page.errors == []
+
+    _revenir_en_ligne(page)
+    lignes = _sessions(site)
+    assert len(lignes) == 1
+    assert lignes[0]["passengers"] == 30
+    assert lignes[0]["composition"] == "UM2" and lignes[0]["perimetre"] == "um"
+    assert lignes[0]["rames"] == corps["rames"]
+    assert lignes[0]["pseudo"] == "direct"

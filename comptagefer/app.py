@@ -1986,7 +1986,13 @@ def _save_saisie(
         # navigateur, tous deux comptés au score.
         if existing and existing[1] == kind:
             return {"client_id": existing[0], "kind": existing[1], "stored": False}
-        connection.execute(
+        # Le `SELECT` ci-dessus ne suffit pas : deux envois du même payload
+        # peuvent passer le contrôle en même temps (la file hors ligne se vide
+        # à l'événement `online` et au chargement de la page). Le second
+        # levait alors `IntegrityError`, donc un 500, et le navigateur gardait
+        # en file un comptage déjà écrit. La clé primaire tranche : un conflit
+        # est un doublon, rendu comme tel.
+        cursor = connection.execute(
             """
             INSERT INTO saisie (
                 client_id, origin_stop_id, destination_stop_id, origin_name, destination_name, trip_id,
@@ -1994,6 +2000,7 @@ def _save_saisie(
                 materiel, composition, perimetre, snapshot, legs, trajet, voitures, rames, kind, created_at, compte_id
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (client_id, kind) DO NOTHING
             """,
             (
                 client_id,
@@ -2022,6 +2029,8 @@ def _save_saisie(
                 compte_id,
             ),
         )
+        if cursor.rowcount == 0:
+            return {"client_id": client_id, "kind": kind, "stored": False}
     return {"client_id": client_id, "kind": kind, "stored": True}
 
 

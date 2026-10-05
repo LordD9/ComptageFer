@@ -86,12 +86,6 @@ PAGE = """<!doctype html>
   </section>
   <section id="materiel-step" class="hidden">
     <div class="chip"><span id="mode-chip"></span><button class="ghost" id="change-mode" type="button">Changer</button></div>
-    <label for="materiel-q">Matériel roulant (facultatif)</label>
-    <input id="materiel-q" type="text" list="materiels" autocomplete="off" placeholder="Rechercher une formation">
-    <datalist id="materiels">{MATERIEL_OPTIONS}</datalist>
-    <div id="materiel-list" class="choices"></div>
-    <p id="formation-resume" class="status"></p>
-    <button class="ghost" id="materiel-clear" type="button">Aucun matériel / je ne sais pas</button>
     <div id="composition-choices" class="choices">
       <p>Composition du train</p>
       <button id="compo-US" type="button">US</button>
@@ -99,11 +93,32 @@ PAGE = """<!doctype html>
       <button id="compo-UM3" type="button">UM3</button>
       <button class="ghost" id="compo-none" type="button">Je ne sais pas</button>
     </div>
-    <div id="rames-schema" class="choices hidden"></div>
+    <div id="compte-zone" class="hidden">
+      <p>Rames à compter</p>
+      <div id="rames-schema" class="choices hidden"></div>
+      <button class="ghost" id="rames-tout" type="button">Tout le train</button>
+      <button class="ghost" id="rames-aucune" type="button">Aucune rame</button>
+      <div id="perimetre-zone" class="hidden">
+        <label for="perimetre">Ce que vous comptez</label>
+        <select id="perimetre">
+          <option value="">—</option><option value="voiture">Une seule voiture</option><option value="um">Toute la rame</option>
+        </select>
+      </div>
+    </div>
     <p id="rames-error" class="bad" role="status" hidden></p>
-    <button class="ghost" id="rames-tout" type="button">Tout le train</button>
-    <button class="ghost" id="rames-aucune" type="button">Aucune rame</button>
-    <p><button id="materiel-next" type="button">Suivant</button> <button class="ghost" id="materiel-back" type="button">Retour</button></p>
+    <p id="scope-error" class="bad" role="status" hidden></p>
+    <p><button id="materiel-next" type="button">Passer au comptage</button></p>
+    <p><button class="ghost" id="materiel-ouvrir" type="button" aria-expanded="false" aria-controls="materiel-bloc">Préciser le matériel roulant</button></p>
+    <div id="materiel-bloc" class="hidden">
+      <label for="materiel-q">Matériel roulant (facultatif)</label>
+      <input id="materiel-q" type="text" list="materiels" autocomplete="off" placeholder="Rechercher une formation">
+      <datalist id="materiels">{MATERIEL_OPTIONS}</datalist>
+      <div id="materiel-list" class="choices"></div>
+      <p id="formation-resume" class="status"></p>
+      <button class="ghost" id="materiel-clear" type="button">Aucun matériel / je ne sais pas</button>
+      <p><button id="materiel-compter" type="button">Passer au comptage</button></p>
+    </div>
+    <p><button class="ghost" id="materiel-back" type="button">Retour</button></p>
   </section>
   <section id="comptage-step" class="hidden">
     <div class="chip"><button class="ghost" id="change-train-count" type="button">Changer de train</button></div>
@@ -142,11 +157,6 @@ PAGE = """<!doctype html>
   <section id="form-step" class="hidden">
     <div class="chip"><span id="train-chip"></span><button class="ghost" id="change-train" type="button">Changer</button></div>
     <p class="hint">Ce compte vaut pour l'interstation entre <span id="od-rappel"></span>. En gare, sans monter dans le train&nbsp;: comptez à partir de la dernière gare desservie avant le terminus ou de la première gare desservie après l'origine du trajet compté, et non pas celles de la ligne.</p>
-    <label class="hidden" for="perimetre">Ce que vous avez compté</label>
-    <select id="perimetre" class="hidden">
-      <option value="">—</option><option value="voiture">Une seule voiture</option><option value="um">Toute la rame</option>
-    </select>
-    <p id="scope-error" class="bad" role="status" hidden></p>
     <label for="reliability">Fiabilité du compte, de 0 à 100</label>
     <input id="reliability" type="number" inputmode="numeric" min="0" max="100" step="1" value="80">
     <details>
@@ -310,6 +320,11 @@ function renderRames() {
   const size = { US: 1, UM2: 2, UM3: 3 }[state.composition] || 0;
   const schema = $("rames-schema");
   schema.replaceChildren();
+  // Le périmètre se demande ici, avant le comptage : seulement avec une
+  // composition, et sans matériel (avec un matériel, le comptage se fait
+  // voiture par voiture et le périmètre en découle).
+  $("compte-zone").classList.toggle("hidden", !size);
+  $("perimetre-zone").classList.toggle("hidden", !size || !!state.material);
   if (!size) { schema.classList.add("hidden"); return; }
   schema.classList.remove("hidden");
   for (let n = 1; n <= size; n++) {
@@ -327,8 +342,15 @@ function renderRames() {
 }
 $("materiel-q").addEventListener("input", (event) => filteredMateriels(event.target.value));
 filteredMateriels("");
+$("materiel-ouvrir").onclick = () => {
+  const bloc = $("materiel-bloc");
+  bloc.classList.toggle("hidden");
+  $("materiel-ouvrir").setAttribute("aria-expanded", String(!bloc.classList.contains("hidden")));
+};
+// La composition se choisit avant le matériel : l'effacer avec lui ferait
+// perdre un choix obligatoire. On n'efface donc que le matériel.
 $("materiel-clear").onclick = () => {
-  state.material = null; state.composition = ""; state.selectedRames = [];
+  state.material = null;
   $("materiel-q").value = ""; $("formation-resume").textContent = "";
   renderRames();
 };
@@ -337,7 +359,7 @@ for (const composition of ["US", "UM2", "UM3"]) $("compo-" + composition).onclic
   state.selectedRames = composition === "US" ? [1] : [];
   renderRames();
 };
-$("compo-none").onclick = () => { state.composition = ""; state.selectedRames = []; renderRames(); };
+$("compo-none").onclick = () => { state.composition = ""; state.selectedRames = []; $("perimetre").value = ""; renderRames(); };
 $("rames-tout").onclick = () => {
   const size = { US: 1, UM2: 2, UM3: 3 }[state.composition] || 0;
   state.selectedRames = Array.from({ length: size }, (_, i) => i + 1); renderRames();
@@ -353,19 +375,25 @@ function startUnique() {
   $("pad-label").textContent = "Voyageurs dans le train";
   $("count-modes").classList.remove("hidden"); $("voitures-schema").classList.add("hidden");
   $("voiture-prev").classList.add("hidden"); $("voiture-next").classList.add("hidden");
-  $("count-next").classList.remove("hidden"); $("perimetre").value = "";
-  $("perimetre").classList.remove("hidden"); $("perimetre").previousElementSibling.classList.remove("hidden");
+  $("count-next").classList.remove("hidden");
   $("od-rappel").textContent = state.origin.name + " et " + state.destination.name;
   signalerPlausibilite(0); show("comptage-step"); $("passengers").focus();
 }
 $("mode-unique").onclick = startUnique;
-$("materiel-next").onclick = () => {
-  $("rames-error").hidden = true;
-  if (state.material && (!state.composition || !state.selectedRames.length)) {
+// Entrée commune au comptage : le bouton principal et celui du bloc matériel.
+function goCounting() {
+  $("rames-error").hidden = true; $("scope-error").hidden = true;
+  if (state.composition && !state.selectedRames.length) {
+    $("rames-error").textContent = "Choisissez au moins une rame à compter.";
+    $("rames-error").hidden = false;
+    return;
+  }
+  if (state.material && !state.composition) {
     $("rames-error").textContent = "Choisissez une composition et au moins une rame à compter.";
     $("rames-error").hidden = false;
     return;
   }
+  if (state.composition && !state.material && !validateUniqueScope()) return;
   $("od-rappel").textContent = state.origin.name + " et " + state.destination.name;
   $("count-modes").classList.remove("hidden");
   $("mode-rame").classList.add("hidden");
@@ -375,16 +403,17 @@ $("materiel-next").onclick = () => {
     state.passengers = 0; state.voitures = []; state.rames = [];
     $("count-display").textContent = "0"; $("passengers").value = "0";
     $("pad-label").textContent = "Voyageurs dans le train";
-    const multi = state.composition.startsWith("UM") && state.selectedRames.length > 1;
+    const multi = state.composition.startsWith("UM") && state.selectedRames.length > 1 && $("perimetre").value === "um";
     $("mode-rame").classList.toggle("hidden", !multi);
     $("count-modes").classList.remove("hidden"); $("count-next").classList.remove("hidden");
-    $("voitures-schema").classList.add("hidden"); $("perimetre").classList.remove("hidden");
+    $("voitures-schema").classList.add("hidden");
     show("comptage-step"); $("passengers").focus();
   }
-};
+}
+$("materiel-next").onclick = goCounting;
+$("materiel-compter").onclick = goCounting;
 function startCars() {
   state.voitures = []; state.rames = []; state.rameIndex = 0; state.position = 1;
-  $("perimetre").classList.add("hidden"); $("perimetre").previousElementSibling.classList.add("hidden");
   $("count-modes").classList.add("hidden"); $("count-next").classList.add("hidden");
   $("voitures-schema").classList.remove("hidden"); $("voiture-prev").classList.remove("hidden");
   $("voiture-next").classList.remove("hidden"); renderCar(); show("comptage-step");
@@ -412,7 +441,6 @@ function loadCarPad() {
 }
 function startRame() {
   state.rames = []; state.rameIndex = 0; loadRamePad();
-  $("perimetre").classList.add("hidden"); $("perimetre").previousElementSibling.classList.add("hidden");
   $("count-modes").classList.add("hidden"); $("count-next").classList.remove("hidden");
 }
 function loadRamePad() {
@@ -450,13 +478,11 @@ $("count-next").onclick = () => {
   if (state.pad.kind === "rame") {
     savePad(); state.rameIndex++;
     if (state.rameIndex >= state.selectedRames.length) finishCounting(); else loadRamePad();
-  } else { $("perimetre").value = ""; show("form-step"); }
+  } else { show("form-step"); }
 };
 function finishCounting() {
   $("count-modes").classList.add("hidden"); $("voitures-schema").classList.add("hidden");
-  $("count-next").classList.add("hidden"); $("perimetre").classList.add("hidden");
-  $("perimetre").previousElementSibling.classList.add("hidden");
-  $("perimetre").value = state.material ? "voiture" : "um";
+  $("count-next").classList.add("hidden");
   $("form-step").classList.remove("hidden"); show("form-step");
 }
 
@@ -890,7 +916,16 @@ async function postCount(body) {
   if (response.status >= 500) return false;
   return response.ok || response.status < 500;
 }
-async function flushQueue() {
+// Un seul vidage à la fois : l'événement `online` peut tomber pendant le
+// vidage du chargement, et deux vidages envoyaient deux fois la même file.
+// Le second, fini après le premier, réécrivait aussi la file avec des
+// éléments que le premier venait d'envoyer.
+let flushing = null;
+function flushQueue() {
+  if (!flushing) flushing = flushOnce().finally(() => { flushing = null; });
+  return flushing;
+}
+async function flushOnce() {
   const queue = readQueue();
   if (!queue.length) return;
   const kept = await drain(queue, postCount);
@@ -899,7 +934,12 @@ async function flushQueue() {
   if (sent.has(localStorage.getItem("comptagefer-client"))) {
     localStorage.removeItem("comptagefer-client");
   }
-  writeQueue(kept);
+  // Un comptage mis en file pendant le vidage n'est pas dans `queue` : le
+  // garder plutôt que l'écraser avec `kept`.
+  const keptIds = new Set(kept.map((item) => item.client_id));
+  const added = readQueue().filter((item) => !sent.has(item.client_id) && !keptIds.has(item.client_id)
+    && !queue.some((old) => old.client_id === item.client_id));
+  writeQueue(kept.concat(added));
 }
 window.addEventListener("online", flushQueue);
 flushQueue();
@@ -908,7 +948,10 @@ flushQueue();
 offerSnake();
 $("send").onclick = async () => {
   $("error").textContent = "";
-  if (state.pad.kind === "unique" && !validateUniqueScope()) return;
+  if (state.pad.kind === "unique" && !validateUniqueScope()) {
+    $("error").textContent = $("scope-error").textContent;
+    return;
+  }
   let body;
   try {
     body = countPayload();
