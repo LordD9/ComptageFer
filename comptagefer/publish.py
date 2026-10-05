@@ -76,6 +76,8 @@ def render_csv(rows: list[dict]) -> str:
             "trajet",
             "precedent_meme_type",
             "suivant_meme_type",
+            "voitures",
+            "rames",
         ]
     )
     for row in rows:
@@ -103,6 +105,8 @@ def render_csv(rows: list[dict]) -> str:
                 _trajet_csv(row.get("trajet")),
                 _photo_status(row.get("snapshot"), "precedent_meme_type"),
                 _photo_status(row.get("snapshot"), "suivant_meme_type"),
+                json.dumps(row["voitures"], ensure_ascii=False) if row.get("voitures") else "",
+                json.dumps(row["rames"], ensure_ascii=False) if row.get("rames") else "",
             ]
         )
     return buffer.getvalue()

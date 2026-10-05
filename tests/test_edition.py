@@ -24,7 +24,7 @@ def _count(client: TestClient, client_id: str, kind: str = "count") -> None:
         "standing": 2,
         "seats_free": 1,
         "imbalance": 0,
-        "materiel": "Z 23500",
+        "materiel": "TER 2N 2 voitures",
         "composition": "US",
         "perimetre": "voiture",
         "trip_id": "trip-fige",
@@ -65,7 +65,7 @@ def test_owner_can_edit_own_count_without_replacing_frozen_context(tmp_path):
         data={"client_id": "owner-key", "kind": "count", "passengers": "24",
               "reliability": "90", "pseudo": "<script>x</script>", "comment": "Corrige",
               "standing": "1", "seats_free": "2", "imbalance": "0",
-              "materiel": "Z 23500", "composition": "UM2", "perimetre": "um"},
+              "materiel": "TER 2N 2 voitures", "composition": "UM2", "perimetre": "um"},
         follow_redirects=False,
     )
 

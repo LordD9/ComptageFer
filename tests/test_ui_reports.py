@@ -195,7 +195,7 @@ def test_la_page_d_un_releve_donne_tout_ce_que_le_csv_donne(tmp_path):
         comment="Voiture 3 pleine, Agent fantôme.",
         composition="UM3",
         perimetre="um",
-        materiel="Z 20500",
+        materiel="Z 20500 4 voitures",
         standing=40,
     )
 

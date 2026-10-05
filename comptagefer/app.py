@@ -21,6 +21,7 @@ from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from comptagefer import compte as compte_module
+from comptagefer import materiel as materiel_module
 from comptagefer import score as score_module
 from comptagefer.affichage import chrome
 from comptagefer.carte import counted_features
@@ -133,6 +134,8 @@ SCHEMA_SAISIE = (
     ("created_at", "TEXT NOT NULL"),
     ("legs", "TEXT"),
     ("trajet", "TEXT"),
+    ("voitures", "TEXT"),
+    ("rames", "TEXT"),
 )
 
 # Ce que « composition » veut dire, et pourquoi c'est une liste fermée.
@@ -228,6 +231,14 @@ def create_app(
         # `SCHEMA_SAISIE` par nom, et c'est exactement pour ça qu'elle existe.
         if not {"materiel", "composition", "perimetre"} <= columns:
             for nom in ("materiel", "composition", "perimetre"):
+                connection.execute(f"ALTER TABLE saisie ADD COLUMN {nom} TEXT")
+        # Les deux répartitions du comptage par matériel. Elles sont ajoutées
+        # ici **et** déclarées dans `SCHEMA_SAISIE` : la liste de recopie de
+        # `_clef_par_genre` se tire de `SCHEMA_SAISIE` par nom, donc une
+        # colonne déclarée mais jamais ajoutée à une base existante la fait
+        # planter au démarrage — et une base neuve, elle, passe.
+        if not {"voitures", "rames"} <= columns:
+            for nom in ("voitures", "rames"):
                 connection.execute(f"ALTER TABLE saisie ADD COLUMN {nom} TEXT")
         # `compte_id` vient de la phase 9 et n'est pas dans `SCHEMA_SAISIE` :
         # cette liste sert aussi à la copie de migration de `_clef_par_genre`,
@@ -1726,7 +1737,7 @@ def _publication_panel(publication: dict) -> str:
     )
 
 
-def _materiel(body: dict) -> tuple[str | None, str | None, str | None]:
+def _materiel(body: dict, strict: bool = True) -> tuple[str | None, str | None, str | None]:
     """Le matériel roulant, sa composition, et ce que l'effectif compte.
 
     Les trois vont ensemble : « Z 20500 » seul ne dit rien de l'échelle, et une
@@ -1764,8 +1775,155 @@ def _materiel(body: dict) -> tuple[str | None, str | None, str | None]:
             status_code=422,
             detail="une US est une seule voiture : le périmètre « um » ne s'y applique pas",
         )
-    materiel = str(body.get("materiel") or "").strip()[:40]
+    if strict:
+        # Le matériel est une liste fermée (décision 11) : c'est lui qui donne
+        # le nombre de voitures, donc le schéma du comptage par voiture. Un
+        # libellé hors liste rendrait ce schéma incalculable et l'effectif
+        # publié indéchiffrable. Un libellé vide, lui, reste légitime — le
+        # matériel est facultatif, et un relevé sans matériel reste un relevé.
+        brut = str(body.get("materiel") or "")
+        materiel = materiel_module.normaliser(brut)
+        if brut.strip() and materiel is None:
+            raise HTTPException(
+                status_code=422,
+                detail="matériel inconnu : choisissez une formation de la liste",
+            )
+    else:
+        # Le chemin d'édition relit une donnée **existante**, écrite du temps
+        # où le matériel était un texte libre. La refuser parce qu'elle n'est
+        # plus dans la liste ferait perdre le relevé au moment même où on le
+        # corrige, pour une raison qui n'est pas une information fausse. Le
+        # formulaire d'édition propose la liste ; ce repli est pour les lignes
+        # d'avant, et pour elles seulement.
+        materiel = str(body.get("materiel") or "").strip()[:40] or None
     return materiel or None, composition or None, perimetre or None
+
+
+def _liste(brut: object, champs: tuple[str, ...], nom: str) -> list[dict] | None:
+    """Une liste d'objets à champs entiers, ou `None` si elle est absente.
+
+    `None` et `[]` sont la même chose : un parcours qui n'a rien à détailler.
+    Le reste est refusé en 422 plutôt que normalisé — une chaîne `"180"` ou un
+    booléen qui se glisse dans un effectif est une donnée fausse qui
+    s'écrirait sans bruit.
+    """
+    if brut in (None, "", []):
+        return None
+    if not isinstance(brut, list):
+        raise HTTPException(status_code=422, detail=f"{nom} invalide")
+    propre = []
+    for item in brut:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail=f"{nom} invalide")
+        valeur = {}
+        for champ in champs:
+            raw = item.get(champ)
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+                raise HTTPException(status_code=422, detail=f"{nom} : {champ} doit être un entier positif")
+            valeur[champ] = raw
+        propre.append(valeur)
+    return propre
+
+
+def _repartition(
+    body: dict,
+    materiel: str | None,
+    composition: str | None,
+    perimetre: str | None,
+) -> tuple[str | None, str | None]:
+    """Les deux répartitions du comptage, validées, en JSON — ou rien.
+
+    Rend `(voitures, rames)`, dans l'ordre des deux colonnes de `saisie` : les
+    deux listes se ressemblent assez pour qu'un ordre implicite se perde, et
+    les intervertir écrirait la répartition par rame dans la colonne des
+    voitures sans qu'aucune contrainte ne s'en aperçoive.
+
+    `passengers` reste le **total** : ces listes le détaillent, elles ne le
+    remplacent pas. Elles portent aussi la sélection des rames comptées : une
+    UM3 dont on n'a compté que les rames 2 et 3 a deux entrées, et c'est la
+    donnée, pas une déduction.
+
+    Les refus sont là où la donnée deviendrait fausse : une liste qui ne somme
+    pas au total, deux fois la même rame ou la même voiture, un indice de rame
+    au-delà de la composition, une voiture manquante dans une rame comptée.
+    Une voiture à zéro est légitime et doit être présente : une voiture vide
+    comptée et une voiture non comptée ne sont pas la même observation.
+    """
+    rames = _liste(body.get("rames"), ("rame", "passengers"), "rames")
+    voitures = _liste(body.get("voitures"), ("rame", "position", "passengers"), "voitures")
+    if rames is None and voitures is None:
+        return None, None
+    if composition is None:
+        raise HTTPException(
+            status_code=422,
+            detail="une répartition par rame demande la composition de la rame",
+        )
+    nombre = COMPOSITIONS[composition]
+    total = body.get("passengers")
+    if rames is not None and voitures is None:
+        # Le périmètre dit ce que compte **chaque valeur**. Quand les deux
+        # niveaux coexistent, c'est le plus fin qui commande : les rames sont
+        # alors un agrégat, et le périmètre est celui des voitures.
+        if perimetre != "um":
+            raise HTTPException(
+                status_code=422,
+                detail="une répartition par rame se dit avec le périmètre « um »",
+            )
+        vues: set[int] = set()
+        for item in rames:
+            if not 1 <= item["rame"] <= nombre:
+                raise HTTPException(status_code=422, detail="indice de rame hors composition")
+            if item["rame"] in vues:
+                raise HTTPException(status_code=422, detail="deux fois la même rame")
+            vues.add(item["rame"])
+        if isinstance(total, int) and sum(item["passengers"] for item in rames) != total:
+            raise HTTPException(status_code=422, detail="la somme des rames ne fait pas le total du comptage")
+    if voitures is not None:
+        if perimetre != "voiture":
+            raise HTTPException(
+                status_code=422,
+                detail="une répartition par voiture se dit avec le périmètre « voiture »",
+            )
+        if materiel is None:
+            raise HTTPException(
+                status_code=422,
+                detail="une répartition par voiture demande le matériel roulant",
+            )
+        formation = materiel_module.formation(materiel)
+        if formation is None:
+            raise HTTPException(status_code=422, detail="matériel inconnu : choisissez une formation de la liste")
+        taille = formation.voitures
+        positions: dict[int, set[int]] = {}
+        for item in voitures:
+            if not 1 <= item["rame"] <= nombre:
+                raise HTTPException(status_code=422, detail="indice de rame hors composition")
+            if not 1 <= item["position"] <= taille:
+                raise HTTPException(status_code=422, detail="position de voiture hors de la formation")
+            vues = positions.setdefault(item["rame"], set())
+            if item["position"] in vues:
+                raise HTTPException(status_code=422, detail="deux fois la même voiture")
+            vues.add(item["position"])
+        for vues in positions.values():
+            if vues != set(range(1, taille + 1)):
+                raise HTTPException(
+                    status_code=422,
+                    detail="toutes les voitures d'une rame comptée doivent être comptées",
+                )
+        if isinstance(total, int) and sum(item["passengers"] for item in voitures) != total:
+            raise HTTPException(status_code=422, detail="la somme des voitures ne fait pas le total du comptage")
+        if rames is not None:
+            annonces = {item["rame"]: item["passengers"] for item in rames}
+            for rame in positions:
+                somme = sum(item["passengers"] for item in voitures if item["rame"] == rame)
+                if annonces.get(rame) != somme:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="la somme des voitures d'une rame ne fait pas son effectif",
+                    )
+    return (
+        json.dumps(voitures, ensure_ascii=False) if voitures is not None else None,
+        json.dumps(rames, ensure_ascii=False) if rames is not None else None,
+    )
 
 
 def _save_saisie(
@@ -1800,6 +1958,11 @@ def _save_saisie(
     seats_free = _indicator(body.get("seats_free"))
     imbalance = _indicator(body.get("imbalance"))
     materiel, composition, perimetre = _materiel(body)
+    # La répartition ne s'applique qu'au comptage : un serpent se lit arrêt par
+    # arrêt dans `legs`, et un train signalé n'a pas d'effectif du tout.
+    voitures_text, rames_text = (
+        _repartition(body, materiel, composition, perimetre) if kind == "count" else (None, None)
+    )
     snapshot = body.get("snapshot")
     snapshot_text = json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None
     if snapshot_text and len(snapshot_text) > 20_000:
@@ -1828,9 +1991,9 @@ def _save_saisie(
             INSERT INTO saisie (
                 client_id, origin_stop_id, destination_stop_id, origin_name, destination_name, trip_id,
                 passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
-                materiel, composition, perimetre, snapshot, legs, trajet, kind, created_at, compte_id
+                materiel, composition, perimetre, snapshot, legs, trajet, voitures, rames, kind, created_at, compte_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 client_id,
@@ -1852,6 +2015,8 @@ def _save_saisie(
                 snapshot_text,
                 legs_text,
                 trajet_text,
+                voitures_text,
+                rames_text,
                 kind,
                 datetime.now(UTC).isoformat(),
                 compte_id,
@@ -2013,7 +2178,7 @@ def _edition_values(body: dict, kind: str, frozen_legs: str | None = None) -> di
             if str(parsed) != str(raw).strip():
                 raise HTTPException(status_code=422, detail=f"{nom} invalide")
             values[nom] = _indicator(parsed)
-    materiel, composition, perimetre = _materiel(body)
+    materiel, composition, perimetre = _materiel(body, strict=False)
     values.update(materiel=materiel, composition=composition, perimetre=perimetre)
     return values
 
@@ -2051,6 +2216,15 @@ def _edition_page(row: dict, admin: bool = False) -> str:
             inputs.append(_edition_select(name, label, value, ("US", "UM2", "UM3")))
         elif name == "perimetre":
             inputs.append(_edition_select(name, label, value, ("voiture", "um")))
+        elif name == "materiel":
+            # Le matériel est une liste fermée, mais une ligne écrite avant la
+            # phase 10 porte encore un texte libre. On la garde sélectionnable
+            # plutôt que de la faire disparaître : corriger un relevé ne doit
+            # pas effacer ce qu'on n'a pas touché.
+            options = list(materiel_module.libelles())
+            if value and value not in options:
+                options.append(value)
+            inputs.append(_edition_select(name, label, value, tuple(options)))
         else:
             maxlen = ' maxlength="40"' if name in {"pseudo", "materiel"} else ""
             maximum = ' max="100"' if name in {"reliability", "standing", "seats_free", "imbalance"} else ""
@@ -2089,8 +2263,13 @@ def _edition_page(row: dict, admin: bool = False) -> str:
 
 
 def _edition_select(name: str, label: str, value: str, options: tuple[str, ...]) -> str:
-    choices = ''.join(f'<option value="{option}"{" selected" if value == option else ""}>{option}</option>'
-                      for option in options)
+    """Un `<select>` fermé. Les options sont échappées : elles viennent d'une
+    liste en dur sauf le matériel, dont une ligne ancienne peut porter
+    n'importe quoi — et un `<option value="<script>">` s'exécute."""
+    choices = ''.join(
+        f'<option value="{escape(option)}"{" selected" if value == option else ""}>{escape(option)}</option>'
+        for option in options
+    )
     return f'<label>{escape(label)}<select name="{name}"><option value="">Non renseigné</option>{choices}</select></label>'
 
 
@@ -2103,7 +2282,7 @@ _COLONNES_SAISIE = """
             SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
                    trip_id, passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
                    materiel, composition, perimetre,
-                   snapshot, kind, created_at, legs, trajet
+                   snapshot, kind, created_at, legs, trajet, voitures, rames
             FROM saisie
 """
 
@@ -2195,6 +2374,9 @@ def _releve_page(database: Path, client_id: str, kind: str) -> str:
     materiel = _materiel_texte(row)
     if materiel:
         faits.append(("Matériel", materiel))
+    repartition = _repartition_texte(row)
+    if repartition:
+        faits.append(("Répartition", repartition))
     legs = _legs_text(row.get("legs"))
     if legs:
         faits.append(("Serpent", legs))
@@ -2239,6 +2421,11 @@ def _releve_page(database: Path, client_id: str, kind: str) -> str:
   ol.parcours { margin: 0; padding-left: 1.4rem; font-size: 0.95rem; }
   ol.parcours li { margin: 0.1rem 0; }
   ol.parcours .heure { color: var(--gris); font-size: 0.85rem; }
+  /* La répartition : une ligne par rame, et les valeurs des voitures dans
+     l'ordre du comptage — l'ordre EST l'information, une rame se lit de la
+     tête à la queue. */
+  ul.repartition { margin: 0; padding-left: 1.2rem; font-size: 0.95rem; }
+  ul.repartition li { margin: 0.1rem 0; }
   @media (min-width: 48rem) {
     /* Deux colonnes nom/valeur dès qu'il y a de la place : une fiche se lit
        en descendant, et une colonne de 72 rem laisserait la moitié de
@@ -2421,6 +2608,8 @@ def _ligne_saisie(row) -> dict:
         "created_at": row[18],
         "legs": json.loads(row[19]) if row[19] else None,
         "trajet": json.loads(row[20]) if row[20] else None,
+        "voitures": json.loads(row[21]) if row[21] else None,
+        "rames": json.loads(row[22]) if row[22] else None,
     }
 
 
@@ -2676,10 +2865,66 @@ def _materiel_texte(row: dict) -> str:
     if materiel:
         parties.append(escape(materiel))
     if composition:
-        etendue = {"voiture": "compté sur une voiture", "um": "compté sur toute la rame"}.get(perimetre)
+        formation = materiel_module.formation(materiel) if materiel else None
+        if row.get("voitures") and formation is not None:
+            # Le mot de la formation, pas celui du périmètre : un AGC se compte
+            # par caisse, une rame tractée par voiture. Écrire « voiture » sur
+            # un AGC n'est pas une faute d'orthographe, c'est le mauvais
+            # vocabulaire — et c'est celui qui compte qui le lit.
+            etendue = f"compté par {formation.mot}"
+        else:
+            etendue = {"voiture": "compté sur une voiture", "um": "compté sur toute la rame"}.get(perimetre)
         label = f"{escape(composition)}" + (f", {etendue}" if etendue else "")
         parties.append(label)
     return " · ".join(parties)
+
+
+def _repartition_texte(row: dict) -> str:
+    """La répartition comptée, rame par rame et voiture par voiture.
+
+    Deux niveaux, et le second n'est pas un résumé du premier : les rames
+    disent comment le train se partage, les voitures comment chaque rame se
+    partage. Une rame à 180 voyageurs répartis sur quatre voitures ne se lit
+    pas comme une rame à 180 dans une seule.
+
+    Rien quand il n'y a pas de répartition : un relevé sans matériel n'en a
+    pas, et une liste vide ferait croire à un comptage qui n'aurait rien vu.
+    """
+    voitures = row.get("voitures")
+    rames = row.get("rames")
+    if not isinstance(voitures, list) and not isinstance(rames, list):
+        return ""
+    formation = materiel_module.formation(row.get("materiel"))
+    mot = formation.pluriel if formation is not None else "voitures"
+    totaux: dict[int, int] = {}
+    if isinstance(rames, list):
+        for item in rames:
+            if not isinstance(item, dict) or not isinstance(item.get("rame"), int):
+                continue
+            if isinstance(item.get("passengers"), int):
+                totaux[item["rame"]] = item["passengers"]
+    par_rame: dict[int, list[int]] = {}
+    if isinstance(voitures, list):
+        for item in voitures:
+            if not isinstance(item, dict) or not isinstance(item.get("rame"), int):
+                continue
+            if isinstance(item.get("passengers"), int):
+                par_rame.setdefault(item["rame"], []).append(item["passengers"])
+    lignes = []
+    for rame in sorted(set(par_rame) | set(totaux)):
+        detail = par_rame.get(rame)
+        total = totaux.get(rame)
+        if total is None and detail:
+            total = sum(valeur for valeur in detail if isinstance(valeur, int))
+        iframe = f"Rame {rame}"
+        if detail:
+            valeurs = ", ".join(str(valeur) for valeur in detail)
+            lignes.append(
+                f"<li>{iframe} : {valeurs} — {total} voyageurs sur {len(detail)} {escape(mot)}</li>"
+            )
+        else:
+            lignes.append(f"<li>{iframe} : {total} voyageurs</li>")
+    return "<ul class='repartition'>" + "".join(lignes) + "</ul>" if lignes else ""
 
 
 def _date_fr(created_at: object) -> str:
@@ -3523,7 +3768,11 @@ le train est le plus chargé.</p>
 <p>Cliquez sur «&nbsp;ComptagesFer&nbsp;» ou sur «&nbsp;Compter&nbsp;», puis choisissez
 l'origine et la destination du <strong>trajet compté</strong> — et non pas
 l'origine-destination de la ligne. L'outil doit associer le comptage à
-l'interstation réellement observée. Ensuite, deux cas de figure.</p>
+l'interstation réellement observée. Vous pouvez ensuite indiquer le
+<strong>matériel roulant</strong> (facultatif, choisi dans une liste de
+formations TER), la <strong>composition</strong> du train (US, UM2, UM3) et,
+sur un schéma, <strong>les rames que vous comptez</strong> — tout le train ou
+seulement une rame d'une UM. Ensuite, trois cas de figure.</p>
 
 <h3>1) Comptage unique</h3>
 
@@ -3543,7 +3792,22 @@ dernière gare desservie avant l'arrivée (gare terminus) ou la première gare
 desservie après le départ (gare d'origine), afin d'affecter le compte à une
 interstation précise.</p>
 
-<h3>2) Comptage « serpent de charge »</h3>
+<h3>2) Comptage par voiture, ou par rame</h3>
+
+<p>Si vous avez reconnu le matériel roulant, l'outil dessine les voitures (ou
+les caisses, selon la formation) de la rame et vous les comptez l'une après
+l'autre&nbsp;: la valeur trouvée s'affiche sur le schéma, et vous pouvez revenir
+en arrière pour corriger. Si vous comptez plusieurs rames, un bouton passe à la
+rame suivante. Le total est la somme des voitures, et la répartition voiture par
+voiture est enregistrée&nbsp;: elle dit <em>où</em> sont les voyageurs dans la
+rame, et pas seulement combien ils sont.</p>
+
+<p>Si vous n'avez pas reconnu le matériel mais que le train est en UM et que
+vous comptez plusieurs rames, l'outil enregistre un effectif par rame. C'est la
+même distinction que ci-dessus&nbsp;: 180 voyageurs dans une voiture d'une UM3 et
+180 dans les trois ne sont pas le même relevé.</p>
+
+<h3>3) Comptage « serpent de charge »</h3>
 
 <p>L'outil permet d'enregistrer toutes les montées et descentes au fil d'un
 trajet donné. Indiquez la gare de début du comptage et la gare de fin, même si
@@ -3558,7 +3822,7 @@ de charge en&nbsp;% entre les différentes voitures du train. À chaque gare,
 vous saurez ainsi quel est l'effectif du train, en soustrayant les voyageurs
 descendus et en ajoutant les voyageurs montés.</p>
 
-<p>Dans les deux cas, les commentaires sont précieux&nbsp;: train précédent
+<p>Dans tous les cas, les commentaires sont précieux&nbsp;: train précédent
 supprimé, train très en retard qui expliquerait une forte charge, mise en place
 d'un car de substitution qui expliquerait à l'inverse une charge plus faible,
 etc.</p>

@@ -15,6 +15,36 @@ ETATS = {
     "suivant_meme_type": {"status": "NEXT_SAME_TYPE"},
 }
 
+# Les colonnes du CSV, dans leur ordre, telles qu'elles étaient avant la
+# phase 10. C'est le préfixe qui ne doit **jamais** bouger : les gens qui
+# consomment le fichier le lisent par position autant que par nom, et une
+# colonne insérée au milieu décale tout ce qui suit sans que rien ne le dise.
+# Les colonnes suivantes s'ajoutent à la fin.
+HISTORIQUES = [
+    "created_at",
+    "origin",
+    "destination",
+    "passengers",
+    "reliability",
+    "pseudo",
+    "comment",
+    "standing",
+    "seats_free",
+    "imbalance",
+    "materiel",
+    "composition",
+    "perimetre",
+    "precedent",
+    "courant",
+    "suivant",
+    "kind",
+    "legs",
+    "trip_id",
+    "trajet",
+    "precedent_meme_type",
+    "suivant_meme_type",
+]
+
 
 def _lignes(csv_text: str) -> tuple[list[str], dict[str, str]]:
     rows = list(csv.reader(StringIO(csv_text)))
@@ -45,9 +75,10 @@ def test_export_preserve_les_cinq_etats_figes_apres_post(tmp_path: Path):
     exported = client.get("/api/export.csv").text
     headers, values = _lignes(exported)
 
-    # Les trois colonnes historiques gardent leur place ; les deux nouvelles
-    # sont ajoutées à la fin pour ne pas décaler les consommateurs existants.
-    assert headers[-2:] == ["precedent_meme_type", "suivant_meme_type"]
+    # Les colonnes historiques gardent leur place ; les nouvelles se rajoutent
+    # à la fin, donc aucun consommateur existant n'est décalé.
+    assert headers[: len(HISTORIQUES)] == HISTORIQUES
+    assert {"voitures", "rames"} <= set(headers)
     assert [values[key] for key in ETATS] == [
         "PREVIOUS",
         "CURRENT",
@@ -87,7 +118,7 @@ def test_etats_absents_partiels_et_malformes_restent_vides(tmp_path: Path):
     ]
     for snapshot in snapshots:
         headers, values = _lignes(render_csv([{**ligne, "snapshot": snapshot}]))
-        assert headers[-2:] == ["precedent_meme_type", "suivant_meme_type"]
+        assert headers[: len(HISTORIQUES)] == HISTORIQUES
         assert values["precedent_meme_type"] == ""
         assert values["suivant_meme_type"] == ("0" if isinstance(snapshot, dict) and isinstance(snapshot.get("suivant_meme_type"), dict) else "")
 
@@ -144,7 +175,7 @@ def test_publication_envoie_le_meme_csv_que_export(tmp_path: Path):
     )[0].decode("utf-8")
     assert payload == telecharge
     headers, values = _lignes(payload)
-    assert headers[-2:] == ["precedent_meme_type", "suivant_meme_type"]
+    assert headers[: len(HISTORIQUES)] == HISTORIQUES
     assert [values[key] for key in ETATS] == [
         "PREVIOUS",
         "CURRENT",

@@ -135,8 +135,11 @@ def _reach_form(page, site: str) -> None:
     page.click("#destination-list button:has-text('Valence')")
     page.wait_for_selector("#trains button")
     page.click("#trains button:has-text('TER')")
+    page.click("#materiel-clear")
+    page.click("#materiel-next")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
     page.click("#mode-unique")
-    page.wait_for_selector("#form-step:not(.hidden)")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
 
 
 # --- la page doit se charger sans erreur ------------------------------------
@@ -155,9 +158,11 @@ def test_every_button_of_the_form_is_wired(page, site):
     wired = page.evaluate(
         """() => {
             const ids = ['near', 'missing', 'send', 'again', 'change-origin',
-                         'change-od', 'change-train', 'change-mode',
-                         'mode-unique', 'mode-snake', 'plus1', 'plus5',
-                         'plus10', 'minus', 'snake-back'];
+                         'change-od', 'change-train', 'change-train-count',
+                         'change-mode', 'mode-unique', 'mode-rame', 'mode-snake',
+                         'materiel-clear', 'materiel-next', 'materiel-back',
+                         'rames-tout', 'rames-aucune', 'count-next',
+                         'plus1', 'plus5', 'plus10', 'plus20', 'minus', 'minus10', 'snake-back'];
             return ids.filter(id => {
                 const el = document.getElementById(id);
                 return !el || !(el.onclick || el.oninput);
@@ -192,7 +197,7 @@ def test_choosing_a_train_leads_to_the_mode_step(page, site):
     page.click("#destination-list button:has-text('Valence')")
     page.wait_for_selector("#trains button")
     page.click("#trains button:has-text('TER')")
-    page.wait_for_selector("#mode-step:not(.hidden)")
+    page.wait_for_selector("#materiel-step:not(.hidden)")
 
 
 def test_exact_number_field_is_visible_and_labelled(page, site):
@@ -246,11 +251,13 @@ def test_counter_is_reset_for_each_train(page, site):
     page.click("#plus10")
     page.click("#plus10")
     assert page.text_content("#count-display") == "20"
-    page.click("#change-train")
+    page.click("#change-train-count")
     page.wait_for_selector("#train-step:not(.hidden)")
     page.click("#trains button:has-text('TER')")
+    page.click("#materiel-clear")
+    page.click("#materiel-next")
     page.click("#mode-unique")
-    assert page.text_content("#count-display") == "0", "le compte de la squeezation précédente reste"
+    assert page.text_content("#count-display") == "0", "le compte du train précédent reste"
 
 
 # --- le retour visuel de l'appui --------------------------------------------
@@ -687,6 +694,7 @@ def test_an_implausible_count_is_flagged_but_still_saved(page, site):
     # Surtout : pas de blocage. Le message invite explicitement à envoyer,
     # et l'envoi passe.
     assert "quand même" in texte
+    page.click("#count-next")
     page.click("#send")
     page.wait_for_selector("#done-step:not(.hidden)")
 
@@ -721,12 +729,15 @@ def test_the_warning_does_not_survive_a_new_train(page, site):
     page.dispatch_event("#passengers", "input")
     assert page.locator("#plausibilite").is_visible()
 
-    page.click("#change-train")
+    page.click("#change-train-count")
     page.wait_for_selector("#train-step:not(.hidden)")
     page.click("#trains .train >> nth=0")
-    page.wait_for_selector("#mode-step:not(.hidden)")
+    page.wait_for_selector("#materiel-step:not(.hidden)")
+    page.click("#materiel-clear")
+    page.click("#materiel-next")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
     page.click("#mode-unique")
-    page.wait_for_selector("#form-step:not(.hidden)")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
 
     assert page.text_content("#count-display") == "0"
     assert page.locator("#plausibilite").is_hidden(), "l'avertissement doit partir"
@@ -737,6 +748,7 @@ def test_a_count_reaches_the_database(page, site):
     page.click("#plus10")
     page.click("#plus5")
     page.click("#plus10")
+    page.click("#count-next")
     page.fill("#reliability", "75")
     # Le pseudo est dans un <details> replié : on l'ouvre comme un utilisateur.
     page.click("#form-step summary")
@@ -756,6 +768,7 @@ def test_a_count_reaches_the_database(page, site):
 def test_the_count_appears_on_the_reading_page(page, site):
     _reach_form(page, site)
     page.click("#plus10")
+    page.click("#count-next")
     page.click("#send")
     page.wait_for_selector("#done-step:not(.hidden)")
     page.goto(site + "/comptages")
@@ -767,84 +780,83 @@ def test_the_count_appears_on_the_reading_page(page, site):
 
 
 def _open_materiel(page) -> None:
-    """Ouvre le second <details> de #form-step, comme un utilisateur."""
-    page.click("#form-step details:nth-of-type(2) summary")
+    """Retourne au choix du matériel, avant le comptage."""
+    page.click("#change-train-count")
+    page.wait_for_selector("#train-step:not(.hidden)")
+    page.click("#trains button:has-text('TER')")
+    page.wait_for_selector("#materiel-step:not(.hidden)")
 
 
 def test_the_material_reaches_the_database(page, site):
-    """La partie avancée n'est utile que si ce qu'on y met arrive à la base."""
     _reach_form(page, site)
-    page.click("#plus10")
     _open_materiel(page)
-    page.fill("#materiel", "Z 20500")
-    page.select_option("#composition", "UM3")
-    page.select_option("#perimetre", "voiture")
+    page.fill("#materiel-q", "TER 2N 2")
+    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
+    page.click("#compo-UM2")
+    page.click('.rame-box[data-rame="1"]')
+    page.click('.rame-box[data-rame="2"]')
+    page.click("#materiel-next")
+    for _ in range(4):
+        page.click("#plus10")
+        page.click("#voiture-next")
     page.click("#send")
     page.wait_for_selector("#done-step:not(.hidden)")
-
     row = _sessions(site)[0]
-    assert row["materiel"] == "Z 20500"
-    assert row["composition"] == "UM3"
+    assert row["materiel"] == "TER 2N 2 voitures"
+    assert row["composition"] == "UM2"
     assert row["perimetre"] == "voiture"
+    assert row["passengers"] == 40
 
 
-def test_the_advanced_block_is_reachable_by_its_label(page, site):
-    """Un <details> sans nom n'est pas une partie avancée, c'est un tiroir."""
+def test_the_advanced_block_is_replaced_by_the_live_material_step(page, site):
     _reach_form(page, site)
-    resume = page.locator("#form-step details:nth-of-type(2) summary").text_content()
-    assert "matériel" in resume.lower()
-    assert "composition" in resume.lower()
+    _open_materiel(page)
+    assert page.locator("#materiel-q").is_visible()
+    assert page.locator("#materiel-list button").count() > 0
+    assert page.locator("#form-step details summary").count() == 1
 
 
-def test_a_composition_without_a_perimetre_is_caught_before_sending(page, site):
-    """L'avertissement vient avant l'envoi, pas en 422 après.
+def test_composition_and_scope_are_chosen_before_counting(page, site):
+    _reach_form(page, site)
+    _open_materiel(page)
+    page.click("#compo-UM3")
+    assert page.locator(".rame-box").count() == 3
+    page.click("#compo-US")
+    assert page.locator(".rame-box").count() == 1
 
-    Le comptage est fait dans le train : l'usager est encore là pour corriger.
-    Un refus serveur arrive après coup, quand il est déjà remonté dans son
-    siège.
+
+def test_the_selected_scope_is_not_shown_in_the_final_form(page, site):
+    """Sur le chemin par voiture, le périmètre est déduit, pas redemandé.
+
+    L'écran a déjà dit ce qui était compté — chaque voiture, une par une. Le
+    redemander dans le formulaire inviterait à se contredire, et le serveur
+    refuserait la ligne. Le test va donc jusqu'au formulaire : une section
+    masquée rendrait l'assertion vraie pour la mauvaise raison.
     """
     _reach_form(page, site)
-    page.click("#plus10")
     _open_materiel(page)
-    page.select_option("#composition", "UM3")
-    assert page.locator("#materiel-note").is_visible()
-    page.click("#send")
-    page.wait_for_selector("#error:not(:empty)")
-    assert _sessions(site) == [], "le comptage est parti alors qu'il était incohérent"
-    assert page.locator("#form-step:not(.hidden)").count() == 1, "on a quitté le formulaire"
+    page.fill("#materiel-q", "TER 2N 2")
+    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
+    page.click("#compo-US")
+    page.click("#materiel-next")
+    for _ in range(2):
+        page.click("#plus10")
+        page.click("#voiture-next")
+    assert page.locator("#form-step:not(.hidden)").is_visible()
+    assert page.locator("#perimetre").is_hidden()
 
 
-def test_the_whole_unit_of_a_us_is_refused_before_sending(page, site):
-    """Une US est une voiture : « toute la rame » n'y a pas de sens.
-
-    Le laisser passer produirait 180 voyageurs pour une rame d'un nombre de
-    voitures indéfini.
-    """
+def test_the_composition_choice_is_optional(page, site):
     _reach_form(page, site)
-    page.click("#plus10")
-    _open_materiel(page)
-    page.select_option("#composition", "US")
-    page.select_option("#perimetre", "um")
-    assert page.locator("#materiel-note").is_visible()
-    page.click("#send")
-    page.wait_for_selector("#error:not(:empty)")
-    assert _sessions(site) == []
-
-
-def test_the_note_disappears_once_the_choice_is_coherent(page, site):
-    """Un avertissement qui reste après correction fait douter de l'envoi."""
-    _reach_form(page, site)
-    _open_materiel(page)
-    page.select_option("#composition", "UM3")
-    assert page.locator("#materiel-note").is_visible()
-    page.select_option("#perimetre", "um")
-    assert page.locator("#materiel-note").is_hidden()
+    page.click("#count-next")
+    assert page.locator("#form-step:not(.hidden)").is_visible()
 
 
 def test_the_material_stays_optional_on_the_way(page, site):
     """Ne pas savoir sous quel numéro on a compté ne doit pas bloquer l'envoi."""
     _reach_form(page, site)
     page.click("#plus10")
+    page.click("#count-next")
     page.click("#send")
     page.wait_for_selector("#done-step:not(.hidden)")
     row = _sessions(site)[0]
@@ -852,21 +864,14 @@ def test_the_material_stays_optional_on_the_way(page, site):
     assert row["composition"] is None and row["perimetre"] is None
 
 
-def test_the_material_is_visible_on_the_reading_page(page, site):
-    """Une donnée qu'on ne peut relire nulle part ne sera pas exploitée."""
+def test_the_material_selection_uses_the_closed_list(page, site):
     _reach_form(page, site)
-    page.click("#plus10")
     _open_materiel(page)
-    page.fill("#materiel", "Z 20500")
-    page.select_option("#composition", "UM3")
-    page.select_option("#perimetre", "voiture")
-    page.click("#send")
-    page.wait_for_selector("#done-step:not(.hidden)")
-    page.goto(site + "/comptages")
-    corps = page.text_content("body")
-    assert "Z 20500" in corps
-    assert "UM3" in corps
-    assert "une voiture" in corps
+    page.fill("#materiel-q", "Regio")
+    options = page.locator("#materiel-list button").all_text_contents()
+    assert options
+    assert all("Regio" in option for option in options)
+    assert page.locator("#materiels option").count() >= len(options)
 
 
 def test_a_count_without_material_shows_no_empty_line(page, site):
@@ -877,6 +882,7 @@ def test_a_count_without_material_shows_no_empty_line(page, site):
     """
     _reach_form(page, site)
     page.click("#plus10")
+    page.click("#count-next")
     page.click("#send")
     page.wait_for_selector("#done-step:not(.hidden)")
     page.goto(site + "/comptages")
@@ -894,6 +900,7 @@ def test_a_count_survives_the_tunnel_and_flushes_on_reconnect(page, site):
 
     # On coupe le réseau au niveau du navigateur, pas du serveur.
     page.route("**/api/sessions", lambda route: route.abort())
+    page.click("#count-next")
     page.click("#send")
     page.wait_for_timeout(300)
 
@@ -921,6 +928,7 @@ def test_a_rejected_count_is_not_kept_forever(page, site):
         lambda route: route.fulfill(status=422, content_type="application/json", body='{"detail":"x"}'),
     )
     page.click("#plus10")
+    page.click("#count-next")
     page.click("#send")
     page.wait_for_timeout(300)
     queued = page.evaluate("() => JSON.parse(localStorage.getItem('comptagefer-queue') || '[]')")
@@ -938,10 +946,13 @@ def _reach_snake(page, site: str) -> None:
     #mode-step depuis le formulaire.
     """
     _reach_form(page, site)
-    page.click("#change-train")
+    page.click("#change-train-count")
     page.wait_for_selector("#train-step:not(.hidden)")
     page.click("#trains button:has-text('TER')")
-    page.wait_for_selector("#mode-step:not(.hidden)")
+    page.wait_for_selector("#materiel-step:not(.hidden)")
+    page.click("#materiel-clear")
+    page.click("#materiel-next")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
     page.click("#mode-snake")
     page.wait_for_selector("#snake-step:not(.hidden)")
     # startSnake est async : les arrêts arrivent après #snake-step visible.
@@ -1044,6 +1055,7 @@ def test_a_count_is_drawn_as_a_segment_between_its_two_stops(page, site):
     de saisie : Lyon Part-Dieu est au nord de Valence, pas l'inverse."""
     _reach_form(page, site)
     page.click("#plus10")
+    page.click("#count-next")
     page.click("#send")
     page.wait_for_selector("#done-step:not(.hidden)")
 
@@ -1328,6 +1340,7 @@ def test_leaving_the_line_puts_the_tracks_back(page, site):
 def test_clicking_a_line_opens_its_charge_curve(page, site):
     _reach_form(page, site)
     page.click("#plus10")
+    page.click("#count-next")
     page.click("#send")
     page.wait_for_selector("#done-step:not(.hidden)")
 

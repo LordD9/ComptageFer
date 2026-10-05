@@ -40,6 +40,7 @@ def test_formulaire_hors_ligne_conserve_les_cinq_etats_dans_le_csv(page, site):
     page.route("**/api/trips?*", contexte)
     _reach_form(page, site)
     page.click("#plus10")
+    page.click("#count-next")
     page.route("**/api/sessions", lambda route: route.abort())
     page.click("#send")
     page.wait_for_function(

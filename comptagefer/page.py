@@ -1,4 +1,7 @@
+import json
+
 from comptagefer.affichage import NAV_STYLE, navigation_html
+from comptagefer.materiel import FORMATIONS, libelles
 
 
 PAGE = """<!doctype html>
@@ -28,9 +31,13 @@ PAGE = """<!doctype html>
   .hidden { display: none; }
   .status { font-size: 0.95rem; color: #5c564c; }
   .bad { color: #8a2b1b; }
-  .counter { position: relative; display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; }
-  .counter button { flex: 1; min-height: 3.6rem; font-size: 1.1rem; }
-  #count-display { flex: 0 0 6rem; font: 1.8rem/1 system-ui, sans-serif; text-align: center; }
+  .counter { position: relative; display: block; margin-top: 0.6rem; }
+  .counter-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; }
+  .counter-row button { flex: 1; min-height: 3.6rem; font-size: 1.1rem; }
+  .counter-entry label { flex: 1; }
+  .counter-entry input { flex: 1; min-width: 3rem; width: 3rem; }
+  .counter-entry #count-display { flex: 0 0 3rem; font: 1.8rem/1 system-ui, sans-serif; text-align: center; }
+  #count-display.saut { animation: saut 240ms ease-out; }
   .bulle {
     position: absolute; z-index: 2; pointer-events: none; white-space: nowrap;
     font: 700 1.3rem/1 system-ui, sans-serif; color: #1c1915; background: #fff;
@@ -77,14 +84,50 @@ PAGE = """<!doctype html>
     <div id="trains" class="choices"></div>
     <button class="ghost" id="missing" type="button">Mon train n'est pas dans la liste</button>
   </section>
-  <section id="mode-step" class="hidden">
+  <section id="materiel-step" class="hidden">
     <div class="chip"><span id="mode-chip"></span><button class="ghost" id="change-mode" type="button">Changer</button></div>
-    <div class="choices">
+    <label for="materiel-q">Matériel roulant (facultatif)</label>
+    <input id="materiel-q" type="text" list="materiels" autocomplete="off" placeholder="Rechercher une formation">
+    <datalist id="materiels">{MATERIEL_OPTIONS}</datalist>
+    <div id="materiel-list" class="choices"></div>
+    <p id="formation-resume" class="status"></p>
+    <button class="ghost" id="materiel-clear" type="button">Aucun matériel / je ne sais pas</button>
+    <div id="composition-choices" class="choices">
+      <p>Composition du train</p>
+      <button id="compo-US" type="button">US</button>
+      <button id="compo-UM2" type="button">UM2</button>
+      <button id="compo-UM3" type="button">UM3</button>
+      <button class="ghost" id="compo-none" type="button">Je ne sais pas</button>
+    </div>
+    <div id="rames-schema" class="choices hidden"></div>
+    <p id="rames-error" class="bad" role="status" hidden></p>
+    <button class="ghost" id="rames-tout" type="button">Tout le train</button>
+    <button class="ghost" id="rames-aucune" type="button">Aucune rame</button>
+    <p><button id="materiel-next" type="button">Suivant</button> <button class="ghost" id="materiel-back" type="button">Retour</button></p>
+  </section>
+  <section id="comptage-step" class="hidden">
+    <div class="chip"><button class="ghost" id="change-train-count" type="button">Changer de train</button></div>
+    <div id="count-modes" class="choices">
       <button id="mode-unique" type="button">Comptage unique</button>
+      <button id="mode-rame" type="button" class="hidden">Comptage par rame</button>
       <button id="mode-snake" type="button">Serpent de charge</button>
     </div>
+    <p id="pad-label" class="hint">Voyageurs dans le train</p>
+    <div id="voitures-schema" class="choices hidden"></div>
+    <p><button class="ghost hidden" id="voiture-prev" type="button">Précédent</button>
+       <button class="hidden" id="voiture-next" type="button">Suivant</button></p>
+    <div class="counter" id="counter">
+      <div class="counter-row"><button type="button" id="plus1">+1</button><button type="button" id="plus5">+5</button>
+      <button type="button" id="plus10">+10</button><button type="button" id="plus20">+20</button></div>
+      <div class="counter-row counter-entry"><label for="passengers">Nombre de voyageurs</label>
+      <input id="passengers" type="number" inputmode="numeric" min="0" step="1" placeholder="0" aria-label="Nombre de voyageurs">
+      <span id="count-display" aria-live="polite">0</span></div>
+      <div class="counter-row"><button type="button" id="minus">−1</button><button type="button" id="minus10">−10</button></div>
+    </div>
+    <p id="plausibilite" class="status" role="status" hidden></p>
+    <p><button id="count-next" type="button">Suivant</button></p>
     <p class="hint">Le serpent : un compte portes fermées, puis montées et descentes à chaque arrêt, jusqu'à votre descente.</p>
-    <p class="hint">Rappel&nbsp;: les gares choisies plus haut sont celles du <strong>comptage</strong>. En serpent, de la première gare où vous comptez à la dernière, même si la ligne ou votre voyage vont plus loin.</p>
+    <p class="hint">Rappel&nbsp;: les gares choisies plus haut sont celles du <strong>comptage</strong>.</p>
   </section>
   <section id="snake-step" class="hidden">
     <div class="chip"><span id="snake-chip"></span><button class="ghost" id="snake-back" type="button">Retour</button></div>
@@ -98,18 +141,12 @@ PAGE = """<!doctype html>
   </section>
   <section id="form-step" class="hidden">
     <div class="chip"><span id="train-chip"></span><button class="ghost" id="change-train" type="button">Changer</button></div>
-    <p class="hint">Ce compte vaut pour l'interstation entre <span id="od-rappel"></span>. En gare, sans monter dans le train&nbsp;: prendre la dernière gare desservie avant l'arrivée (terminus) ou la première après le départ (origine).</p>
-    <label for="passengers">Voyageurs dans le train</label>
-    <div class="counter" id="counter">
-      <button type="button" id="minus">−1</button>
-      <span id="count-display" aria-live="polite">0</span>
-      <button type="button" id="plus1">+1</button>
-      <button type="button" id="plus5">+5</button>
-      <button type="button" id="plus10">+10</button>
-    </div>
-    <p class="hint">Ou écrivez le nombre exact.</p>
-    <input id="passengers" type="number" inputmode="numeric" min="0" step="1" placeholder="0">
-    <p id="plausibilite" class="status" role="status" hidden></p>
+    <p class="hint">Ce compte vaut pour l'interstation entre <span id="od-rappel"></span>. En gare, sans monter dans le train&nbsp;: comptez à partir de la dernière gare desservie avant le terminus ou de la première gare desservie après l'origine du trajet compté, et non pas celles de la ligne.</p>
+    <label class="hidden" for="perimetre">Ce que vous avez compté</label>
+    <select id="perimetre" class="hidden">
+      <option value="">—</option><option value="voiture">Une seule voiture</option><option value="um">Toute la rame</option>
+    </select>
+    <p id="scope-error" class="bad" role="status" hidden></p>
     <label for="reliability">Fiabilité du compte, de 0 à 100</label>
     <input id="reliability" type="number" inputmode="numeric" min="0" max="100" step="1" value="80">
     <details>
@@ -125,35 +162,6 @@ PAGE = """<!doctype html>
       <label for="comment">Commentaire, publié dans le CSV</label>
       <input id="comment" type="text" maxlength="280">
     </details>
-    <details>
-      <summary>Matériel roulant et composition</summary>
-      <p class="hint">Facultatif, mais c'est ce qui rend l'effectif comparable d'une rame à l'autre&nbsp;: un train peut être une UM3, et vous n'avez compté qu'une voiture. Sans cette précision, 180 voyageurs dans une voiture d'une UM3 et 180 dans les trois sont le même relevé.</p>
-      <label for="materiel">Type de matériel roulant</label>
-      <input id="materiel" type="text" maxlength="40" list="materiels" placeholder="Z 20500, Z 6400, 2N NG…">
-      <datalist id="materiels">
-        <option value="Z 20500"></option>
-        <option value="Z 20900"></option>
-        <option value="Z 22500"></option>
-        <option value="Z 6400"></option>
-        <option value="2N NG"></option>
-        <option value="2N NP"></option>
-        <option value="Z 50000"></option>
-      </datalist>
-      <label for="composition">Composition de la rame</label>
-      <select id="composition">
-        <option value="">Je ne sais pas</option>
-        <option value="US">US — une voiture</option>
-        <option value="UM2">UM2 — deux voitures</option>
-        <option value="UM3">UM3 — trois voitures</option>
-      </select>
-      <label for="perimetre">Ce que vous avez compté</label>
-      <select id="perimetre">
-        <option value="">—</option>
-        <option value="voiture">Une seule voiture</option>
-        <option value="um">Toute la rame</option>
-      </select>
-      <p id="materiel-note" class="status" role="status" hidden></p>
-    </details>
     <p><button id="send" type="button">Enregistrer le comptage</button></p>
     <p id="error" class="bad"></p>
   </section>
@@ -165,7 +173,7 @@ PAGE = """<!doctype html>
 </main>
 <script src="/offline.js"></script>
 <script>
-const state = { origin: null, destination: null, trip: null, trains: [], passengers: 0 };
+const state = { origin: null, destination: null, trip: null, trains: [], passengers: 0, material: null, composition: "", selectedRames: [], voitures: [], rames: [], pad: { kind: "unique", rame: null, position: null } };
 const $ = (id) => document.getElementById(id);
 // Les étapes se listent ici à la main depuis l'ajout du serpent : mode-step
 // et snake-step manquaient, donc choisir un train masquait toutes les
@@ -254,7 +262,8 @@ async function loadTrains() {
       state.trip = train;
       state.photo = snapshot(train);
       $("mode-chip").textContent = formatTrain(train);
-      show("mode-step");
+      $("train-chip").textContent = formatTrain(train);
+      show("materiel-step");
     };
     $("trains").appendChild(button);
   }
@@ -265,19 +274,191 @@ $("change-origin").onclick = () => show("origin-step");
 $("change-od").onclick = () => show("destination-step");
 $("change-train").onclick = () => show("train-step");
 $("change-mode").onclick = () => show("train-step");
-$("mode-unique").onclick = () => {
-  $("train-chip").textContent = formatTrain(state.trip);
-  // Le rappel d'interstation n'existait pas : rien ne disait à l'écran que les
-  // deux gares choisies plus haut sont celles du comptage, et pas l'OD de la
-  // ligne (issue #25).
-  $("od-rappel").textContent = state.origin.name + " et " + state.destination.name;
-  state.passengers = 0;
-  $("count-display").textContent = "0";
-  $("passengers").value = 0;
-  signalerPlausibilite(0);
-  show("form-step");
-  $("passengers").focus();
+const FORMATIONS = {FORMATIONS_JSON};
+function filteredMateriels(query) {
+  const q = query.trim().toLocaleLowerCase("fr");
+  const groups = new Map();
+  for (const item of FORMATIONS) {
+    if (q && !item.label.toLocaleLowerCase("fr").includes(q) && !item.famille.toLocaleLowerCase("fr").includes(q)) continue;
+    if (!groups.has(item.famille)) groups.set(item.famille, []);
+    groups.get(item.famille).push(item);
+  }
+  const list = $("materiel-list");
+  list.replaceChildren();
+  for (const [family, entries] of groups) {
+    const title = document.createElement("strong");
+    title.textContent = family;
+    list.appendChild(title);
+    for (const item of entries) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = item.label;
+      button.onclick = () => chooseMaterial(item);
+      list.appendChild(button);
+    }
+  }
+}
+function chooseMaterial(item) {
+  state.material = item;
+  if (!state.composition) { state.composition = "US"; state.selectedRames = [1]; }
+  $("materiel-q").value = item.label;
+  $("formation-resume").textContent = item.voitures + " " + (item.voitures === 1 ? item.mot : item.pluriel);
+  $("composition-choices").classList.remove("hidden");
+  renderRames();
+}
+function renderRames() {
+  const size = { US: 1, UM2: 2, UM3: 3 }[state.composition] || 0;
+  const schema = $("rames-schema");
+  schema.replaceChildren();
+  if (!size) { schema.classList.add("hidden"); return; }
+  schema.classList.remove("hidden");
+  for (let n = 1; n <= size; n++) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "rame-box";
+    button.dataset.rame = n;
+    button.textContent = "Rame " + n + (state.selectedRames.includes(n) ? " ✓" : "");
+    button.onclick = () => {
+      state.selectedRames = state.selectedRames.includes(n) ? state.selectedRames.filter(x => x !== n) : [...state.selectedRames, n].sort();
+      renderRames();
+    };
+    schema.appendChild(button);
+  }
+}
+$("materiel-q").addEventListener("input", (event) => filteredMateriels(event.target.value));
+filteredMateriels("");
+$("materiel-clear").onclick = () => {
+  state.material = null; state.composition = ""; state.selectedRames = [];
+  $("materiel-q").value = ""; $("formation-resume").textContent = "";
+  renderRames();
 };
+for (const composition of ["US", "UM2", "UM3"]) $("compo-" + composition).onclick = () => {
+  state.composition = composition;
+  state.selectedRames = composition === "US" ? [1] : [];
+  renderRames();
+};
+$("compo-none").onclick = () => { state.composition = ""; state.selectedRames = []; renderRames(); };
+$("rames-tout").onclick = () => {
+  const size = { US: 1, UM2: 2, UM3: 3 }[state.composition] || 0;
+  state.selectedRames = Array.from({ length: size }, (_, i) => i + 1); renderRames();
+};
+$("rames-aucune").onclick = () => { state.selectedRames = []; renderRames(); };
+$("materiel-back").onclick = () => show("train-step");
+$("change-mode").onclick = () => show("train-step");
+$("change-train-count").onclick = () => show("train-step");
+function startUnique() {
+  state.pad = { kind: "unique", rame: null, position: null };
+  state.passengers = 0; state.voitures = []; state.rames = [];
+  $("count-display").textContent = "0"; $("passengers").value = "0";
+  $("pad-label").textContent = "Voyageurs dans le train";
+  $("count-modes").classList.remove("hidden"); $("voitures-schema").classList.add("hidden");
+  $("voiture-prev").classList.add("hidden"); $("voiture-next").classList.add("hidden");
+  $("count-next").classList.remove("hidden"); $("perimetre").value = "";
+  $("perimetre").classList.remove("hidden"); $("perimetre").previousElementSibling.classList.remove("hidden");
+  $("od-rappel").textContent = state.origin.name + " et " + state.destination.name;
+  signalerPlausibilite(0); show("comptage-step"); $("passengers").focus();
+}
+$("mode-unique").onclick = startUnique;
+$("materiel-next").onclick = () => {
+  $("rames-error").hidden = true;
+  if (state.material && (!state.composition || !state.selectedRames.length)) {
+    $("rames-error").textContent = "Choisissez une composition et au moins une rame à compter.";
+    $("rames-error").hidden = false;
+    return;
+  }
+  $("od-rappel").textContent = state.origin.name + " et " + state.destination.name;
+  $("count-modes").classList.remove("hidden");
+  $("mode-rame").classList.add("hidden");
+  if (state.material) startCars();
+  else {
+    state.pad = { kind: "unique", rame: null, position: null };
+    state.passengers = 0; state.voitures = []; state.rames = [];
+    $("count-display").textContent = "0"; $("passengers").value = "0";
+    $("pad-label").textContent = "Voyageurs dans le train";
+    const multi = state.composition.startsWith("UM") && state.selectedRames.length > 1;
+    $("mode-rame").classList.toggle("hidden", !multi);
+    $("count-modes").classList.remove("hidden"); $("count-next").classList.remove("hidden");
+    $("voitures-schema").classList.add("hidden"); $("perimetre").classList.remove("hidden");
+    show("comptage-step"); $("passengers").focus();
+  }
+};
+function startCars() {
+  state.voitures = []; state.rames = []; state.rameIndex = 0; state.position = 1;
+  $("perimetre").classList.add("hidden"); $("perimetre").previousElementSibling.classList.add("hidden");
+  $("count-modes").classList.add("hidden"); $("count-next").classList.add("hidden");
+  $("voitures-schema").classList.remove("hidden"); $("voiture-prev").classList.remove("hidden");
+  $("voiture-next").classList.remove("hidden"); renderCar(); show("comptage-step");
+}
+function renderCar() {
+  const rame = state.selectedRames[state.rameIndex];
+  if (!rame) { finishCounting(); return; }
+  const schema = $("voitures-schema"); schema.replaceChildren();
+  for (let p = 1; p <= state.material.voitures; p++) {
+    const button = document.createElement("button"); button.type = "button"; button.className = "voiture-box";
+    button.dataset.rame = rame; button.dataset.position = p;
+    const row = state.voitures.find(v => v.rame === rame && v.position === p);
+    button.textContent = (p === state.position ? "▶ " : "") + "Voiture " + p + (row ? " : " + row.passengers : "");
+    button.onclick = () => { state.position = p; loadCarPad(); renderCar(); };
+    schema.appendChild(button);
+  }
+  $("pad-label").textContent = "Voiture " + state.position + ", rame " + rame;
+  loadCarPad(); $("voiture-next").textContent = state.position < state.material.voitures ? "Voiture suivante" : state.rameIndex < state.selectedRames.length - 1 ? "Rame suivante" : "Terminer";
+}
+function loadCarPad() {
+  const row = state.voitures.find(v => v.rame === state.selectedRames[state.rameIndex] && v.position === state.position);
+  state.pad = { kind: "car", rame: state.selectedRames[state.rameIndex], position: state.position };
+  state.passengers = row ? row.passengers : 0;
+  $("count-display").textContent = state.passengers; $("passengers").value = state.passengers;
+}
+function startRame() {
+  state.rames = []; state.rameIndex = 0; loadRamePad();
+  $("perimetre").classList.add("hidden"); $("perimetre").previousElementSibling.classList.add("hidden");
+  $("count-modes").classList.add("hidden"); $("count-next").classList.remove("hidden");
+}
+function loadRamePad() {
+  const rame = state.selectedRames[state.rameIndex];
+  state.pad = { kind: "rame", rame, position: null };
+  const row = state.rames.find(r => r.rame === rame); state.passengers = row ? row.passengers : 0;
+  $("pad-label").textContent = "Rame " + rame;
+  $("count-display").textContent = state.passengers; $("passengers").value = state.passengers;
+}
+$("mode-rame").onclick = startRame;
+$("voiture-prev").onclick = () => {
+  if (state.position > 1) state.position--;
+  else if (state.rameIndex > 0) { state.rameIndex--; state.position = state.material.voitures; }
+  renderCar();
+};
+$("voiture-next").onclick = () => {
+  savePad();
+  if (state.position < state.material.voitures) state.position++;
+  else if (state.rameIndex < state.selectedRames.length - 1) { state.rameIndex++; state.position = 1; }
+  else { finishCounting(); return; }
+  renderCar();
+};
+function savePad() {
+  if (state.pad.kind === "car") {
+    const item = { rame: state.pad.rame, position: state.pad.position, passengers: state.passengers };
+    const index = state.voitures.findIndex(v => v.rame === item.rame && v.position === item.position);
+    if (index < 0) state.voitures.push(item); else state.voitures[index] = item;
+  } else if (state.pad.kind === "rame") {
+    const item = { rame: state.pad.rame, passengers: state.passengers };
+    const index = state.rames.findIndex(r => r.rame === item.rame);
+    if (index < 0) state.rames.push(item); else state.rames[index] = item;
+  }
+}
+$("count-next").onclick = () => {
+  if (state.pad.kind === "rame") {
+    savePad(); state.rameIndex++;
+    if (state.rameIndex >= state.selectedRames.length) finishCounting(); else loadRamePad();
+  } else { $("perimetre").value = ""; show("form-step"); }
+};
+function finishCounting() {
+  $("count-modes").classList.add("hidden"); $("voitures-schema").classList.add("hidden");
+  $("count-next").classList.add("hidden"); $("perimetre").classList.add("hidden");
+  $("perimetre").previousElementSibling.classList.add("hidden");
+  $("perimetre").value = state.material ? "voiture" : "um";
+  $("form-step").classList.remove("hidden"); show("form-step");
+}
 
 // Un seuil de plausibilité, pas une capacité. Le GTFS national n'a aucun
 // fichier de matériel et le flux temps réel ne donne pas de capacité : on
@@ -349,30 +530,32 @@ function updateCount(delta, bouton) {
   $("count-display").textContent = state.passengers;
   $("passengers").value = state.passengers;
   signalerPlausibilite(state.passengers);
-  // Un −1 sur un compte déjà à zéro ne fait rien : on n'annonce pas un geste
-  // qui n'a rien changé, sinon l'usager croit pouvoir descendre sous zéro.
+  savePad();
   if (state.passengers !== avant && bouton) bulle(state.passengers - avant, bouton);
 }
 
 $("plus1").onclick = (e) => updateCount(1, e.currentTarget);
 $("plus5").onclick = (e) => updateCount(5, e.currentTarget);
 $("plus10").onclick = (e) => updateCount(10, e.currentTarget);
+$("plus20").onclick = (e) => updateCount(20, e.currentTarget);
 $("minus").onclick = (e) => updateCount(-1, e.currentTarget);
+$("minus10").onclick = (e) => updateCount(-10, e.currentTarget);
 
 $("passengers").addEventListener("input", (e) => {
   const v = parseInt(e.target.value, 10);
   state.passengers = isNaN(v) || v < 0 ? 0 : v;
   $("count-display").textContent = state.passengers;
   signalerPlausibilite(state.passengers);
+  savePad();
 });
 
 $("mode-snake").onclick = startSnake;
-$("snake-back").onclick = () => show("mode-step");
+$("snake-back").onclick = () => show("materiel-step");
 $("snake-drop").onclick = () => {
   clearSnake();
   $("snake-resume").textContent = "";
   $("snake-drop-wrap").classList.add("hidden");
-  show("mode-step");
+  show("materiel-step");
 };
 function field(id, label, placeholder) {
   const wrap = document.createElement("label");
@@ -658,56 +841,40 @@ function optionalNumber(id) {
 }
 
 function countPayload() {
+  savePad();
+  const cars = state.pad.kind === "car" ? state.voitures : [];
+  const rameRows = state.pad.kind === "rame" ? state.rames : [];
+  const total = cars.length ? cars.reduce((sum, row) => sum + row.passengers, 0)
+    : rameRows.length ? rameRows.reduce((sum, row) => sum + row.passengers, 0) : state.passengers;
   return {
-    client_id: clientId(),
-    origin_stop_id: state.origin.stop_id,
-    destination_stop_id: state.destination.stop_id,
-    origin_name: state.origin.name,
-    destination_name: state.destination.name,
-    trip_id: state.trip.trip_id,
-    // state.passengers est l'unique source : le compteur et le champ l'écrivent tous les deux.
-    passengers: state.passengers,
-    reliability: Number($("reliability").value),
-    pseudo: $("pseudo").value,
-    comment: $("comment").value,
-    standing: optionalNumber("standing"),
-    seats_free: optionalNumber("seats"),
-    imbalance: optionalNumber("imbalance"),
-    ...materiel(),
+    client_id: clientId(), kind: "count",
+    origin_stop_id: state.origin.stop_id, destination_stop_id: state.destination.stop_id,
+    origin_name: state.origin.name, destination_name: state.destination.name,
+    trip_id: state.trip.trip_id, passengers: total,
+    reliability: Number($("reliability").value), pseudo: $("pseudo").value,
+    comment: $("comment").value, standing: optionalNumber("standing"),
+    seats_free: optionalNumber("seats"), imbalance: optionalNumber("imbalance"),
+    materiel: state.material ? state.material.label : "",
+    composition: state.composition || "",
+    perimetre: state.pad.kind === "car" ? "voiture" : state.pad.kind === "rame" ? "um" : $("perimetre").value,
+    rames: rameRows.length ? rameRows : null,
+    voitures: cars.length ? cars : null,
     snapshot: state.photo
   };
 }
-// Composition et périmètre vont ensemble, et le serveur les refuse séparés.
-// Le dire à l'écran avant l'envoi vaut mieux qu'un 422 après un comptage déjà
-// fait dans le train : l'usager est encore là pour corriger.
-function signalerMateriel() {
-  const composition = $("composition").value;
+
+function validateUniqueScope() {
+  const composition = state.composition;
   const perimetre = $("perimetre").value;
-  const message = $("materiel-note");
-  let texte = "";
-  if (composition && !perimetre) {
-    texte = "Dites ce que vous avez compté : une voiture ou toute la rame.";
-  } else if (!composition && perimetre) {
-    texte = "Il faut la composition de la rame pour savoir ce que ce chiffre compte.";
-  } else if (composition === "US" && perimetre === "um") {
-    texte = "Une US, c'est une seule voiture : le périmètre « toute la rame » ne s'y applique pas.";
-  }
-  message.textContent = texte;
-  message.hidden = !texte;
-  return !texte;
+  let message = "";
+  if (composition && !perimetre) message = "Indiquez si le compte porte sur une voiture ou toute la rame.";
+  else if (!composition && perimetre) message = "Choisissez une composition pour préciser le périmètre.";
+  else if (composition === "US" && perimetre === "um") message = "Une US ne peut pas être comptée comme une UM.";
+  $("scope-error").textContent = message;
+  $("scope-error").hidden = !message;
+  return !message;
 }
-$("composition").addEventListener("change", signalerMateriel);
-$("perimetre").addEventListener("change", signalerMateriel);
-function materiel() {
-  const composition = $("composition").value;
-  const perimetre = $("perimetre").value;
-  if (!signalerMateriel()) throw new Error("composition et périmètre incohérents");
-  return {
-    materiel: $("materiel").value.trim(),
-    composition: composition,
-    perimetre: perimetre
-  };
-}
+$("perimetre").addEventListener("change", validateUniqueScope);
 function readQueue() {
   return JSON.parse(localStorage.getItem("comptagefer-queue") || "[]");
 }
@@ -741,12 +908,7 @@ flushQueue();
 offerSnake();
 $("send").onclick = async () => {
   $("error").textContent = "";
-  // Le contrôle de cohérence a son propre message : le try/catch en dessous
-  // sert à la file hors ligne, et son texte y parlait de réseau.
-  if (!signalerMateriel()) {
-    $("error").textContent = $("materiel-note").textContent;
-    return;
-  }
+  if (state.pad.kind === "unique" && !validateUniqueScope()) return;
   let body;
   try {
     body = countPayload();
@@ -812,15 +974,23 @@ def page_avec_pseudo(pseudo: str) -> str:
     """
     from html import escape
 
+    page = PAGE.replace(
+        "{MATERIEL_OPTIONS}", "".join(f'<option value="{label}"></option>' for label in libelles())
+    )
+    formations = [
+        {"label": f.label, "famille": f.famille, "voitures": f.voitures, "mot": f.mot, "pluriel": f.pluriel}
+        for f in FORMATIONS
+    ]
+    page = page.replace("{FORMATIONS_JSON}", json.dumps(formations, ensure_ascii=False))
     if not pseudo:
-        return PAGE
+        return page
     remplacement = (
         '<input id="pseudo" type="text" maxlength="40" autocomplete="nickname"'
         f' value="{escape(pseudo[:40], quote=True)}">'
     )
     if _CHAMP_PSEUDO not in PAGE:
         raise ValueError("le champ pseudo a changé de forme : page_avec_pseudo ne sait plus le remplir")
-    return PAGE.replace(_CHAMP_PSEUDO, remplacement)
+    return page.replace(_CHAMP_PSEUDO, remplacement)
 
 
 def page_comptage(pseudo: str = "") -> str:
