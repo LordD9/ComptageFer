@@ -381,6 +381,7 @@ def create_app(
         jusqu: str = Query("", max_length=10),
         mode: str = Query("", max_length=12),
         ligne: str = Query("", max_length=120),
+        gare: str = Query("", max_length=120),
         vue: str = Query("", max_length=16),
         # `str` et pas `int` : une URL reçoit des fautes de frappe, et
         # `?page=beaucoup` doit donner une page lisible, pas une 422.
@@ -407,12 +408,15 @@ def create_app(
             jusqu,
             mode,
             ligne,
+            gare,
             lignes_disponibles=lambda nom: (
                 find_line(timetable, nom) if _lignes_disponibles(timetable) else None
             ),
+            gares_disponibles=lambda nom: _gare_connue(stops_database, nom),
         )
         trips = _trips_de_ligne(timetable, filtres.ligne)
-        rows, total = _saisies_filtrees(database, filtres, trips)
+        gares = _stops_de_gare(stops_database, filtres.gare)
+        rows, total = _saisies_filtrees(database, filtres, trips, gares)
         return _reading_page(
             rows,
             tri=tri,
@@ -2194,6 +2198,9 @@ def _releve_page(database: Path, client_id: str, kind: str) -> str:
     legs = _legs_text(row.get("legs"))
     if legs:
         faits.append(("Serpent", legs))
+    parcours = _trajet_text(row.get("trajet"))
+    if parcours:
+        faits.append(("Gares du parcours", parcours))
     photo = _photo_phrase(row)
     if photo:
         faits.append(("Temps réel au moment du comptage", escape(photo)))
@@ -2224,6 +2231,14 @@ def _releve_page(database: Path, client_id: str, kind: str) -> str:
                 letter-spacing: 0.04em; padding-top: 0.35rem; }
   dl.faits dd { margin: 0; padding: 0.35rem 0; border-bottom: 1px solid #e6e0d5; }
   dl.faits dd:last-of-type { border-bottom: 0; }
+  /* Les gares du parcours : une liste numérotée de l'ordre du train, pas
+     des paragraphes — l'ordre EST l'information, et une suite de lignes
+     de même niveau se lit comme une suite de phrases. L'heure est à côté,
+     en gris, plus petite : elle qualifie la gare, elle ne la remplace
+     pas. */
+  ol.parcours { margin: 0; padding-left: 1.4rem; font-size: 0.95rem; }
+  ol.parcours li { margin: 0.1rem 0; }
+  ol.parcours .heure { color: var(--gris); font-size: 0.85rem; }
   @media (min-width: 48rem) {
     /* Deux colonnes nom/valeur dès qu'il y a de la place : une fiche se lit
        en descendant, et une colonne de 72 rem laisserait la moitié de
@@ -2422,7 +2437,10 @@ def _list_saisies(database: Path) -> list[dict]:
 
 
 def _saisies_filtrees(
-    database: Path, filtres: "Filtres", trips: frozenset[str] = frozenset()
+    database: Path,
+    filtres: "Filtres",
+    trips: frozenset[str] = frozenset(),
+    gares: frozenset[str] = frozenset(),
 ) -> tuple[list[dict], int]:
     """Les relevés qui passent le filtre, et combien ils sont au total.
 
@@ -2436,7 +2454,7 @@ def _saisies_filtrees(
     table des clés entre la requête et `_trier`, et les deux finitont par
     divergir — ce que le tri a déjà payé une fois dans cette PR.
     """
-    where, params = conditions(filtres, trips)
+    where, params = conditions(filtres, trips, gares)
     with sqlite3.connect(database) as connection:
         total = connection.execute(
             f"SELECT COUNT(*) FROM saisie WHERE {where}" if where else "SELECT COUNT(*) FROM saisie",
@@ -2463,6 +2481,50 @@ def _legs_text(legs: object) -> str:
             alighted = "non comptées" if leg.get("alighted") is None else leg.get("alighted")
             lines.append(f"<li>{name} : {leg.get('boarded')} montées, {alighted} descentes</li>")
     return "<ul>" + "".join(lines) + "</ul>" if lines else ""
+
+
+def _heure_texte(seconds: object) -> str:
+    """Une heure GTFS (`seconds` depuis minuit) en `HH:MM`, ou vide.
+
+    Le GTFS autorise 25:00 pour un passage après minuit. L'heure affichée
+    est donc réduite modulo 24 h : « 25:30 » veut dire 1 h 30 le lendemain,
+    et un lecteur qui lit une heure impossible conclut à une faute de
+    saisie alors que la donnée est bonne. Une heure absente ne s'invente
+    pas : le nom de la gare est affiché seul, ce qui reste vrai.
+    """
+    if not isinstance(seconds, int):
+        return ""
+    sur_vingt_quatre = seconds % (24 * 3600)
+    return f"{sur_vingt_quatre // 3600:02d}:{sur_vingt_quatre // 60 % 60:02d}"
+
+
+def _trajet_text(trajet: object) -> str:
+    """Les gares du parcours figé, dans l'ordre, avec leur heure.
+
+    C'est la même donnée que la colonne `trajet` du CSV, rendue en HTML
+    pour qu'un lecteur sur téléphone n'ait pas à télécharger le fichier
+    pour savoir par où le train est passé. Le comptage porte sur un
+    tronçon ; le train, lui, venait d'ailleurs et continuait ailleurs.
+
+    Rien si le relevé n'a pas de parcours figé : un train signalé manquant
+    n'en a pas, et un comptage fait sans `trip_id` n'en a pas non plus. On
+    ne montre pas une liste vide qui ferait croire à un train sans arrêts.
+    """
+    if not isinstance(trajet, dict):
+        return ""
+    arrets = trajet.get("arrets")
+    if not isinstance(arrets, list) or not arrets:
+        return ""
+    lignes = []
+    for arret in arrets:
+        if not isinstance(arret, dict):
+            continue
+        nom = escape(str(arret.get("name") or arret.get("stop_id") or ""))
+        heure = _heure_texte(arret.get("depart_sec"))
+        lignes.append(
+            f"<li>{nom}<span class='heure'>{f' {heure}' if heure else ''}</span></li>"
+        )
+    return "<ol class='parcours'>" + "".join(lignes) + "</ol>" if lignes else ""
 
 
 def _photo_status(snapshot: object, key: str) -> str:
@@ -2499,6 +2561,66 @@ def _page_depuis(valeur: str) -> int:
         return max(1, int(valeur))
     except (TypeError, ValueError):
         return 1
+
+
+def _stops_de_gare(stops_database: Path, nom: str) -> frozenset[str]:
+    """La famille d'identifiants d'une gare du catalogue, par son nom.
+
+    Le filtre de la liste est posé sur les identifiants, pas sur le nom :
+    le même quai peut s'appeler `StopArea:Annecy` dans une offre et
+    `StopPoint:AnnecyA` dans une autre, et un comparatif de noms
+    laisserait passer un comptage fait depuis l'un et pas depuis l'autre.
+
+    Le nom est cherché **exactement**, insensiblement à la casse
+    (`lower(name) = lower(?)`) : une recherche par `LIKE '%nom%'` renverrait
+    « Lyon Part-Dieu » pour « Lyon », et le lecteur verrait les comptages
+    d'une gare qu'il n'a pas demandée. Aucun nom ne correspond → le filtre
+    est considéré comme non résolu et l'appelant affiche l'erreur ; il vaut
+    mieux aucune ligne qu'une ligne d'une autre gare.
+
+    Le catalogue peut être absent : sans lui, un nom ne peut pas être résolu
+    en identifiants, donc le filtre est ignoré. La comparaison par nom dans
+    `filtres.conditions` rattrape alors les saisies dont le nom a été écrit à
+    la main, ce qui vaut mieux que rien.
+    """
+    nom_propre = (nom or "").strip()
+    if not nom_propre or not stops_database.exists():
+        return frozenset()
+    from comptagefer.offer import _stop_family, open_stops
+
+    with open_stops(stops_database) as connection:
+        row = connection.execute(
+            "SELECT stop_id FROM stop WHERE is_area = 1 AND lower(name) = lower(?)",
+            (nom_propre,),
+        ).fetchone()
+    if row is None:
+        return frozenset()
+    return frozenset(_stop_family(stops_database, row[0]))
+
+
+def _gare_connue(stops_database: Path, nom: str) -> str | None:
+    """Le nom canonique d'une gare du catalogue, ou `None`.
+
+    C'est le pendant de `find_line` pour le filtre gare : la valeur tapée
+    est mise dans la forme du catalogue (`Lyon` → `Lyon Part-Dieu`), pour
+    que le chip affiché et le nom comparé en SQL soient le même. Sans gare
+    importée, le nom est rendu tel quel plutôt que rejeté : le filtre par
+    nom dans `conditions` fonctionne alors sur les colonnes de texte.
+    """
+    nom_propre = (nom or "").strip()
+    if not nom_propre:
+        return None
+    if not stops_database.exists():
+        return nom_propre
+    from comptagefer.offer import open_stops
+
+    with open_stops(stops_database) as connection:
+        row = connection.execute(
+            "SELECT name FROM stop WHERE is_area = 1 AND lower(name) = lower(?)"
+            " ORDER BY stop_id LIMIT 1",
+            (nom_propre,),
+        ).fetchone()
+    return str(row[0]) if row else None
 
 
 def _trips_de_ligne(timetable: Path, route_id: str) -> frozenset[str]:
@@ -2982,17 +3104,30 @@ def _filtres_html(filtres: Filtres, vue: str) -> str:
         # *balise*, est la seule forme qui tienne dans n'importe quel nombre
         # de colonnes.
         f"{_champ_texte('depuis', 'Depuis le', filtres.depuis, '2026-01-31')}"
-        f"{_champ_texte('jusqu', 'Jusqu’au le', filtres.jusqu, '2026-01-31')}"
+        f"{_champ_texte('jusqu', 'Jusqu’au', filtres.jusqu, '2026-01-31')}"
         "<p class='champ'>"
         "<label for='mode'>Mode</label>"
         f"<select id='mode' name='mode'>{mode_options}</select>"
         "</p>"
         "<p class='champ'>"
-        "<label for='ligne'>Ligne (route_id)</label>"
-        f"<input id='ligne' type='text' name='ligne' autocomplete='off' value='{escape(filtres.ligne, quote=True)}'"
-        " placeholder='C13 ou le route_id'>"
+        "<label for='gare'>Gare</label>"
+        f"<input id='gare' type='text' name='gare' autocomplete='off' value='{escape(filtres.gare, quote=True)}'"
+        # Un exemple de nom de gare ferait le travail d'un nom de gare : le test
+        # d'administration cherche « Lyon » dans la page pour prouver qu'un
+        # relevé a disparu, et un placeholder le ferait échouer à l'identique.
+        " placeholder='nom de la gare'>"
         "</p>"
-        f"{_champ_cache(vue)}"
+        # `?ligne=` n'est plus proposé : le lecteur cherche une gare, pas un
+        # `route_id` du GTFS. Le filtre reste lu et affiché, donc un lien
+        # partagé ou un signet qui le porte filtre encore — et le champ caché
+        # le rend au formulaire, sans quoi le premier « Filtrer » le
+        # retirerait en silence.
+        + (
+            f"<input type='hidden' name='ligne' value='{escape(filtres.ligne, quote=True)}'>"
+            if filtres.ligne
+            else ""
+        )
+        + f"{_champ_cache(vue)}"
         f"{chips}"
         f"{alertes}"
         "<div class='filtres-actions'>"
@@ -3363,7 +3498,7 @@ def _method_page() -> str:
 
 <p>Bienvenue sur ComptagesFer. Ce site permet de contribuer à la connaissance
 des flux ferroviaires (+ certains cars TER) en France, y compris sur les trains
-franciliens (RER, ligne U) et les TER d'Île-de-France. C'est précieux pour ouvrir
+Transiliens (RER et ligne U). C'est précieux pour ouvrir
 ces données au plus grand nombre. Vous pouvez consulter et exporter les
 comptages réalisés, sans restrictions, mais en gardant en tête qu'il s'agit de
 chiffres collectés par des particuliers, sans garantie de fiabilité.</p>
@@ -3381,12 +3516,7 @@ départ, ou descendant d'un train qui termine son trajet là. Ce dernier cas est
 intéressant, car c'est souvent à la gare « centrale », origine ou terminus, que
 le train est le plus chargé.</p>
 
-<div class="note">
-<p><strong>Ce n'est pas une fréquentation officielle.</strong> Les données officielles
-de fréquentation des trains régionaux ne sont pas publiques, ou le sont sous des
-conditions étroites. Ce que vous voyez ici vient de gens qui ont compté, dans
-leur train, à leur main.</p>
-</div>
+
 
 <h2>Comment ça marche</h2>
 
@@ -3436,13 +3566,8 @@ etc.</p>
 <p>À chaque comptage, l'outil enregistre aussi le <strong>trajet complet du
 train</strong>, pas seulement le tronçon que vous avez compté&nbsp;: toutes les
 gares qu'il dessert, du départ à l'arrivée, avec l'heure de chacune. Vous ne
-faites rien de plus, et la saisie ne change pas. C'est pour plus tard, quand on
-voudra estimer une fréquentation&nbsp;: la charge qu'un train emporte au-delà du
-tronçon compté est exactement ce qu'un effectif à un endroit ne dit pas. Ce
-trajet est une copie figée au moment du comptage, et non une lecture de
-l'horaire au moment où vous consultez cette page&nbsp;: si une ligne change de
-gares plus tard, votre comptage dira toujours ce que vous avez vu ce jour-là. Si
-vous n'avez pas choisi de train, il n'y a rien&nbsp;: l'outil ne devine pas.</p>
+faites rien de plus, et la saisie ne change pas.</p>
+
 
 <h2>D'où viennent les données</h2>
 
@@ -3450,8 +3575,8 @@ vous n'avez pas choisi de train, il n'y a rien&nbsp;: l'outil ne devine pas.</p>
   <li><strong>L'offre des trains</strong> vient du GTFS national « Réseau SNCF
       TGV, Intercités et TER » (données ouvertes SNCF, Licence Ouverte 2.0),
       et, pour l'Île-de-France, du GTFS « Transilien » de la même source, qui
-      donne le RER et la ligne U. Il donne des horaires théoriques, pas la
-      réalité du jour.</li>
+      donne les trains Transiliens&nbsp;: RER et ligne U. Il donne des
+      horaires théoriques, pas la réalité du jour.</li>
   <li><strong>L'état des trains</strong> vient des flux GTFS-RT Trip Updates et
       Service Alerts, rafraîchis toutes les 2 minutes et conservés 6 heures. Si
       Trip Updates est vide, SIRI ET Lite est tenté une fois. L'état affiché

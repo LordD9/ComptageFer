@@ -411,7 +411,6 @@ def test_the_method_page_is_readable_and_honest(page, site):
     # ici. En revanche la réserve de fiabilité, elle, reste : c'est la ligne
     # qui est sous le titre de toutes les pages, et elle tient en une phrase.
     for attendu in (
-        "Ce n'est pas une fréquentation officielle",
         "Licence Ouverte 2.0",
         "GPL-3.0",
         "Aucune coordonnée GPS n'est stockée",
