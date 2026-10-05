@@ -79,10 +79,16 @@ class Filtres:
     jusqu: str = ""
     mode: str = ""
     ligne: str = ""
+    # Le nom de gare tapé dans le formulaire, mis dans la forme canonique
+    # du catalogue. C'est un nom et non un `stop_id` parce que c'est ce que le
+    # lecteur sait : « les comptages de Lyon », pas `StopArea:Lyon`. Le champ
+    # `ligne` reste lisible dans l'URL — les anciens liens et signets — mais
+    # n'est plus proposé dans le formulaire.
+    gare: str = ""
     erreurs: tuple[str, ...] = ()
 
     def vide(self) -> bool:
-        return not (self.depuis or self.jusqu or self.mode or self.ligne)
+        return not (self.depuis or self.jusqu or self.mode or self.ligne or self.gare)
 
     def etiquettes(self) -> list[str]:
         """Les filtres actifs, en français, pour les chips de la page."""
@@ -98,6 +104,8 @@ class Filtres:
             morceaux.append(f"mode {self.mode}")
         if self.ligne:
             morceaux.append(f"ligne {self.ligne}")
+        if self.gare:
+            morceaux.append(f"gare {self.gare}")
         return morceaux
 
 
@@ -121,8 +129,10 @@ def lire(
     jusqu: str,
     mode: str,
     ligne: str,
+    gare: str = "",
     *,
     lignes_disponibles: Callable[[str], dict | None],
+    gares_disponibles: Callable[[str], str | None] | None = None,
 ) -> Filtres:
     """Les filtres de l'URL, nettoyés.
 
@@ -181,10 +191,32 @@ def lire(
         else:
             ligne_propre = trouvee["route_id"]
 
-    return Filtres(date_debut, date_fin, mode_propre, ligne_propre, tuple(erreurs))
+    # La gare est résolue par son **nom**, comme la ligne l'est par son
+    # `route_id` : ce que le lecteur tape, et non un identifiant interne.
+    # `gares_disponibles` rend le nom canonique du catalogue, ou `None` si
+    # aucune gare ne porte ce nom — donc le filtre est écarté **et dit**,
+    # comme les autres.
+    gare_propre = gare.strip()
+    if gare_propre:
+        trouvee = gares_disponibles(gare_propre) if gares_disponibles else gare_propre
+        if not trouvee:
+            erreurs.append(
+                f"« {escape(gare_propre)} » n'est pas une gare du catalogue, filtre ignoré."
+            )
+            gare_propre = ""
+        else:
+            gare_propre = trouvee
+
+    return Filtres(
+        date_debut, date_fin, mode_propre, ligne_propre, gare_propre, tuple(erreurs)
+    )
 
 
-def conditions(filtres: Filtres, trips: frozenset[str] = frozenset()) -> tuple[str, list]:
+def conditions(
+    filtres: Filtres,
+    trips: frozenset[str] = frozenset(),
+    gares: frozenset[str] = frozenset(),
+) -> tuple[str, list]:
     """La clause `WHERE` du filtre, et ses paramètres.
 
     `trips` est l'ensemble des circulations de la ligne filtrée. Seul
@@ -201,6 +233,23 @@ def conditions(filtres: Filtres, trips: frozenset[str] = frozenset()) -> tuple[s
     n'appartient à aucune ligne, donc à aucun résultat filtré — on ne
     lui invente pas une ligne, pas plus qu'on ne lui invente un
     effectif.
+
+    `gares` est la **famille** d'identifiants de la gare filtrée : l'aire
+    et ses quais. Le filtre ne s'arrête pas aux extrémités du comptage, il
+    prend aussi les gares intermédiaires :
+
+    - `legs` porte les arrêts du serpent, `trajet` le parcours complet figé
+      au moment du comptage. Les deux sont du JSON, donc ils sont lus avec
+      `json_each` et non avec un `LIKE` sur la colonne — une sous-chaîne
+      trouverait un relevé parce que le nom d'une autre gare contient
+      l'identifiant cherché. `COALESCE` parce que les deux colonnes sont
+      nulles sur la plupart des relevés, et que `json_each(NULL)` n'existe
+      pas ;
+    - le nom de gare est aussi comparé aux colonnes `origin_name` /
+      `destination_name`, qui sont du texte libre saisi au comptage : une
+      gare hors catalogue s'y retrouve quand même. C'est aussi ce qui rend
+      le filtre utile quand `stops.db` n'a pas été importé — la famille
+      d'identifiants est alors vide, les noms suffisent.
     """
     morceaux: list[str] = []
     params: list = []
@@ -224,6 +273,38 @@ def conditions(filtres: Filtres, trips: frozenset[str] = frozenset()) -> tuple[s
         else:
             morceaux.append(f"trip_id IN ({','.join('?' for _ in trips)})")
             params.extend(sorted(trips))
+    if filtres.gare:
+        marques = ",".join("?" for _ in gares) if gares else "NULL"
+        # Quatre passages de la famille : les deux extrémités, les arrêts du
+        # serpent, ceux du parcours figé. Les paramètres suivent l'ordre des
+        # `?` de la chaîne, donc ils sont répétés dans le même ordre.
+        # `NULL` comme liste vide n'est pas une astuce : un `IN (NULL)` est
+        # toujours faux, donc le reste de la clause — les noms — décide
+        # seul, ce qui est le comportement voulu quand le catalogue des
+        # gares n'a pas été importé.
+        morceaux.append(
+            f"""(
+    origin_stop_id IN ({marques})
+    OR destination_stop_id IN ({marques})
+    OR origin_name = ? COLLATE NOCASE
+    OR destination_name = ? COLLATE NOCASE
+    OR EXISTS (
+        SELECT 1 FROM json_each(COALESCE(saisie.legs, '[]'))
+        WHERE json_extract(value, '$.stop_id') IN ({marques})
+    )
+    OR EXISTS (
+        SELECT 1 FROM json_each(COALESCE(saisie.trajet, '{{}}'), '$.arrets')
+        WHERE json_extract(value, '$.stop_id') IN ({marques})
+    )
+)"""
+        )
+        famille = sorted(gares)
+        params.extend(famille)
+        params.extend(famille)
+        params.append(filtres.gare)
+        params.append(filtres.gare)
+        params.extend(famille)
+        params.extend(famille)
 
     return (" AND ".join(morceaux), params)
 
@@ -348,6 +429,7 @@ def parametres(filtres: Filtres) -> dict[str, str]:
         "jusqu": filtres.jusqu,
         "mode": filtres.mode,
         "ligne": filtres.ligne,
+        "gare": filtres.gare,
     }
 
 
