@@ -225,6 +225,8 @@ Le flux temps réel ne donne pas le nom des gares, et il travaille surtout en St
 - `legs`, le profil du serpent, en JSON. La suite ordonnée des arrêts avec l'effectif de départ puis montées et descentes. Effectif suivant = effectif + montées − descentes.
 - `trajet`, le trajet **complet** du train, en JSON, figé au moment du comptage. La suite ordonnée de tous ses arrêts, avec l'heure de départ de chacun. Un comptage ne parle que du tronçon où l'on a compté ; le train venait d'ailleurs et continuait ailleurs, et c'est cette charge-là qu'une estimation de fréquentation cherche à l'étape suivante. On fige parce que le GTFS est rechargé : une ligne peut changer de gares, et la saisie doit dire ce qu'elle a vue. Sans `trip_id` il n'y a rien à figer — deviner le train serait fabriquer de la donnée — et un « train signalé » n'en a pas non plus, puisque c'est un doute sur une ligne, pas une observation.
 - `snapshot`, la photo du contexte, en JSON : le train choisi, le précédent, le suivant, et les voisins du même type commercial, avec leurs états, retards, sources et l'instant de la prise. Le CSV conserve les cinq états séparément ; les deux colonnes de voisins du même type sont ajoutées après les colonnes historiques. Une absence reste une cellule vide, pas un état déduit.
+- `voitures`, la répartition par voiture, en JSON. Une liste d'objets `{"rame", "position", "passengers"}`, une entrée par voiture comptée. La somme vaut `passengers`. C'est la seule colonne qui dit **où** sont les gens dans la rame, et pas seulement combien ils sont : une rame à 180 voyageurs répartis sur quatre voitures ne se lit pas comme une rame à 180 dans une seule.
+- `rames`, la répartition par rame, en JSON. Une liste d'objets `{"rame", "passengers"}`, une entrée par rame comptée. La somme vaut `passengers`. Sans elle, un comptage en UM3 ne dit pas si les 180 voyageurs sont dans une rame ou dans les trois.
 - `created_at`, horodatage de réception
 
 Les pourcentages sont des estimations de l'utilisateur. On ne déduit pas l'un de l'autre.
@@ -1169,6 +1171,97 @@ qu'on les cherche :
   la liste vide — le même refus de parler d'une absence de données que
   `tools/calibrer_score.py`
 
+### Phase 10 — Le comptage par matériel, et par rame
+
+**Livrée avec cette phase.** Le comptage se fait maintenant en trois étapes, et
+l'usager peut dire ce qu'il compte à l'échelle de la voiture.
+
+#### Le problème
+
+Le matériel, la composition et le périmètre existaient depuis la phase 3, mais
+dans un `<details>` replié à la fin du formulaire : trois champs facultatifs
+qu'on remplissait après coup, quand on les remplissait. Résultat, la base sait
+qu'un comptage a vu 180 voyageurs, et le plus souvent pas s'ils étaient dans une
+voiture ou dans les trois. C'est exactement ce que la donnée publiée doit
+permettre de distinguer.
+
+#### Les trois étapes
+
+1. **Le matériel, la composition, les rames.** Le type de matériel se choisit
+   dans une **liste fermée de formations TER** (`comptagefer/materiel.py`), avec
+   auto-complétion et recherche dans la liste. Chaque entrée porte son nombre de
+   voitures et son mot : un AGC se compte **par caisse**, une rame tractée ou un
+   Regio 2N **par voiture**. Choisir une formation ouvre le schéma des rames
+   (US, UM2, UM3) : on y touche les rames que l'on va compter. L'écran oblige
+   donc à dire si l'on compte tout le train ou seulement une rame d'une UM, au
+   lieu de le laisser déduire. Le matériel reste facultatif ; la composition et
+   le périmètre restent liés comme avant.
+2. **Le comptage.** Trois chemins :
+   - *par voiture*, quand un matériel a été reconnu : le schéma de la rame
+     courante montre ses voitures, on compte l'une après l'autre, on revient en
+     arrière, la valeur trouvée s'affiche sur la voiture, et « rame suivante »
+     passe à la rame suivante quand plusieurs sont comptées ;
+   - *par rame*, sans matériel, en UM2 ou UM3 et sur plusieurs rames : un
+     effectif par rame ;
+   - *le comptage unique habituel*, et le serpent de charge, inchangés.
+   Le pavé de comptage passe à trois lignes : `+1 +5 +10 +20`, la valeur libre,
+   puis `−1 −10`.
+3. **Les autres renseignements.** Fiabilité, indicateurs, pseudo, commentaire :
+   ce qui existe aujourd'hui, à la fin et non plus au milieu.
+
+#### Le contrat
+
+Corps de `POST /api/sessions`, `kind: "count"` — les trois colonnes historiques
+ne changent pas de sens, deux listes s'ajoutent :
+
+- `materiel` : un libellé de la liste fermée, ou absent. Un libellé hors liste
+  est refusé en 422 — c'est lui qui donne le nombre de voitures, donc un libellé
+  inventé rend le schéma incalculable.
+- `composition` : `US`, `UM2` ou `UM3`, ou absent.
+- `perimetre` : `voiture` ou `um`, ou absent.
+- `rames` : `[{"rame": 1, "passengers": 180}, …]`, ou absent. Exige
+  `composition` et `perimetre: "um"` ; les indices vont de 1 à la taille de la
+  composition, sans doublon ; la somme vaut `passengers`.
+- `voitures` : `[{"rame": 1, "position": 2, "passengers": 40}, …]`, ou absent.
+  Exige `materiel` et `composition`, et `perimetre: "voiture"` ; pour chaque rame
+  comptée, les positions 1 à N de la formation, chacune une fois ; la somme vaut
+  `passengers`.
+- Les deux listes peuvent coexister : la somme par rame vaut alors la somme des
+  voitures de cette rame. **`passengers` reste le total** : les listes le
+  détaillent, elles ne le remplacent pas.
+
+Les listes portent la sélection des rames : une UM3 dont on n'a compté que les
+rames 2 et 3 a deux entrées, et c'est la donnée, pas une déduction.
+
+#### Fichiers
+
+- `comptagefer/materiel.py` — la liste fermée, son normaliseur, et le mot
+  (caisse/voiture) de chaque formation.
+- `comptagefer/app.py` — `voitures` et `rames` dans `SCHEMA_SAISIE`, la
+  migration `ALTER TABLE` qui va avec (la liste de recopie de `_clef_par_genre`
+  suit `SCHEMA_SAISIE`, rien à y toucher), la validation de `_materiel`, la
+  relecture dans `_ligne_saisie` et `_COLONNES_SAISIE`, la phrase de
+  `_materiel_texte`, et `/methode`.
+- `comptagefer/publish.py` — les deux colonnes du CSV.
+- `comptagefer/page.py` — les trois étapes.
+- `tests/test_materiel.py`, `tests/test_materiel_formations.py`,
+  `tests/test_browser_materiel.py`.
+
+#### Vérification
+
+- Un test de migration qui **crée une base au vieux schéma**, la remplit, ouvre
+  l'application dessus, relit la ligne et écrit un nouveau comptage. Le piège
+  connu : ajouter une colonne à `saisie` sans l'ajouter à la liste recopiée par
+  `_clef_par_genre` fait planter toute base ayant déjà compté, et une base neuve
+  passe.
+- Les règles de cohérence sont testées par leurs refus, pas seulement par leurs
+  acceptations : une liste qui ne somme pas au total, une position manquante, un
+  indice de rame hors composition.
+- La suite navigateur joue le parcours entier : choisir un matériel, compter
+  deux voitures, revenir, passer à la rame suivante, envoyer, et relire la
+  répartition sur `/releve`.
+- Le CSV téléchargé porte les deux colonnes, avec le détail dedans.
+
 ### Ensuite, dans cet ordre
 
 1. Géométries de lignes, si les segments droits ne suffisent plus. Jointure OSM, ou GTFS régionaux qui ont un `shapes.txt`.
@@ -1189,6 +1282,7 @@ qu'on les cherche :
 8. Ouverte, phase 9. Le compte est facultatif à 100 %, et **aucune adresse email n'est stockée**. La connexion se fait par un secret long aléatoire, rendu dans le corps du POST de création, jamais en URL. L'option passkeys WebAuthn est étudiée dans [securite-comptes.md](securite-comptes.md) : le JavaScript de copie a déjà ses tests Chromium ; restent la cérémonie, la migration et la récupération. Aucun remplacement du secret n'est livré par cet audit.
 9. Ouverte, phase 9. Le classement récompense l'utilité, pas le volume. Un point par relevé récompenserait quelqu'un qui revient compter le même train vide dix fois. Les coefficients se calibrent sur la base réelle, pas dans une intuition. À l'intérieur de cette utilité, deux formes rapportent plus que les autres parce qu'elles sont plus interprétables : le serpent de charge, qui dit où la charge monte et descend, et le relevé à périmètre `um`, qui donne la charge de la rame entière.
 10. Ouverte, phase 9. `compte_id` n'est exporté nulle part — ni CSV, ni URL, ni journal, ni page. Le jeu est ouvert et republicisé chaque nuit ; y écrire un identifiant stable y produirait une donnée personnelle que ni le pseudo ni la Licence Ouverte ne demandent.
+11. Fermée, phase 10. Le matériel roulant est une **liste fermée de formations**, chacune portant son nombre de voitures et son mot (caisse ou voiture). Un type de matériel libre obligerait à deviner ce nombre, et le schéma de comptage serait faux sans que rien ne le dise. Un matériel inconnu se tait : le champ reste facultatif, et le comptage se fait alors à la rame ou en effectif unique.
 
 ## 9. Ce qui n'est pas une promesse
 
