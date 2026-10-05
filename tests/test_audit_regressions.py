@@ -657,3 +657,24 @@ def test_le_classement_vide_reste_son_etat_a_lui(tmp_path):
     assert reponse.status_code == 200
     assert "Personne n" in reponse.text
     assert "pas pu" not in reponse.text
+
+
+def test_deux_envois_simultanes_du_meme_comptage_ne_font_pas_de_500(tmp_path):
+    """Le vidage de la file hors ligne peut envoyer deux fois le même payload.
+
+    Au retour du réseau, l'événement `online` et le vidage du chargement
+    partaient ensemble. Les deux requêtes passaient le `SELECT` d'idempotence
+    avant que l'une écrive ; la seconde butait sur la clé primaire, levait
+    `IntegrityError`, donc un 500, et le navigateur gardait en file un comptage
+    déjà écrit. Le doublon doit se dire `stored: false`, jamais en 500.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    client = TestClient(create_app(tmp_path), raise_server_exceptions=False)
+    base, _ = _corps()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        reponses = list(pool.map(lambda _: client.post("/api/sessions", json=base), range(8)))
+
+    assert {r.status_code for r in reponses} == {200}, [r.status_code for r in reponses]
+    assert sum(r.json()["stored"] for r in reponses) == 1
+    assert _lignes_de("X", tmp_path / "app.db") == {"count": 1}

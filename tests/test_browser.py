@@ -135,7 +135,6 @@ def _reach_form(page, site: str) -> None:
     page.click("#destination-list button:has-text('Valence')")
     page.wait_for_selector("#trains button")
     page.click("#trains button:has-text('TER')")
-    page.click("#materiel-clear")
     page.click("#materiel-next")
     page.wait_for_selector("#comptage-step:not(.hidden)")
     page.click("#mode-unique")
@@ -161,6 +160,7 @@ def test_every_button_of_the_form_is_wired(page, site):
                          'change-od', 'change-train', 'change-train-count',
                          'change-mode', 'mode-unique', 'mode-rame', 'mode-snake',
                          'materiel-clear', 'materiel-next', 'materiel-back',
+                         'materiel-ouvrir', 'materiel-compter',
                          'rames-tout', 'rames-aucune', 'count-next',
                          'plus1', 'plus5', 'plus10', 'plus20', 'minus', 'minus10', 'snake-back'];
             return ids.filter(id => {
@@ -254,7 +254,6 @@ def test_counter_is_reset_for_each_train(page, site):
     page.click("#change-train-count")
     page.wait_for_selector("#train-step:not(.hidden)")
     page.click("#trains button:has-text('TER')")
-    page.click("#materiel-clear")
     page.click("#materiel-next")
     page.click("#mode-unique")
     assert page.text_content("#count-display") == "0", "le compte du train précédent reste"
@@ -733,7 +732,6 @@ def test_the_warning_does_not_survive_a_new_train(page, site):
     page.wait_for_selector("#train-step:not(.hidden)")
     page.click("#trains .train >> nth=0")
     page.wait_for_selector("#materiel-step:not(.hidden)")
-    page.click("#materiel-clear")
     page.click("#materiel-next")
     page.wait_for_selector("#comptage-step:not(.hidden)")
     page.click("#mode-unique")
@@ -790,12 +788,13 @@ def _open_materiel(page) -> None:
 def test_the_material_reaches_the_database(page, site):
     _reach_form(page, site)
     _open_materiel(page)
-    page.fill("#materiel-q", "TER 2N 2")
-    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
     page.click("#compo-UM2")
     page.click('.rame-box[data-rame="1"]')
     page.click('.rame-box[data-rame="2"]')
-    page.click("#materiel-next")
+    page.click("#materiel-ouvrir")
+    page.fill("#materiel-q", "TER 2N 2")
+    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
+    page.click("#materiel-compter")
     for _ in range(4):
         page.click("#plus10")
         page.click("#voiture-next")
@@ -811,6 +810,8 @@ def test_the_material_reaches_the_database(page, site):
 def test_the_advanced_block_is_replaced_by_the_live_material_step(page, site):
     _reach_form(page, site)
     _open_materiel(page)
+    assert page.locator("#materiel-q").is_hidden()
+    page.click("#materiel-ouvrir")
     assert page.locator("#materiel-q").is_visible()
     assert page.locator("#materiel-list button").count() > 0
     assert page.locator("#form-step details summary").count() == 1
@@ -835,10 +836,11 @@ def test_the_selected_scope_is_not_shown_in_the_final_form(page, site):
     """
     _reach_form(page, site)
     _open_materiel(page)
+    page.click("#compo-US")
+    page.click("#materiel-ouvrir")
     page.fill("#materiel-q", "TER 2N 2")
     page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
-    page.click("#compo-US")
-    page.click("#materiel-next")
+    page.click("#materiel-compter")
     for _ in range(2):
         page.click("#plus10")
         page.click("#voiture-next")
@@ -867,6 +869,7 @@ def test_the_material_stays_optional_on_the_way(page, site):
 def test_the_material_selection_uses_the_closed_list(page, site):
     _reach_form(page, site)
     _open_materiel(page)
+    page.click("#materiel-ouvrir")
     page.fill("#materiel-q", "Regio")
     options = page.locator("#materiel-list button").all_text_contents()
     assert options
@@ -950,7 +953,6 @@ def _reach_snake(page, site: str) -> None:
     page.wait_for_selector("#train-step:not(.hidden)")
     page.click("#trains button:has-text('TER')")
     page.wait_for_selector("#materiel-step:not(.hidden)")
-    page.click("#materiel-clear")
     page.click("#materiel-next")
     page.wait_for_selector("#comptage-step:not(.hidden)")
     page.click("#mode-snake")
