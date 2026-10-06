@@ -33,6 +33,7 @@ NAVIGATION = (
     ("/classement", "Classement"),
     ("/compte", "Compte"),
     ("/methode", "Méthode"),
+    ("/retours", "Retours"),
 )
 
 NAV_STYLE = """

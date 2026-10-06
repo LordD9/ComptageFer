@@ -1290,6 +1290,36 @@ rames 2 et 3 a deux entrées, et c'est la donnée, pas une déduction.
 4. Comparaison de lignes et agrégats géographiques.
 5. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton. **Fait, c'est la phase 9** — déclenché par l'historique : rattacher ses relevés à soi est ce qui manquait, et le signalement d'un relevé est la modération qui ne tenait pas dans `ADMIN_TOKEN`.
 
+### Retours privés sur l'application
+
+La page `/retours`, présente dans la navigation publique, permet à chacun de
+proposer une amélioration ou de signaler un bug sans créer de compte. Un champ
+libre obligatoire accepte de 1 à 5 000 caractères après retrait des espaces
+extérieurs. Aucun email, pseudo ou identifiant de compte n'est demandé.
+
+Les messages sont conservés séparément des relevés dans `app.db` : ils ne sont
+ni des commentaires de comptage, ni des signalements de relevés. Ils ne figurent
+dans aucune page publique, aucun export CSV ou aucune publication automatique.
+Seule une session d'administration valide permet de les lire, les marquer comme
+traités ou les supprimer. L'administration garde les protections d'origine,
+d'échappement HTML et de non-mise en cache existantes.
+
+Le formulaire fonctionne sans JavaScript. Il confirme l'enregistrement après
+une redirection et ne prétend jamais envoyer un message hors ligne. Un champ
+piège invisible limite les robots simples. Un plafond global de sécurité de
+100 messages par heure glissante limite les écritures dans la base : il est
+persistant et atomique, et supprimer un message ne libère pas une admission.
+Ce seuil est un défaut de protection, pas une mesure du trafic réel. Il ne
+collecte pas d'adresse IP et ne distingue pas les auteurs : un robot déterminé
+peut saturer ce plafond et bloquer temporairement les envois légitimes. Le
+formulaire annonce ce refus sans prétendre avoir enregistré le message.
+
+Le panneau d'administration lit 50 messages par page, les plus récents d'abord,
+avec navigation vers les messages plus anciens. Aucun service externe ni
+nouvelle configuration n'est nécessaire. Un outil de tickets externe serait
+disproportionné ici et imposerait un compte ou une visibilité différente de
+celle demandée.
+
 ## 8. Décisions
 
 1. Fermée. La file d'attente hors ligne passe avant la carte. La carte sert à lire, pas à saisir.
