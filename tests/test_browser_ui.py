@@ -130,10 +130,10 @@ def test_chaque_libelle_est_bien_au_dessus_de_son_champ(page, site):
         )
 
 
-def test_les_quatre_champs_sont_sur_une_meme_rangee(page, site):
-    """Quatre filtres sur une rangée, pas quatre lignes.
+def test_les_cinq_champs_sont_sur_une_meme_rangee(page, site):
+    """Cinq filtres sur une rangée, pas cinq lignes.
 
-    La grille annonce quatre colonnes ; le test lit les positions réelles,
+    La grille annonce cinq colonnes ; le test lit les positions réelles,
     donc une règle CSS qui dirait le contraire — ou une qui serait ignorée
     par le navigateur — se verrait ici.
     """
@@ -146,8 +146,8 @@ def test_les_quatre_champs_sont_sur_une_meme_rangee(page, site):
              .map(p => Math.round(p.getBoundingClientRect().width))"""
     )
 
-    assert len(largeurs) == 4, f"il doit y avoir quatre champs de filtre : {largeurs}"
-    # Quatre colonnes de largeur égale : le plus écarté des deux à gauche et
+    assert len(largeurs) == 5, f"il doit y avoir cinq champs de filtre : {largeurs}"
+    # Cinq colonnes de largeur égale : le plus écarté des deux à gauche et
     # le plus à droite doivent se toucher, à la tolérance de rendu près.
     ecart = max(largeurs) - min(largeurs)
     assert ecart <= 2, f"les colonnes ne sont pas égales : {largeurs}"

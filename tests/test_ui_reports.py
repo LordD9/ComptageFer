@@ -136,11 +136,11 @@ def test_chaque_champ_de_filtre_est_dans_sa_propre_boite(tmp_path):
             f"le libellé « {identifiant} » n'a pas son champ sous lui"
         )
 
-    # Et la grille en annonce quatre colonnes, pas cinq : le cinquième
-    # enfant est le `input hidden`, qui ne prend pas de place, donc une
-    # cinquième colonne vole de la largeur aux quatre champs.
-    assert "grid-template-columns: repeat(4, minmax(0, 1fr))" in page, (
-        "la grille des filtres doit annoncer quatre colonnes de largeur égale"
+    # Et la grille annonce une colonne par champ (cinq : deux dates, le mode,
+    # les deux gares), pas une de plus : les `input hidden` ne prennent pas de
+    # place, donc une colonne de trop volerait de la largeur aux champs.
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr))" in page, (
+        "la grille des filtres doit annoncer cinq colonnes de largeur égale"
     )
     assert "repeat(4, 1fr) auto" not in page, (
         "l'ancienne grille à cinq colonnes est revenue : les libellés et leurs "

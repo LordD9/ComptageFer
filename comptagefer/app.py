@@ -32,6 +32,7 @@ from comptagefer.filtres import (
     PAR_PAGE,
     Filtres,
     conditions,
+    enregistrer_fonctions,
     par_paire,
     trier_paires,
 )
@@ -43,7 +44,7 @@ from comptagefer.filtres import lien as lien_comptages
 from comptagefer.filtres import (
     lire as lire_filtres,
 )
-from comptagefer.offer import nearest_stops, open_stops, search_stops, trips_serving
+from comptagefer.offer import cle_gare, nearest_stops, open_stops, search_stops, trips_serving
 from comptagefer.page import page_comptage
 from comptagefer.publish import (
     Publication,
@@ -333,8 +334,17 @@ def create_app(
         return page_comptage(pseudo)
 
     @app.get("/api/stops")
-    def stops(q: str = "") -> list[dict]:
-        return search_stops(data_dir / "stops.db", q)
+    def stops(q: str = Query("", max_length=120), tout: bool = False) -> list[dict]:
+        """Les gares dont le nom contient `q`, sans égard à la casse ni aux accents.
+
+        Sans `tout` : au plus 8 gares, comme la page de saisie les affiche.
+        Avec `tout=1` : la liste **complète** des correspondances, mais seulement
+        quand `q` compte au moins 5 caractères (une fois normalisée) et dans la
+        limite d'un plafond de sécurité ; en deçà, `tout` est sans effet. Le
+        paramètre est explicite plutôt qu'une limite calculée selon la longueur :
+        la page de saisie, qui n'a pas à changer, garde ainsi sa liste courte.
+        """
+        return search_stops(data_dir / "stops.db", q, complete=tout)
 
     @app.get("/api/stops/nearest")
     def nearby(lat: float, lon: float) -> list[dict]:
@@ -392,6 +402,7 @@ def create_app(
         mode: str = Query("", max_length=12),
         ligne: str = Query("", max_length=120),
         gare: str = Query("", max_length=120),
+        gare2: str = Query("", max_length=120),
         vue: str = Query("", max_length=16),
         # `str` et pas `int` : une URL reçoit des fautes de frappe, et
         # `?page=beaucoup` doit donner une page lisible, pas une 422.
@@ -419,6 +430,7 @@ def create_app(
             mode,
             ligne,
             gare,
+            gare2,
             lignes_disponibles=lambda nom: (
                 find_line(timetable, nom) if _lignes_disponibles(timetable) else None
             ),
@@ -426,7 +438,8 @@ def create_app(
         )
         trips = _trips_de_ligne(timetable, filtres.ligne)
         gares = _stops_de_gare(stops_database, filtres.gare)
-        rows, total = _saisies_filtrees(database, filtres, trips, gares)
+        gares2 = _stops_de_gare(stops_database, filtres.gare2)
+        rows, total = _saisies_filtrees(database, filtres, trips, gares, gares2)
         return _reading_page(
             rows,
             tri=tri,
@@ -2633,6 +2646,7 @@ def _saisies_filtrees(
     filtres: "Filtres",
     trips: frozenset[str] = frozenset(),
     gares: frozenset[str] = frozenset(),
+    gares2: frozenset[str] = frozenset(),
 ) -> tuple[list[dict], int]:
     """Les relevés qui passent le filtre, et combien ils sont au total.
 
@@ -2646,8 +2660,9 @@ def _saisies_filtrees(
     table des clés entre la requête et `_trier`, et les deux finitont par
     divergir — ce que le tri a déjà payé une fois dans cette PR.
     """
-    where, params = conditions(filtres, trips, gares)
+    where, params = conditions(filtres, trips, gares, gares2)
     with sqlite3.connect(database) as connection:
+        enregistrer_fonctions(connection)
         total = connection.execute(
             f"SELECT COUNT(*) FROM saisie WHERE {where}" if where else "SELECT COUNT(*) FROM saisie",
             params,
@@ -2763,8 +2778,10 @@ def _stops_de_gare(stops_database: Path, nom: str) -> frozenset[str]:
     `StopPoint:AnnecyA` dans une autre, et un comparatif de noms
     laisserait passer un comptage fait depuis l'un et pas depuis l'autre.
 
-    Le nom est cherché **exactement**, insensiblement à la casse
-    (`lower(name) = lower(?)`) : une recherche par `LIKE '%nom%'` renverrait
+    Le nom est cherché **exactement**, insensiblement à la casse et aux accents
+    (`name_key = cle_gare(?)`, voir `offer.cle_gare`) : « beziers » trouve
+    « Béziers », « saint etienne » trouve « Saint-Étienne ». Une recherche par
+    `LIKE '%nom%'` renverrait
     « Lyon Part-Dieu » pour « Lyon », et le lecteur verrait les comptages
     d'une gare qu'il n'a pas demandée. Aucun nom ne correspond → le filtre
     est considéré comme non résolu et l'appelant affiche l'erreur ; il vaut
@@ -2782,8 +2799,9 @@ def _stops_de_gare(stops_database: Path, nom: str) -> frozenset[str]:
 
     with open_stops(stops_database) as connection:
         row = connection.execute(
-            "SELECT stop_id FROM stop WHERE is_area = 1 AND lower(name) = lower(?)",
-            (nom_propre,),
+            "SELECT stop_id FROM stop WHERE is_area = 1 AND name_key = ?"
+            " ORDER BY stop_id LIMIT 1",
+            (cle_gare(nom_propre),),
         ).fetchone()
     if row is None:
         return frozenset()
@@ -2808,9 +2826,9 @@ def _gare_connue(stops_database: Path, nom: str) -> str | None:
 
     with open_stops(stops_database) as connection:
         row = connection.execute(
-            "SELECT name FROM stop WHERE is_area = 1 AND lower(name) = lower(?)"
+            "SELECT name FROM stop WHERE is_area = 1 AND name_key = ?"
             " ORDER BY stop_id LIMIT 1",
-            (nom_propre,),
+            (cle_gare(nom_propre),),
         ).fetchone()
     return str(row[0]) if row else None
 
@@ -3303,6 +3321,74 @@ def _pluriel(nombre: int) -> str:
     return "s" if nombre > 1 else ""
 
 
+# Les paramètres que « Tout enlever » et la page vide retirent. `vue`, `tri` et
+# `sens` n'y sont pas : ce sont des préférences de lecture, pas des filtres.
+_TOUT_ENLEVER = {cle: "" for cle in ("depuis", "jusqu", "mode", "ligne", "gare", "gare2")}
+
+# L'autocomplétion des champs gare : une `<datalist>` par champ, alimentée par
+# `/api/stops`. Sans JavaScript, le champ reste un texte libre et le filtre
+# accepte toujours un nom saisi à la main. À partir de 2 caractères la liste est
+# courte ; à partir de 5, `tout=1` demande la liste complète des
+# correspondances (la même règle que le serveur : `SEUIL_LISTE_COMPLETE`).
+# Les réponses arrivées dans le désordre sont écartées (compteur), et un nom
+# choisi dans la liste est le nom canonique du catalogue, donc retrouvé tel quel
+# par le filtre.
+_SCRIPT_GARES = """<script>
+(function () {
+  var SEUIL_TOUT = 5;
+  function brancher(champ) {
+    var liste = document.getElementById(champ.getAttribute("list"));
+    if (!liste) return;
+    var dernier = 0, minuteur = null;
+    function chercher() {
+      var q = champ.value.trim();
+      var numero = ++dernier;
+      if (q.length < 2) { liste.replaceChildren(); return; }
+      var url = "/api/stops?q=" + encodeURIComponent(q) + (q.length >= SEUIL_TOUT ? "&tout=1" : "");
+      fetch(url).then(function (r) { return r.ok ? r.json() : []; }).then(function (gares) {
+        if (numero !== dernier) return;
+        var vus = {};
+        liste.replaceChildren();
+        gares.forEach(function (gare) {
+          if (vus[gare.name]) return;
+          vus[gare.name] = true;
+          var option = document.createElement("option");
+          option.value = gare.name;
+          liste.appendChild(option);
+        });
+      }).catch(function () {});
+    }
+    champ.addEventListener("input", function () {
+      clearTimeout(minuteur);
+      minuteur = setTimeout(chercher, 120);
+    });
+  }
+  document.querySelectorAll("input[data-gares]").forEach(brancher);
+})();
+</script>
+"""
+
+
+def _champ_gare(nom: str, etiquette: str, valeur: str) -> str:
+    """Un champ gare avec sa liste de suggestions.
+
+    `list=` relie le champ à sa `<datalist>` : le navigateur affiche les options
+    pendant la frappe, sur ordinateur comme sur téléphone, et le clavier suffit.
+    `autocomplete='off'` ne coupe que l'historique du navigateur, pas la liste.
+    """
+    return (
+        "<p class='champ'>"
+        f"<label for='{nom}'>{escape(etiquette)}</label>"
+        f"<input id='{nom}' type='text' name='{nom}' autocomplete='off' list='{nom}-liste'"
+        f" data-gares value='{escape(valeur, quote=True)}'"
+        # Pas d'exemple de nom de gare : le test d'administration cherche « Lyon »
+        # dans la page pour prouver qu'un relevé a disparu.
+        " placeholder='nom de la gare'>"
+        f"<datalist id='{nom}-liste'></datalist>"
+        "</p>"
+    )
+
+
 def _filtres_html(filtres: Filtres, vue: str) -> str:
     """Le formulaire de filtre, et l'état de ce qui est appliqué.
 
@@ -3357,14 +3443,8 @@ def _filtres_html(filtres: Filtres, vue: str) -> str:
         "<label for='mode'>Mode</label>"
         f"<select id='mode' name='mode'>{mode_options}</select>"
         "</p>"
-        "<p class='champ'>"
-        "<label for='gare'>Gare</label>"
-        f"<input id='gare' type='text' name='gare' autocomplete='off' value='{escape(filtres.gare, quote=True)}'"
-        # Un exemple de nom de gare ferait le travail d'un nom de gare : le test
-        # d'administration cherche « Lyon » dans la page pour prouver qu'un
-        # relevé a disparu, et un placeholder le ferait échouer à l'identique.
-        " placeholder='nom de la gare'>"
-        "</p>"
+        f"{_champ_gare('gare', 'Gare', filtres.gare)}"
+        f"{_champ_gare('gare2', 'et la gare', filtres.gare2)}"
         # `?ligne=` n'est plus proposé : le lecteur cherche une gare, pas un
         # `route_id` du GTFS. Le filtre reste lu et affiché, donc un lien
         # partagé ou un signet qui le porte filtre encore — et le champ caché
@@ -3383,7 +3463,7 @@ def _filtres_html(filtres: Filtres, vue: str) -> str:
         # Même règle que le lien de la page vide : « Tout enlever » retire
         # tout, sinon le lecteur se retrouve sur une page qui reste
         # filtrée et se demande ce qu'il n'a pas enlevé.
-        f"<a class='retirer' href='{lien_comptages(filtres, vue=vue, tri='', sens='', page='')}'>Tout enlever</a>"
+        f"<a class='retirer' href='{lien_comptages(filtres, vue=vue, tri='', sens='', page='', **_TOUT_ENLEVER)}'>Tout enlever</a>"
         "</div>"
         "</form>"
     )
@@ -3437,7 +3517,7 @@ def _filtre_vide(filtres: Filtres) -> str:
     # « celui-ci ». `lien_comptages(filtres)` sans surcharge conserverait
     # `depuis=` et `jusqu=`, et le lien mènerait à la même page vide —
     # un bouton « réessayer » qui ne réessaie rien.
-    sortie = {cle: "" for cle in ("depuis", "jusqu", "mode", "ligne", "vue", "tri", "sens", "page")}
+    sortie = {**_TOUT_ENLEVER, **{cle: "" for cle in ("vue", "tri", "sens", "page")}}
     return (
         "<div class='card vide-filtre'>"
         f"<p>Aucun comptage ne correspond à ce filtre : {chips}.</p>"
@@ -3674,6 +3754,7 @@ def _reading_page(
         "Comptages",
         corps,
         actif="/comptages",
+        extra_script=_SCRIPT_GARES,
         extra_css="""
   .pastilles { margin: 0.3rem 0 0.4rem; }
   .pastille { display: inline-block; background: #f0ece2; border: 1px solid var(--bord);
@@ -3715,12 +3796,11 @@ def _reading_page(
   nav.pagination { display: flex; gap: 1rem; align-items: center; margin: 1rem 0;
                    justify-content: space-between; }
   @media (min-width: 48rem) {
-    /* Les quatre filtres sur une rangée, pas quatre lignes empilées dans
-       72 rem de largeur. Quatre colonnes et non cinq : le cinquième enfant
-       est le `input type="hidden"`, qui ne prend pas de place, et le
-       cinquième *champ* — le bouton — est posé plus bas par
+    /* Les cinq filtres (dates, mode, les deux gares) sur une rangée, pas cinq
+       lignes empilées dans 72 rem de largeur. Les `input type="hidden"` ne
+       prennent pas de place, et le bouton est posé plus bas par
        `.filtres-actions`. */
-    form.filtres { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    form.filtres { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     /* Le tableau remplace les cartes, il ne s'ajoute pas à elles : sans
        cette ligne, un lecteur sur grand écran verrait la liste deux fois,
        une fois en cartes et une fois en tableau. */
