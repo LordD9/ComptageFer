@@ -113,15 +113,14 @@ def test_a_perimetre_without_a_composition_is_refused(tmp_path):
     assert "ensemble" in _refuse(tmp_path, perimetre="voiture")
 
 
-def test_the_whole_unit_of_a_us_is_its_single_carriage(tmp_path):
-    """Une US, c'est une voiture : « toute la rame » n'y a pas de sens.
+def test_a_us_is_counted_as_a_whole_rame(tmp_path):
+    """Une US est une rame de plusieurs voitures, pas une voiture.
 
-    L'accepter rendrait l'effectif indéfini — 180 voyageurs pour combien de
-    voitures ? Un seul, par construction. On le refuse plutôt que de le
-    normaliser en silence : une correction invisible dans le CSV est une donnée
-    fausse que personne ne verra.
+    On compte toujours la rame entière : « US » et « toute la rame » vont
+    ensemble, c'est même le cas le plus courant.
     """
-    assert "US" in _refuse(tmp_path, composition="US", perimetre="um")
+    row = _store(tmp_path, composition="US", perimetre="um")
+    assert (row["composition"], row["perimetre"]) == ("US", "um")
 
 
 def test_a_us_counted_as_one_carriage_is_fine(tmp_path):

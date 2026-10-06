@@ -140,18 +140,17 @@ SCHEMA_SAISIE = (
 
 # Ce que « composition » veut dire, et pourquoi c'est une liste fermée.
 #
-# Une US est une seule voiture ; une UM2, deux ; une UM3, trois. Ce n'est pas
-# une convention de saisie : c'est ce qui décide si un effectif se lit par
-# voiture ou par rame. Un champ libre accepterait « UM2 (ramesihat) » et
+# Une US est une rame ; une UM2, deux ; une UM3, trois. Ce n'est pas une
+# convention de saisie : c'est ce qui décide combien de rames l'effectif couvre. Un champ libre accepterait « UM2 (ramesihat) » et
 # « deux voitures », et le lecteur du CSV ne saurait plus dire si 180 voyageurs
 # se multiplient par 2. Une liste fermée rend la donnée calculable, ou absente.
 COMPOSITIONS = {"US": 1, "UM2": 2, "UM3": 3}
 
-# Ce que l'effectif de la saisie compte : une voiture, ou la rame entière.
-# Un train francilien peut être une UM3, et celui qui compte peut être monté
-# dans une seule voiture. Sans cette distinction, 180 voyageurs dans une voiture
-# d'une UM3 et 180 dans les trois sont le même relevé — et c'est précisément la
-# différence qui donne la charge à l'échelle de la rame.
+# Ce que l'effectif de la saisie compte. La page de comptage n'envoie plus
+# que « um » (la rame entière : on peut compter une rame d'une UM, jamais une
+# voiture isolée) ou « voiture » quand le détail voiture par voiture d'un
+# matériel connu accompagne l'effectif. « voiture » seul reste lisible pour
+# les relevés écrits avant.
 PERIMETRES = {"voiture", "um"}
 
 
@@ -1767,14 +1766,9 @@ def _materiel(body: dict, strict: bool = True) -> tuple[str | None, str | None, 
             status_code=422,
             detail="composition et périmètre vont ensemble : l'un sans l'autre n'est pas exploitable",
         )
-    # Une US, c'est une voiture. Demander si l'on a compté une voiture ou la
-    # rame n'a pas de sens, et accepter « UM / voiture » sur une US rendrait
-    # l'effectif indéfini.
-    if composition == "US" and perimetre == "um":
-        raise HTTPException(
-            status_code=422,
-            detail="une US est une seule voiture : le périmètre « um » ne s'y applique pas",
-        )
+    # Une US est une rame, pas une voiture : un AGC ou un Regio 2N en US a
+    # plusieurs caisses. On compte toujours la rame entière, donc « um » vaut
+    # pour une US comme pour une rame d'UM.
     if strict:
         # Le matériel est une liste fermée (décision 11) : c'est lui qui donne
         # le nombre de voitures, donc le schéma du comptage par voiture. Un

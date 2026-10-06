@@ -1187,10 +1187,12 @@ permettre de distinguer.
 
 #### Les trois étapes
 
-1. **La composition, ce que l'on compte, puis le matériel en option.**
+1. **La composition, les rames comptées, puis le matériel en option.**
    L'obligatoire vient en premier : la composition du train (US, UM2, UM3 ou
-   « Je ne sais pas »), les rames que l'on va compter sur le schéma, et, sans
-   matériel, ce que l'on compte (une seule voiture ou toute la rame). Le bouton
+   « Je ne sais pas ») et les rames que l'on va compter sur le schéma. On
+   compte toujours une rame **entière** : une rame seule d'une UM, oui ; une
+   voiture isolée d'une rame de trois, jamais. Le périmètre ne se demande donc
+   plus, il vaut `um` dès qu'une composition est donnée (US comprise). Le bouton
    « Passer au comptage » est juste dessous : on peut partir directement au
    comptage, sans matériel. Sinon, « Préciser le matériel roulant » déplie la
    recherche dans la **liste fermée de formations TER**
