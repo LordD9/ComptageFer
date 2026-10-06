@@ -1290,6 +1290,25 @@ rames 2 et 3 a deux entrées, et c'est la donnée, pas une déduction.
 4. Comparaison de lignes et agrégats géographiques.
 5. Comptes optionnels, seulement s'il faut un historique fiable ou une modération qui ne tient pas dans un jeton. **Fait, c'est la phase 9** — déclenché par l'historique : rattacher ses relevés à soi est ce qui manquait, et le signalement d'un relevé est la modération qui ne tenait pas dans `ADMIN_TOKEN`.
 
+### Extension du catalogue français
+
+Le catalogue ajoute les Regio 2N à 6 et 10 caisses, les Omneo Premium à 8 et
+10 caisses, le Coradia Liner à 6 caisses, les RER NG à 6 et 7 voitures, les
+Z 5600 à 4 et 6 voitures et le MI 2N SNCF Éole à 5 voitures. Chaque formation
+porte le nombre d'unités effectivement comptées, jamais une capacité supposée.
+Les anciens libellés restent inchangés, notamment les Regio 2N à 7 et 8
+« voitures », pour préserver les relevés et les saisies en attente hors ligne.
+Le choix du matériel reste facultatif et ne modifie pas la règle : compter une
+rame entière, ou plusieurs rames d'une UM, jamais une caisse isolée.
+
+Les longueurs ont été vérifiées dans les descriptions techniques suivantes :
+- [Regio 2N et Omneo Premium](https://fr.wikipedia.org/wiki/Regio_2N),
+  recoupés avec [Trains d'Europe](https://www.trains-europe.fr/sncf/automoteurs/porteur_hyper_dense.htm) ;
+- [Coradia Liner B 85000](https://rail4402.fr/PAGES/REGIOLIS_B/REGIOLIS_B.htm) ;
+- [RER NG, Île-de-France Mobilités](https://www.iledefrance-mobilites.fr/carte-didentite-du-rer-ng) ;
+- [Z 5600](https://fr.wikipedia.org/wiki/Z_5600) ;
+- [MI 2N SNCF Z 22500](https://www.trains-europe.fr/sncf/automoteurs/z22500.htm).
+
 ### Retours privés sur l'application
 
 La page `/retours`, présente dans la navigation publique, permet à chacun de

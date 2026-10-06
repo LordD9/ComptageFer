@@ -24,6 +24,19 @@ PHOTO = {"precedent": None, "courant": {"trip_id": "TRIP1", "status": "SCHEDULED
 
 AGC3 = "AGC 3 caisses"
 
+NOUVELLES_FORMATIONS = {
+    "Regio 2N 6 caisses": (6, "caisse", "Regio 2N (Z 55500, Z 56300)"),
+    "Regio 2N 10 caisses": (10, "caisse", "Regio 2N (Z 55500, Z 56000)"),
+    "Omneo Premium 8 caisses": (8, "caisse", "Omneo Premium (Z 56700)"),
+    "Omneo Premium 10 caisses": (10, "caisse", "Omneo Premium (Z 56600, Z 56800)"),
+    "Coradia Liner 6 caisses": (6, "caisse", "Coradia Liner (B 85000)"),
+    "RER NG 6 voitures": (6, "voiture", "RER NG (Z 58000)"),
+    "RER NG 7 voitures": (7, "voiture", "RER NG (Z 58500)"),
+    "Z 5600 4 voitures": (4, "voiture", "Z 5600 (RER C)"),
+    "Z 5600 6 voitures": (6, "voiture", "Z 5600 (RER C)"),
+    "MI 2N 5 voitures": (5, "voiture", "MI 2N SNCF Eole (Z 22500)"),
+}
+
 
 def _body(**extra) -> dict:
     body = {
@@ -190,6 +203,44 @@ def test_an_absent_material_is_not_an_unknown_one(tmp_path):
     """Vide, c'est un choix ; inventé, c'est une erreur. Les deux ne se confondent pas."""
     row = _store(tmp_path, materiel="   ")
     assert row["materiel"] is None
+
+
+def test_the_ten_french_formations_have_verified_counts_and_families():
+    from comptagefer.materiel import FORMATIONS, formation, libelles, normaliser
+
+    actual = {
+        item.label: (item.voitures, item.mot, item.famille)
+        for item in FORMATIONS
+        if item.label in NOUVELLES_FORMATIONS
+    }
+    assert actual == NOUVELLES_FORMATIONS
+    assert len(actual) == 10
+    assert {"Regio 2N 7 voitures", "Regio 2N 8 voitures"} <= set(libelles())
+    assert len(libelles()) == len(set(libelles()))
+    assert normaliser("  regio 2n 6 CAISSES ") == "Regio 2N 6 caisses"
+    assert normaliser("coradia liner 6 caisses") == "Coradia Liner 6 caisses"
+    for label, (count, word, _family) in NOUVELLES_FORMATIONS.items():
+        entree = formation(label)
+        assert entree is not None
+        assert (entree.voitures, entree.mot) == (count, word)
+
+
+def test_the_new_six_carriage_regio_2n_is_valid_for_us_and_um2(tmp_path):
+    materiel = "Regio 2N 6 caisses"
+    us = [{"rame": 1, "position": pos, "passengers": 30} for pos in range(1, 7)]
+    um2 = [
+        {"rame": rame, "position": pos, "passengers": 15}
+        for rame in (1, 2) for pos in range(1, 7)
+    ]
+    row = _store(tmp_path / "us", materiel=materiel, composition="US", perimetre="voiture", voitures=us)
+    assert row["materiel"] == materiel and row["voitures"] == us
+    row = _store(tmp_path / "um2", materiel=materiel, composition="UM2", perimetre="voiture", voitures=um2)
+    assert row["materiel"] == materiel and row["voitures"] == um2
+
+    assert "toutes les voitures" in _refuse(
+        tmp_path / "refus", materiel=materiel, composition="US", perimetre="voiture", passengers=180,
+        voitures=us[:-1],
+    )
 
 
 # --- la répartition par voiture ----------------------------------------------
