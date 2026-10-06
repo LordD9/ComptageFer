@@ -301,6 +301,7 @@ Le parcours téléphone. On choisit un train dans une liste, on ne le décrit pa
 - `GET /api/trips?from=&to=&at=` : circulations du cache temps réel qui desservent les deux arrêts entre `at - 2 h` et `at + 2 h`
 - à la sélection, photo du train choisi, du précédent et du suivant
 - formulaire : interstation, effectif, indicateurs, fiabilité, pseudo et commentaire facultatifs
+- sélection des rames sur un train en SVG : positions numérotées, rame 2 au milieu d'une UM3, sans supposer le sens de marche ; sélection utilisable au clavier et sur téléphone
 - `POST /api/sessions` enregistre le comptage, le pseudo et le commentaire s'il y en a, et la photo reçue, sans relire le flux
 - idempotent sur `client_id`
 - signalement d'offre manquante
@@ -322,6 +323,7 @@ Vérification : mode avion après la sélection, saisie, retour réseau, une seu
 Le second mode, pas avant que le premier survive à un tunnel.
 
 - saisie arrêt par arrêt, le profil est conservé dans la file hors ligne comme le reste
+- avec un matériel roulant sélectionné, l'effectif initial se compte voiture par voiture dans les rames sélectionnées, avec le même compteur que le comptage unique ; leur somme donne les voyageurs à bord au premier arrêt. Sans matériel, la saisie du total reste disponible
 - même file d'attente que la phase 4
 - reconstruction : effectif suivant = effectif + montées − descentes
 - indicateurs de charge optionnels

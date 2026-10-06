@@ -2473,9 +2473,9 @@ def _releve_page(database: Path, client_id: str, kind: str) -> str:
     parcours = _trajet_text(row.get("trajet"))
     if parcours:
         faits.append(("Gares du parcours", parcours))
-    photo = _photo_phrase(row)
+    photo = _photo_detail(row)
     if photo:
-        faits.append(("Temps réel au moment du comptage", escape(photo)))
+        faits.append(("Temps réel au moment du comptage", photo))
     commentaire = (row.get("comment") or "").strip()
     if commentaire:
         faits.append(("Commentaire", escape(commentaire)))
@@ -3124,6 +3124,30 @@ def _fiabilite_texte(row: dict) -> str:
     else:
         mot = "incertain"
     return f"{mot} ({valeur} %)"
+
+
+def _photo_detail(row: dict) -> str:
+    """Les cinq rôles de la photo figée, sans relire le flux actuel."""
+    snapshot = row.get("snapshot")
+    roles = (
+        ("courant", "Train compté"),
+        ("precedent", "Précédent, tous types"),
+        ("precedent_meme_type", "Précédent du même type"),
+        ("suivant", "Suivant, tous types"),
+        ("suivant_meme_type", "Suivant du même type"),
+    )
+    if not any(_photo_label(snapshot, key) for key, _ in roles):
+        return "aucune photo du temps réel"
+    lignes = [
+        f"<li><strong>{role}</strong> : {escape(_photo_label(snapshot, key) or 'non renseigné')}</li>"
+        for key, role in roles
+    ]
+    return (
+        "<p>Circulations sur le même trajet, avant et après le train compté. "
+        "« Même type » désigne la même catégorie (TER, TGV, etc.). "
+        "Un même train peut apparaître dans les deux catégories de voisins.</p>"
+        "<ul>" + "".join(lignes) + "</ul>"
+    )
 
 
 def _photo_phrase(row: dict) -> str:
@@ -3900,7 +3924,7 @@ def _method_page() -> str:
 
 <p>Bienvenue sur ComptagesFer. Ce site permet de contribuer à la connaissance
 des flux ferroviaires (+ certains cars TER) en France, y compris sur les trains
-Transiliens (RER et ligne U). C'est précieux pour ouvrir
+Transiliens et RER. C'est précieux pour ouvrir
 ces données au plus grand nombre. Vous pouvez consulter et exporter les
 comptages réalisés, sans restrictions, mais en gardant en tête qu'il s'agit de
 chiffres collectés par des particuliers, sans garantie de fiabilité.</p>
