@@ -98,15 +98,8 @@ PAGE = """<!doctype html>
       <div id="rames-schema" class="choices hidden"></div>
       <button class="ghost" id="rames-tout" type="button">Tout le train</button>
       <button class="ghost" id="rames-aucune" type="button">Aucune rame</button>
-      <div id="perimetre-zone" class="hidden">
-        <label for="perimetre">Ce que vous comptez</label>
-        <select id="perimetre">
-          <option value="">—</option><option value="voiture">Une seule voiture</option><option value="um">Toute la rame</option>
-        </select>
-      </div>
     </div>
     <p id="rames-error" class="bad" role="status" hidden></p>
-    <p id="scope-error" class="bad" role="status" hidden></p>
     <p><button id="materiel-next" type="button">Passer au comptage</button></p>
     <p><button class="ghost" id="materiel-ouvrir" type="button" aria-expanded="false" aria-controls="materiel-bloc">Préciser le matériel roulant</button></p>
     <div id="materiel-bloc" class="hidden">
@@ -320,11 +313,7 @@ function renderRames() {
   const size = { US: 1, UM2: 2, UM3: 3 }[state.composition] || 0;
   const schema = $("rames-schema");
   schema.replaceChildren();
-  // Le périmètre se demande ici, avant le comptage : seulement avec une
-  // composition, et sans matériel (avec un matériel, le comptage se fait
-  // voiture par voiture et le périmètre en découle).
   $("compte-zone").classList.toggle("hidden", !size);
-  $("perimetre-zone").classList.toggle("hidden", !size || !!state.material);
   if (!size) { schema.classList.add("hidden"); return; }
   schema.classList.remove("hidden");
   for (let n = 1; n <= size; n++) {
@@ -359,7 +348,7 @@ for (const composition of ["US", "UM2", "UM3"]) $("compo-" + composition).onclic
   state.selectedRames = composition === "US" ? [1] : [];
   renderRames();
 };
-$("compo-none").onclick = () => { state.composition = ""; state.selectedRames = []; $("perimetre").value = ""; renderRames(); };
+$("compo-none").onclick = () => { state.composition = ""; state.selectedRames = []; renderRames(); };
 $("rames-tout").onclick = () => {
   const size = { US: 1, UM2: 2, UM3: 3 }[state.composition] || 0;
   state.selectedRames = Array.from({ length: size }, (_, i) => i + 1); renderRames();
@@ -382,7 +371,7 @@ function startUnique() {
 $("mode-unique").onclick = startUnique;
 // Entrée commune au comptage : le bouton principal et celui du bloc matériel.
 function goCounting() {
-  $("rames-error").hidden = true; $("scope-error").hidden = true;
+  $("rames-error").hidden = true;
   if (state.composition && !state.selectedRames.length) {
     $("rames-error").textContent = "Choisissez au moins une rame à compter.";
     $("rames-error").hidden = false;
@@ -393,7 +382,6 @@ function goCounting() {
     $("rames-error").hidden = false;
     return;
   }
-  if (state.composition && !state.material && !validateUniqueScope()) return;
   $("od-rappel").textContent = state.origin.name + " et " + state.destination.name;
   $("count-modes").classList.remove("hidden");
   $("mode-rame").classList.add("hidden");
@@ -403,7 +391,7 @@ function goCounting() {
     state.passengers = 0; state.voitures = []; state.rames = [];
     $("count-display").textContent = "0"; $("passengers").value = "0";
     $("pad-label").textContent = "Voyageurs dans le train";
-    const multi = state.composition.startsWith("UM") && state.selectedRames.length > 1 && $("perimetre").value === "um";
+    const multi = state.composition.startsWith("UM") && state.selectedRames.length > 1;
     $("mode-rame").classList.toggle("hidden", !multi);
     $("count-modes").classList.remove("hidden"); $("count-next").classList.remove("hidden");
     $("voitures-schema").classList.add("hidden");
@@ -882,25 +870,16 @@ function countPayload() {
     seats_free: optionalNumber("seats"), imbalance: optionalNumber("imbalance"),
     materiel: state.material ? state.material.label : "",
     composition: state.composition || "",
-    perimetre: state.pad.kind === "car" ? "voiture" : state.pad.kind === "rame" ? "um" : $("perimetre").value,
+    // On compte toujours une rame entière, jamais une voiture isolée : une
+    // composition suffit donc à dire « um ». Le détail voiture par voiture,
+    // avec un matériel, garde « voiture » parce qu'il porte la répartition.
+    perimetre: state.pad.kind === "car" ? "voiture" : state.composition ? "um" : "",
     rames: rameRows.length ? rameRows : null,
     voitures: cars.length ? cars : null,
     snapshot: state.photo
   };
 }
 
-function validateUniqueScope() {
-  const composition = state.composition;
-  const perimetre = $("perimetre").value;
-  let message = "";
-  if (composition && !perimetre) message = "Indiquez si le compte porte sur une voiture ou toute la rame.";
-  else if (!composition && perimetre) message = "Choisissez une composition pour préciser le périmètre.";
-  else if (composition === "US" && perimetre === "um") message = "Une US ne peut pas être comptée comme une UM.";
-  $("scope-error").textContent = message;
-  $("scope-error").hidden = !message;
-  return !message;
-}
-$("perimetre").addEventListener("change", validateUniqueScope);
 function readQueue() {
   return JSON.parse(localStorage.getItem("comptagefer-queue") || "[]");
 }
@@ -948,10 +927,6 @@ flushQueue();
 offerSnake();
 $("send").onclick = async () => {
   $("error").textContent = "";
-  if (state.pad.kind === "unique" && !validateUniqueScope()) {
-    $("error").textContent = $("scope-error").textContent;
-    return;
-  }
   let body;
   try {
     body = countPayload();

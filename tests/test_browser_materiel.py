@@ -92,7 +92,6 @@ def test_rame_mode_records_each_selected_rame_and_total(page, site):
     page.click("#compo-UM2")
     page.click('.rame-box[data-rame="1"]')
     page.click('.rame-box[data-rame="2"]')
-    page.select_option("#perimetre", "um")
     page.click("#materiel-next")
     assert page.locator("#mode-rame").is_visible()
     page.click("#mode-rame")
@@ -154,7 +153,6 @@ def test_rame_mode_is_hidden_for_a_us(page, site):
 
     _reach_material(page, site)
     page.click("#compo-US")
-    page.select_option("#perimetre", "voiture")
     page.click("#materiel-next")
     assert page.locator("#mode-rame").is_hidden()
 
@@ -166,7 +164,7 @@ def _compter_quatre_voitures(page):
 
 
 def test_the_mandatory_part_comes_first_and_the_material_is_folded(page, site):
-    """Composition et périmètre précèdent le matériel, qui reste replié."""
+    """La composition et les rames précèdent le matériel, qui reste replié."""
     _reach_material(page, site)
     ordre = page.evaluate(
         """() => {
@@ -175,11 +173,10 @@ def test_the_mandatory_part_comes_first_and_the_material_is_folded(page, site):
             const bloc = document.getElementById('materiel-bloc');
             const avant = (id) => !!(document.getElementById(id).compareDocumentPosition(bloc)
                 & Node.DOCUMENT_POSITION_FOLLOWING);
-            return {composition: avant('composition-choices'), perimetre: avant('perimetre'),
-                    next: avant('materiel-next')};
+            return {composition: avant('composition-choices'), next: avant('materiel-next')};
         }"""
     )
-    assert ordre == {"composition": True, "perimetre": True, "next": True}
+    assert ordre == {"composition": True, "next": True}
     assert page.locator("#materiel-bloc").is_hidden()
     assert page.locator("#materiel-q").is_hidden()
     page.click("#materiel-ouvrir")
@@ -187,17 +184,38 @@ def test_the_mandatory_part_comes_first_and_the_material_is_folded(page, site):
     assert page.locator("#materiel-q").is_visible()
 
 
-def test_the_scope_is_asked_only_with_a_composition_and_without_material(page, site):
+def test_the_scope_is_never_asked(page, site):
+    """On compte toujours une rame entière : la question n'existe plus."""
     _reach_material(page, site)
-    assert page.locator("#perimetre").is_hidden()
     page.click("#compo-UM2")
-    assert page.locator("#perimetre").is_visible()
-    page.click("#materiel-ouvrir")
-    page.fill("#materiel-q", "TER 2N 2")
-    page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
-    assert page.locator("#perimetre").is_hidden()
-    page.click("#materiel-clear")
-    assert page.locator("#perimetre").is_visible()
+    assert page.locator("#perimetre").count() == 0
+
+
+def test_a_single_rame_of_a_um_is_sent_as_a_whole_rame(page, site):
+    """Une rame d'une UM2, comptée seule : composition UM2, périmètre um."""
+    _reach_material(page, site)
+    page.click("#compo-UM2")
+    page.click('.rame-box[data-rame="1"]')
+    page.click("#materiel-next")
+    assert page.locator("#mode-rame").is_hidden()
+    page.click("#plus20")
+    page.click("#count-next")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+    ligne = _sessions(site)[0]
+    assert (ligne["composition"], ligne["perimetre"], ligne["passengers"]) == ("UM2", "um", 20)
+
+
+def test_a_us_is_sent_as_a_whole_rame(page, site):
+    _reach_material(page, site)
+    page.click("#compo-US")
+    page.click("#materiel-next")
+    page.click("#plus10")
+    page.click("#count-next")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+    ligne = _sessions(site)[0]
+    assert (ligne["composition"], ligne["perimetre"]) == ("US", "um")
 
 
 def test_one_can_go_straight_to_counting_without_material(page, site):
@@ -205,7 +223,6 @@ def test_one_can_go_straight_to_counting_without_material(page, site):
     page.click("#compo-UM2")
     page.click('.rame-box[data-rame="1"]')
     page.click('.rame-box[data-rame="2"]')
-    page.select_option("#perimetre", "um")
     page.click("#materiel-next")
     page.wait_for_selector("#comptage-step:not(.hidden)")
     page.click("#mode-rame")
@@ -227,23 +244,11 @@ def test_one_can_go_straight_to_counting_without_material(page, site):
 def test_a_composition_without_a_rame_keeps_the_step(page, site):
     _reach_material(page, site)
     page.click("#compo-UM2")
-    page.select_option("#perimetre", "um")
     page.click("#materiel-next")
     assert page.locator("#materiel-step").is_visible()
     assert page.locator("#comptage-step").is_hidden()
     assert page.locator("#rames-error").is_visible()
     assert "rame" in page.text_content("#rames-error")
-
-
-def test_a_composition_without_a_scope_keeps_the_step(page, site):
-    _reach_material(page, site)
-    page.click("#compo-UM2")
-    page.click("#rames-tout")
-    page.click("#materiel-next")
-    assert page.locator("#materiel-step").is_visible()
-    assert page.locator("#comptage-step").is_hidden()
-    assert page.locator("#scope-error").is_visible()
-    assert "voiture" in page.text_content("#scope-error")
 
 
 def test_a_material_without_a_composition_keeps_the_step(page, site):
@@ -353,7 +358,6 @@ def test_a_direct_count_without_material_works_offline_and_is_sent_once(page, si
 
     page.click("#compo-UM2")
     page.click("#rames-tout")
-    page.select_option("#perimetre", "um")
     page.click("#materiel-next")
     page.click("#mode-rame")
     page.click("#plus20")
