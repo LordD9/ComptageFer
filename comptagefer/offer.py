@@ -2,7 +2,9 @@ import csv
 import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
+from unicodedata import combining, normalize
 
 # Le GTFS national décrit une même gare par deux zones quand la SNCF y sépare le
 # coach du train. « Grenoble » existe comme aire CTE (101 passages) et comme aire
@@ -19,6 +21,43 @@ FUSION_METRES = 500
 
 def _nom_cle(name: str) -> str:
     return " ".join(name.casefold().split())
+
+
+# Ce que le lecteur tape à la place d'un tiret, d'une apostrophe ou d'un point :
+# « saint etienne » pour « Saint-Étienne », « l isle » pour « L'Isle ». Les
+# ligatures n'ont pas de décomposition NFKD (« œ » reste « œ ») : on les écrit.
+_SEPARATEURS = str.maketrans(
+    {
+        **{c: " " for c in "-‐‑‒–—'’‘ʼ`´.,/"},
+        "œ": "oe",
+        "æ": "ae",
+    }
+)
+
+# Les recherches « complètes » commencent à cette longueur de clé, et ne
+# dépassent jamais le plafond : voir `search_stops`.
+SEUIL_LISTE_COMPLETE = 5
+PLAFOND_LISTE_COMPLETE = 500
+
+
+@lru_cache(maxsize=8192)
+def cle_gare(texte: str) -> str:
+    """Une forme comparable d'un nom de gare : sans accent, sans casse.
+
+    « Béziers », « BEZIERS » et « beziers » donnent la même clé ; « Saint-Étienne
+    Châteaucreux » et « saint etienne chateaucreux » aussi. Les tirets, les
+    apostrophes et les points valent une espace, et les espaces sont compactées.
+
+    Mémoïsée : le filtre SQL l'évalue sur chaque relevé, pour quelques centaines
+    de noms distincts.
+
+    La clé sert à **comparer**, jamais à afficher : le nom stocké garde ses accents.
+    Elle ne rapproche pas « St » de « Saint » : ce serait une abréviation, pas une
+    graphie, et « St » seul est aussi « Station ».
+    """
+    decompose = normalize("NFKD", (texte or "").casefold())
+    sans_accent = "".join(c for c in decompose if not combining(c))
+    return " ".join(sans_accent.translate(_SEPARATEURS).split())
 
 
 def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -40,10 +79,35 @@ def open_stops(database: Path) -> sqlite3.Connection:
             lat REAL,
             lon REAL,
             parent TEXT,
-            is_area INTEGER NOT NULL
+            is_area INTEGER NOT NULL,
+            name_key TEXT
         )
         """
     )
+    # Une base créée avant la colonne `name_key` n'a pas à être réimportée :
+    # la colonne est ajoutée, puis remplie pour les lignes qui n'ont pas de clé
+    # (base existante, ou ligne écrite par un autre chemin que l'import). La
+    # migration est idempotente : à l'ouverture suivante, l'index répond « rien à
+    # faire » sans parcourir la table.
+    if "name_key" not in {row[1] for row in connection.execute("PRAGMA table_info(stop)")}:
+        connection.execute("ALTER TABLE stop ADD COLUMN name_key TEXT")
+    # Index partiel sur les seules aires : ~3 000 lignes parcourues par la
+    # recherche au lieu des ~36 000 arrêts, et les égalités de nom (`name_key =
+    # ?`) s'en servent directement.
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS stop_aire_cle ON stop(name_key) WHERE is_area = 1"
+    )
+    if connection.execute("SELECT 1 FROM stop WHERE name_key IS NULL LIMIT 1").fetchone():
+        connection.executemany(
+            "UPDATE stop SET name_key = ? WHERE stop_id = ?",
+            [
+                (cle_gare(name), stop_id)
+                for stop_id, name in connection.execute(
+                    "SELECT stop_id, name FROM stop WHERE name_key IS NULL"
+                ).fetchall()
+            ],
+        )
+        connection.commit()
     # `parent` n'était pas indexé, alors que la moitié des requêtes le
     # cherchent : le décompte des enfants par gare, et la famille d'un arrêt.
     # Sans cet index, chacune parcourait les ~36 000 arrêts du GTFS national.
@@ -60,8 +124,8 @@ def import_stop_names(database: Path, stops_file: Path) -> int:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO stop
-                    (stop_id, name, lat, lon, parent, is_area)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (stop_id, name, lat, lon, parent, is_area, name_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["stop_id"],
@@ -70,6 +134,7 @@ def import_stop_names(database: Path, stops_file: Path) -> int:
                     float(row["stop_lon"]) if row.get("stop_lon") else None,
                     row.get("parent_station") or None,
                     1 if row.get("location_type") == "1" else 0,
+                    cle_gare(row["stop_name"]),
                 ),
             )
             stored += 1
@@ -140,20 +205,36 @@ def _fusionnees(rows: list[dict], limit: int) -> list[dict]:
     return found[:limit]
 
 
-def search_stops(database: Path, query: str, limit: int = 8) -> list[dict]:
-    needle = query.strip()
+def search_stops(
+    database: Path, query: str, limit: int = 8, complete: bool = False
+) -> list[dict]:
+    """Les gares dont le nom contient `query`, sans égard à la casse ni aux accents.
+
+    La recherche porte sur `name_key` (voir `cle_gare`), pas sur `name` : un
+    `LIKE` SQLite ne replie la casse que pour l'ASCII et ignore les accents, donc
+    « beziers » ne trouvait pas « Béziers ». `instr` évite en plus d'échapper
+    `%` et `_`. La liste est triée sur la clé : « Étienne » n'est pas rejeté
+    après « Z » par l'ordre des octets.
+
+    `complete` demande **toute** la liste des correspondances, mais seulement à
+    partir de `SEUIL_LISTE_COMPLETE` caractères de clé, et jamais plus de
+    `PLAFOND_LISTE_COMPLETE` : sur deux lettres, « toutes » les gares contenant
+    « sa » n'aident personne et alourdissent la réponse.
+    """
+    needle = cle_gare(query)
     if len(needle) < 2:
         return []
-    escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    if complete and len(needle) >= SEUIL_LISTE_COMPLETE:
+        limit = PLAFOND_LISTE_COMPLETE
     with open_stops(database) as connection:
         rows = connection.execute(
             """
             SELECT stop_id, name, lat, lon FROM stop
-            WHERE is_area = 1 AND name LIKE ? ESCAPE '\\'
-            ORDER BY name
+            WHERE is_area = 1 AND instr(name_key, ?) > 0
+            ORDER BY name_key, name
             LIMIT ?
             """,
-            (f"%{escaped}%", limit * 4),
+            (needle, limit * 4),
         ).fetchall()
         # Un seul GROUP BY remplace 32 COUNT(*). Les `stop_id` sont ceux déjà
         # trouvés par la requête du dessus, donc les deux ne peuvent pas

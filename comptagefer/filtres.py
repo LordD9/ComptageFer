@@ -41,6 +41,8 @@ from html import escape
 from typing import Callable
 from urllib.parse import urlencode
 
+from comptagefer.offer import cle_gare
+
 # Les modes de relevé, dans les mots que la page affiche déjà. Un filtre
 # qui parle « count » alors que la colonne affiche « unique » oblige le
 # lecteur à traduire ; on prend donc les mots de la colonne.
@@ -85,10 +87,16 @@ class Filtres:
     # `ligne` reste lisible dans l'URL — les anciens liens et signets — mais
     # n'est plus proposé dans le formulaire.
     gare: str = ""
+    # La seconde gare d'une **paire** : quand `gare` et `gare2` sont remplies,
+    # on ne garde que les relevés qui relient ces deux gares, dans un sens ou
+    # dans l'autre. `gare2` n'existe jamais seule — voir `lire`.
+    gare2: str = ""
     erreurs: tuple[str, ...] = ()
 
     def vide(self) -> bool:
-        return not (self.depuis or self.jusqu or self.mode or self.ligne or self.gare)
+        return not (
+            self.depuis or self.jusqu or self.mode or self.ligne or self.gare or self.gare2
+        )
 
     def etiquettes(self) -> list[str]:
         """Les filtres actifs, en français, pour les chips de la page."""
@@ -104,7 +112,9 @@ class Filtres:
             morceaux.append(f"mode {self.mode}")
         if self.ligne:
             morceaux.append(f"ligne {self.ligne}")
-        if self.gare:
+        if self.gare and self.gare2:
+            morceaux.append(f"gares {self.gare} ⇄ {self.gare2}")
+        elif self.gare:
             morceaux.append(f"gare {self.gare}")
         return morceaux
 
@@ -130,6 +140,7 @@ def lire(
     mode: str,
     ligne: str,
     gare: str = "",
+    gare2: str = "",
     *,
     lignes_disponibles: Callable[[str], dict | None],
     gares_disponibles: Callable[[str], str | None] | None = None,
@@ -207,15 +218,53 @@ def lire(
         else:
             gare_propre = trouvee
 
+    # La seconde gare suit la même règle : nom canonique, ou écartée et dite.
+    gare2_propre = gare2.strip()
+    if gare2_propre:
+        trouvee = gares_disponibles(gare2_propre) if gares_disponibles else gare2_propre
+        if not trouvee:
+            erreurs.append(
+                f"« {escape(gare2_propre)} » n'est pas une gare du catalogue, filtre ignoré."
+            )
+            gare2_propre = ""
+        else:
+            gare2_propre = trouvee
+    # Une paire n'a de sens qu'avec deux gares distinctes. Seule la seconde
+    # remplie devient le filtre gare : un lien `?gare2=Lyon` filtre sur Lyon
+    # au lieu d'être ignoré. Deux fois la même gare est un filtre gare simple —
+    # sinon la clause « A→A ou A→A » ne garderait que les boucles.
+    if gare2_propre and not gare_propre:
+        gare_propre, gare2_propre = gare2_propre, ""
+    elif gare2_propre and cle_gare(gare2_propre) == cle_gare(gare_propre):
+        erreurs.append("Les deux gares sont la même : un seul filtre gare est appliqué.")
+        gare2_propre = ""
+
     return Filtres(
-        date_debut, date_fin, mode_propre, ligne_propre, gare_propre, tuple(erreurs)
+        depuis=date_debut,
+        jusqu=date_fin,
+        mode=mode_propre,
+        ligne=ligne_propre,
+        gare=gare_propre,
+        gare2=gare2_propre,
+        erreurs=tuple(erreurs),
     )
+
+
+def enregistrer_fonctions(connection) -> None:
+    """Met `cle_gare` à disposition de SQL : `conditions` l'utilise.
+
+    À appeler sur toute connexion qui exécute la clause rendue par `conditions`.
+    La fonction est déclarée déterministe, donc SQLite peut l'évaluer une fois
+    par ligne sans la rappeler.
+    """
+    connection.create_function("cle_gare", 1, cle_gare, deterministic=True)
 
 
 def conditions(
     filtres: Filtres,
     trips: frozenset[str] = frozenset(),
     gares: frozenset[str] = frozenset(),
+    gares2: frozenset[str] = frozenset(),
 ) -> tuple[str, list]:
     """La clause `WHERE` du filtre, et ses paramètres.
 
@@ -249,7 +298,18 @@ def conditions(
       `destination_name`, qui sont du texte libre saisi au comptage : une
       gare hors catalogue s'y retrouve quand même. C'est aussi ce qui rend
       le filtre utile quand `stops.db` n'a pas été importé — la famille
-      d'identifiants est alors vide, les noms suffisent.
+      d'identifiants est alors vide, les noms suffisent. La comparaison passe
+      par `cle_gare` (sans accent ni casse, voir `offer.cle_gare`) : « Nimes »
+      saisi à la main retrouve « Nîmes ». La connexion doit avoir reçu
+      `enregistrer_fonctions` ;
+    - avec `gare2` aussi (`gares2` en est la famille), on ne garde que les
+      relevés qui **relient** les deux gares, dans un sens ou dans l'autre :
+      origine = A et destination = B, ou origine = B et destination = A. Seules
+      les extrémités comptent, ni `legs` ni `trajet` : « les deux sens » d'un
+      corridor est une question sur le trajet compté, et un serpent qui
+      traverse A puis B n'est pas un relevé A↔B — il est déjà trouvé par le
+      filtre gare simple sur A ou sur B. Chaque extrémité est reconnue comme
+      pour une gare seule : famille d'identifiants OU nom.
     """
     morceaux: list[str] = []
     params: list = []
@@ -273,7 +333,11 @@ def conditions(
         else:
             morceaux.append(f"trip_id IN ({','.join('?' for _ in trips)})")
             params.extend(sorted(trips))
-    if filtres.gare:
+    if filtres.gare and filtres.gare2:
+        clause, jeu = _clause_paire(filtres, gares, gares2)
+        morceaux.append(clause)
+        params.extend(jeu)
+    elif filtres.gare:
         marques = ",".join("?" for _ in gares) if gares else "NULL"
         # Quatre passages de la famille : les deux extrémités, les arrêts du
         # serpent, ceux du parcours figé. Les paramètres suivent l'ordre des
@@ -286,8 +350,8 @@ def conditions(
             f"""(
     origin_stop_id IN ({marques})
     OR destination_stop_id IN ({marques})
-    OR origin_name = ? COLLATE NOCASE
-    OR destination_name = ? COLLATE NOCASE
+    OR cle_gare(origin_name) = ?
+    OR cle_gare(destination_name) = ?
     OR EXISTS (
         SELECT 1 FROM json_each(COALESCE(saisie.legs, '[]'))
         WHERE json_extract(value, '$.stop_id') IN ({marques})
@@ -301,12 +365,44 @@ def conditions(
         famille = sorted(gares)
         params.extend(famille)
         params.extend(famille)
-        params.append(filtres.gare)
-        params.append(filtres.gare)
+        cle = cle_gare(filtres.gare)
+        params.append(cle)
+        params.append(cle)
         params.extend(famille)
         params.extend(famille)
 
     return (" AND ".join(morceaux), params)
+
+
+def _extremite(colonne: str, famille: frozenset[str]) -> tuple[str, list]:
+    """« Cette extrémité est cette gare » : un identifiant de la famille, ou le nom.
+
+    `IN (NULL)` quand la famille est vide, comme pour le filtre simple : le nom
+    décide seul si le catalogue n'a pas été importé.
+    """
+    marques = ",".join("?" for _ in famille) if famille else "NULL"
+    return (
+        f"({colonne}_stop_id IN ({marques}) OR cle_gare({colonne}_name) = ?)",
+        sorted(famille),
+    )
+
+
+def _clause_paire(
+    filtres: Filtres, gares: frozenset[str], gares2: frozenset[str]
+) -> tuple[str, list]:
+    """A→B ou B→A, sur les extrémités du relevé."""
+    cle_a, cle_b = cle_gare(filtres.gare), cle_gare(filtres.gare2)
+    origine_a, p_oa = _extremite("origin", gares)
+    destination_b, p_db = _extremite("destination", gares2)
+    origine_b, p_ob = _extremite("origin", gares2)
+    destination_a, p_da = _extremite("destination", gares)
+    clause = (
+        f"(({origine_a} AND {destination_b}) OR ({origine_b} AND {destination_a}))"
+    )
+    # Les paramètres suivent l'ordre des `?` : les identifiants puis la clé de
+    # nom, pour chacune des quatre extrémités.
+    params = [*p_oa, cle_a, *p_db, cle_b, *p_ob, cle_b, *p_da, cle_a]
+    return clause, params
 
 
 @dataclass(frozen=True)
@@ -430,6 +526,7 @@ def parametres(filtres: Filtres) -> dict[str, str]:
         "mode": filtres.mode,
         "ligne": filtres.ligne,
         "gare": filtres.gare,
+        "gare2": filtres.gare2,
     }
 
 
