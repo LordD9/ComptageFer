@@ -26,12 +26,19 @@ PAGE = """<!doctype html>
   button.ghost { background: #fff; color: #1c1915; border: 1px solid #c9c1b4; }
   .choices { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.6rem; }
   .choices button, .train { text-align: left; background: #fff; color: #1c1915; border: 1px solid #c9c1b4; }
+  #rames-schema { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+  #rames-schema .rame-box { min-width: 0; padding: 0.5rem 0.25rem; text-align: center; }
+  #rames-schema .rame-box[aria-pressed="true"] { outline: 3px solid #205c42; outline-offset: 1px; }
+  #rames-schema svg { display: block; width: 100%; height: auto; }
+  #rames-schema .rame-position { display: block; font-size: 0.78rem; line-height: 1.2; }
+  @media (max-width: 360px) { #rames-schema { grid-template-columns: 1fr; } }
   .train strong { display: block; font-size: 1.5rem; }
   .chip { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; background: #fff; border-radius: 0.8rem; padding: 0.7rem 0.8rem; margin-top: 0.6rem; }
   .hidden { display: none; }
   .status { font-size: 0.95rem; color: #5c564c; }
   .bad { color: #8a2b1b; }
   .counter { position: relative; display: block; margin-top: 0.6rem; }
+  .counter.hidden { display: none; }
   .counter-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; }
   .counter-row button { flex: 1; min-height: 3.6rem; font-size: 1.1rem; }
   .counter-entry label { flex: 1; }
@@ -321,10 +328,23 @@ function renderRames() {
     button.type = "button";
     button.className = "rame-box";
     button.dataset.rame = n;
-    button.textContent = "Rame " + n + (state.selectedRames.includes(n) ? " ✓" : "");
+    const selected = state.selectedRames.includes(n);
+    const position = size === 1 ? "position unique" : size === 2 || n === 1 || n === size
+      ? "position extérieure " + n + " sur " + size : "position centrale, milieu du train";
+    button.setAttribute("aria-pressed", String(selected));
+    button.setAttribute("aria-label", "Rame " + n + ", " + position + (selected ? ", sélectionnée" : ", non sélectionnée"));
+    button.innerHTML = '<svg viewBox="0 0 120 36" role="img" aria-hidden="true" focusable="false"><path d="M7 7h96l10 9v12H7z" fill="currentColor"/><path d="M15 11h14v8H15zm19 0h14v8H34zm19 0h14v8H53zm19 0h14v8H72zm19 0h8v8h-8z" fill="#fff"/><circle cx="26" cy="30" r="4" fill="#1c1915"/><circle cx="95" cy="30" r="4" fill="#1c1915"/></svg>';
+    const label = document.createElement("span");
+    label.textContent = "Rame " + n + (selected ? " ✓" : "");
+    button.appendChild(label);
+    const positionLabel = document.createElement("span");
+    positionLabel.className = "rame-position";
+    positionLabel.textContent = position;
+    button.appendChild(positionLabel);
     button.onclick = () => {
       state.selectedRames = state.selectedRames.includes(n) ? state.selectedRames.filter(x => x !== n) : [...state.selectedRames, n].sort();
       renderRames();
+      schema.querySelector('[data-rame="' + n + '"]').focus();
     };
     schema.appendChild(button);
   }
@@ -370,7 +390,7 @@ function startUnique() {
 }
 $("mode-unique").onclick = startUnique;
 // Entrée commune au comptage : le bouton principal et celui du bloc matériel.
-function goCounting() {
+function goCounting(directCars = false) {
   $("rames-error").hidden = true;
   if (state.composition && !state.selectedRames.length) {
     $("rames-error").textContent = "Choisissez au moins une rame à compter.";
@@ -385,7 +405,22 @@ function goCounting() {
   $("od-rappel").textContent = state.origin.name + " et " + state.destination.name;
   $("count-modes").classList.remove("hidden");
   $("mode-rame").classList.add("hidden");
-  if (state.material) startCars();
+  $("counter").classList.remove("hidden");
+  if (state.material) {
+    if (directCars) startCars(false);
+    else {
+      state.snakeFromCars = false;
+      $("count-modes").classList.remove("hidden");
+      $("mode-rame").classList.add("hidden");
+      $("count-next").classList.add("hidden");
+      $("voitures-schema").classList.add("hidden");
+      $("counter").classList.add("hidden");
+      $("voiture-prev").classList.add("hidden");
+      $("voiture-next").classList.add("hidden");
+      $("pad-label").textContent = "Choisissez le mode de comptage";
+      show("comptage-step");
+    }
+  }
   else {
     state.pad = { kind: "unique", rame: null, position: null };
     state.passengers = 0; state.voitures = []; state.rames = [];
@@ -398,9 +433,11 @@ function goCounting() {
     show("comptage-step"); $("passengers").focus();
   }
 }
-$("materiel-next").onclick = goCounting;
-$("materiel-compter").onclick = goCounting;
-function startCars() {
+$("materiel-next").onclick = () => goCounting();
+$("materiel-compter").onclick = () => goCounting(true);
+function startCars(forSnake = false) {
+  state.snakeFromCars = forSnake;
+  $("counter").classList.remove("hidden");
   state.voitures = []; state.rames = []; state.rameIndex = 0; state.position = 1;
   $("count-modes").classList.add("hidden"); $("count-next").classList.add("hidden");
   $("voitures-schema").classList.remove("hidden"); $("voiture-prev").classList.remove("hidden");
@@ -469,6 +506,12 @@ $("count-next").onclick = () => {
   } else { show("form-step"); }
 };
 function finishCounting() {
+  if (state.pad.kind === "car" && state.snakeFromCars) {
+    const onboard = state.voitures.reduce((sum, row) => sum + row.passengers, 0);
+    state.snakeFromCars = false;
+    startSnake(onboard);
+    return;
+  }
   $("count-modes").classList.add("hidden"); $("voitures-schema").classList.add("hidden");
   $("count-next").classList.add("hidden");
   $("form-step").classList.remove("hidden"); show("form-step");
@@ -563,7 +606,8 @@ $("passengers").addEventListener("input", (e) => {
   savePad();
 });
 
-$("mode-snake").onclick = startSnake;
+$("mode-snake").onclick = () => state.material ? startCars(true) : startSnake();
+$("mode-unique").onclick = () => state.material ? startCars(false) : startUnique();
 $("snake-back").onclick = () => show("materiel-step");
 $("snake-drop").onclick = () => {
   clearSnake();
@@ -640,7 +684,7 @@ function offerSnake() {
   return true;
 }
 
-async function startSnake() {
+async function startSnake(initialOnboard = null) {
   $("snake-error").textContent = "";
   show("snake-step");
   $("snake-title").textContent = "Chargement des arrêts…";
@@ -663,9 +707,9 @@ async function startSnake() {
   state.snakeIndex = 0;
   state.legs = [];
   clearSnake();
-  renderSnake();
+  renderSnake(initialOnboard);
 }
-function renderSnake() {
+function renderSnake(initialOnboard = null) {
   const stop = state.stops[state.snakeIndex];
   const last = state.snakeIndex === state.stops.length - 1;
   $("snake-chip").textContent = (state.snakeIndex + 1) + " / " + state.stops.length;
@@ -675,6 +719,7 @@ function renderSnake() {
   $("snake-fields").replaceChildren();
   if (state.snakeIndex === 0) {
     $("snake-fields").append(...field("snake-onboard", "Voyageurs à bord", "0"));
+    if (initialOnboard !== null) $("snake-onboard").value = String(initialOnboard);
   } else {
     $("snake-fields").append(...field("snake-boarded", "Montées", "0"));
     $("snake-fields").append(...field("snake-alighted", "Descentes", last ? "si vous les comptez" : "0"));
