@@ -67,11 +67,15 @@ jobs:
           # prouve pas en general : ces deux pages ont un etat « rien » qui doit
           # s'afficher, et c'est ce que le contenu verifie ci-dessous.
           # `/releve` et `/gare` repondent meme sur un conteneur vide.
-          for chemin in / /comptages /carte /methode /offline.js /api/publish /compte /classement /releve /gare; do
+          for chemin in / /comptages /carte /methode /offline.js /api/publish /compte /classement /releve /gare /retours; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000$chemin")
             echo "$chemin -> $code"
             test "$code" = "200" || { echo "echec sur $chemin"; exit 1; }
           done
+
+          corps=$(curl -sS http://127.0.0.1:8000/retours)
+          echo "$corps" | grep -q 'name="message"' || {
+            echo "le formulaire public de retours est absent"; exit 1; }
 
           for chemin in /rechercher /ligne /api/lignes; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000$chemin")

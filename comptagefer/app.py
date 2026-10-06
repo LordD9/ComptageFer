@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from comptagefer import compte as compte_module
 from comptagefer import materiel as materiel_module
+from comptagefer import retours as retours_module
 from comptagefer import score as score_module
 from comptagefer.affichage import chrome
 from comptagefer.carte import counted_features
@@ -248,6 +249,7 @@ def create_app(
         # casserait toute base déjà migrée.
         _clef_par_genre(connection)
         preparer_compte(connection)
+        retours_module.preparer(connection)
 
     timetable = data_dir / "timetable.db"
     stops_database = data_dir / "stops.db"
@@ -258,7 +260,7 @@ def create_app(
     def page_privee(request: Request) -> bool:
         return any(
             request.url.path == prefixe or request.url.path.startswith(prefixe + "/")
-            for prefixe in ("/compte", "/admin")
+            for prefixe in ("/compte", "/admin", "/retours")
         )
 
     def confidentialite(reponse: Response) -> None:
@@ -498,6 +500,34 @@ def create_app(
     def methode() -> str:
         return _method_page()
 
+    @app.get("/retours", response_class=HTMLResponse)
+    def retours_page(request: Request, envoye: int = Query(0)) -> str:
+        return retours_module.formulaire(confirmation=envoye == 1)
+
+    @app.post("/retours", response_class=HTMLResponse)
+    async def retours_submit(request: Request) -> Response:
+        form = await request.form()
+        message = str(form.get("message") or "").strip()
+        if form.get("website"):
+            return HTMLResponse(retours_module.formulaire(erreur="Envoi refusé."), status_code=400)
+        if not message:
+            return HTMLResponse(
+                retours_module.formulaire(erreur="Veuillez saisir un message."), status_code=400
+            )
+        if len(message) > retours_module.MAX_MESSAGE:
+            return HTMLResponse(
+                retours_module.formulaire(message, "Votre message dépasse 5 000 caractères."),
+                status_code=400,
+            )
+        retry_after = retours_module.enregistrer(database, message)
+        if retry_after is not None:
+            return HTMLResponse(
+                retours_module.formulaire(message, "Trop de retours ont été reçus. Réessayez plus tard."),
+                status_code=429,
+                headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
+            )
+        return Response(status_code=303, headers={"Location": "/retours?envoye=1"})
+
     @app.get("/api/export.csv")
     def export_csv() -> PlainTextResponse:
         return PlainTextResponse(
@@ -523,7 +553,7 @@ def create_app(
         """Publier tout de suite, pour vérifier la clé sans attendre minuit."""
         if not admin_open(request):
             raise HTTPException(status_code=401, detail="connexion requise")
-        return _admin_list(_list_saisies(database), publication.publish_now())
+        return admin_dashboard(publication=publication.publish_now())
 
     @app.post("/api/sessions")
     def sessions(request: Request, body: dict) -> dict:
@@ -896,11 +926,31 @@ def create_app(
             return False
         return True
 
+    def admin_dashboard(retours_page: int = 1, publication: dict | None = None) -> str:
+        return _admin_list(
+            _list_saisies(database),
+            publication=publication,
+            signalements=compte_module.signalements(database),
+            retours_html=retours_module.panneau_admin(database, retours_page),
+        )
+
+    def identifiant_retour(identifiant: str) -> int | None:
+        if not identifiant.isdecimal() or len(identifiant) > 19:
+            return None
+        valeur = int(identifiant)
+        return valeur if 0 < valeur <= 9_223_372_036_854_775_807 else None
+
     @app.get("/admin", response_class=HTMLResponse)
-    def admin(request: Request) -> str:
+    def admin(request: Request, retours_page: str = Query("1")) -> str:
         if not admin_open(request):
             return _admin_login()
-        return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
+        page = 1
+        if retours_page.isdecimal() and len(retours_page) <= 12:
+            page = int(retours_page)
+            pages = max(1, (retours_module.compter(database) + retours_module.PAGE_RETOURS - 1) // retours_module.PAGE_RETOURS)
+            if page > pages:
+                page = 1
+        return admin_dashboard(retours_page=max(1, page))
 
     @app.get("/admin/modifier", response_class=HTMLResponse)
     def admin_modifier_page(request: Request, client_id: str = Query(""), kind: str = Query("")) -> str:
@@ -934,7 +984,7 @@ def create_app(
                 raise HTTPException(status_code=409, detail="le relevé a changé, rechargez la page")
         except sqlite3.DatabaseError:
             raise HTTPException(status_code=503, detail="relevés temporairement indisponibles") from None
-        return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
+        return admin_dashboard()
 
     @app.post("/admin/login", response_class=HTMLResponse)
     def admin_login(response: Response, token: str = Form("")) -> str:
@@ -952,7 +1002,7 @@ def create_app(
             max_age=SESSION_SECONDS,
             path="/",
         )
-        return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
+        return admin_dashboard()
 
     @app.post("/admin/supprimer", response_class=HTMLResponse)
     def admin_delete(
@@ -987,7 +1037,29 @@ def create_app(
                     raise HTTPException(status_code=404, detail="relevé introuvable")
         except sqlite3.DatabaseError:
             raise HTTPException(status_code=503, detail="relevés temporairement indisponibles") from None
-        return _admin_list(_list_saisies(database), signalements=compte_module.signalements(database))
+        return admin_dashboard()
+
+    @app.post("/admin/retours/{identifiant}/traiter", response_class=HTMLResponse)
+    def admin_traiter_retour(request: Request, identifiant: str) -> Response:
+        if not admin_open(request):
+            raise HTTPException(status_code=401, detail="connexion requise")
+        id_retour = identifiant_retour(identifiant)
+        if id_retour is None:
+            raise HTTPException(status_code=404, detail="retour introuvable")
+        if not retours_module.traiter(database, id_retour):
+            raise HTTPException(status_code=404, detail="retour introuvable")
+        return Response(status_code=303, headers={"Location": "/admin"})
+
+    @app.post("/admin/retours/{identifiant}/supprimer", response_class=HTMLResponse)
+    def admin_supprimer_retour(request: Request, identifiant: str) -> Response:
+        if not admin_open(request):
+            raise HTTPException(status_code=401, detail="connexion requise")
+        id_retour = identifiant_retour(identifiant)
+        if id_retour is None:
+            raise HTTPException(status_code=404, detail="retour introuvable")
+        if not retours_module.supprimer(database, id_retour):
+            raise HTTPException(status_code=404, detail="retour introuvable")
+        return Response(status_code=303, headers={"Location": "/admin"})
 
     return app
 
@@ -1630,6 +1702,7 @@ def _admin_list(
     rows: list[dict],
     publication: dict | None = None,
     signalements: list[dict] | None = None,
+    retours_html: str | None = None,
 ) -> str:
     cards = []
     for row in rows:
@@ -1678,6 +1751,7 @@ def _admin_list(
   <p>Supprimer retire le comptage de la liste et du CSV.</p>
   {_panneau_signalements(signalements or [])}
   {body}
+  {retours_html or ''}
   {"" if publication is None else _publication_panel(publication)}
 </main></body></html>
 """
