@@ -405,7 +405,9 @@ function renderRames() {
   $("compte-zone").classList.toggle("hidden", !size);
   if (!size) { schema.classList.add("hidden"); return; }
   schema.classList.remove("hidden");
-  for (let n = 1; n <= size; n++) {
+  // Les indices restent ceux des comptages (1 = tête, size = queue) ; seul
+  // l'ordre de rendu suit le sens de marche, de la queue vers la tête.
+  for (let n = size; n >= 1; n--) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "rame-box";
@@ -420,7 +422,7 @@ function renderRames() {
       '<path class="cabine" d="M12 12h14v10H7v-4z" fill="#fff"/>' +
       '<path class="cabine" d="M94 12h14l5 6v4H94z" fill="#fff"/>' +
       '<path d="M33 12h10v10H33z M48 12h10v10H48z M62 12h10v10H62z M77 12h10v10H77z" fill="#fff"/>' +
-      '<path class="sens-marche" d="M68 5H52m5-4-5 4 5 4" fill="none" stroke="#1c1915" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path class="sens-marche" d="M52 5H68m-5-4 5 4-5 4" fill="none" stroke="#1c1915" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
       '<circle cx="25" cy="33" r="4" fill="#1c1915"/><circle cx="95" cy="33" r="4" fill="#1c1915"/></svg>';
     const label = document.createElement("span");
     label.textContent = "Rame " + n + (selected ? " ✓" : "");

@@ -1374,11 +1374,23 @@ L'alias explicite réunit leurs familles de 49 et 4 identifiants en une famille
 de 53 arrêts. Les deux recherches renvoient une gare, et la sélection accède
 aux deux offres. Ce n'est pas une fusion générale des noms : le seuil de
 500 m reste nécessaire, les homonymes éloignés et gares voisines restent
-distincts. Le GTFS Transilien mesuré contient 37 routes, dont 24 de rail, et
-49 998 circulations. Aucun flux temps réel IDFM n'est ajouté.
+distincts. Neuf familles d'alias vérifiées sur les archives SNCF, Transilien
+et IDFM sont déclarées explicitement. Leur expansion est ancrée sur l'aire
+trouvée : une recherche exacte n'ajoute que les aires à 500 m au plus ou de
+même identifiant, donc « Champigny-sur-Yonne » n'attire pas Champigny
+(Val-de-Marne). La proximité seule ne crée jamais d'alias. Le GTFS Transilien
+mesuré contient 37 routes, dont 24 de rail, et 49 998 circulations. Aucun
+flux temps réel IDFM n'est ajouté ; la liste normale vient de l'offre
+théorique.
+
+Les noms d'origine et de destination d'un train signalé viennent du
+référentiel `stops.db`, jamais du client, y compris pour les lignes déjà
+enregistrées. Si l'identifiant n'est plus résolu, le nom stocké est conservé ;
+sans nom, l'affichage est « — » et non l'identifiant brut.
 
 Le SVG représente une rame symétrique avec cabine à chaque extrémité. Une
-petite flèche indique le sens de marche, vers le train de tête. Les positions
+petite flèche indique le sens de marche, vers la droite. Lecture de gauche à
+droite : train de queue à gauche, train de tête à droite. Les positions
 sont « train de tête », « train de queue » et « rame intermédiaire » ; les
 codes stockés US/UM2/UM3 et les indices de rame restent inchangés.
 
