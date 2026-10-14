@@ -316,10 +316,10 @@ def conditions(
 
     if filtres.depuis:
         debut = datetime.strptime(filtres.depuis, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        morceaux.append("created_at >= ?")
+        morceaux.append("(CASE WHEN is_historical = 1 THEN observed_at ELSE created_at END) >= ?")
         params.append(debut.isoformat())
     if filtres.jusqu:
-        morceaux.append("created_at < ?")
+        morceaux.append("(CASE WHEN is_historical = 1 THEN observed_at ELSE created_at END) < ?")
         params.append(_date_iso(filtres.jusqu))
     if filtres.mode:
         morceaux.append("kind = ?")
@@ -461,7 +461,7 @@ def par_paire(rows: list[dict]) -> list[Paire]:
     for (origine, destination), members in groupes.items():
         effectifs = [m["passengers"] for m in members if m.get("passengers") is not None]
         dates = sorted(
-            m["created_at"]
+            str((m.get("observed_at") if m.get("is_historical") else None) or m["created_at"])
             for m in members
             if isinstance(m.get("created_at"), str) and m["created_at"]
         )

@@ -527,7 +527,7 @@ def _lignes_csv(texte: str) -> list[list[str]]:
 
 def _colonnes(lignes: list[str]) -> tuple[list[str], list[str]]:
     lu = _lignes_csv("\n".join(lignes))
-    return lu[1], lu[2]
+    return lu[0], lu[1]
 
 
 def test_the_csv_carries_the_columns(tmp_path):

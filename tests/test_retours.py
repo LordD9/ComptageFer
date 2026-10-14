@@ -1,5 +1,6 @@
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
 from comptagefer.app import create_app
@@ -12,8 +13,11 @@ def test_formulaire_public_et_validation_prg_et_stockage(tmp_path):
     assert page.status_code == 200
     assert "no-store" in page.headers["cache-control"]
     assert "<form" in page.text
-    assert 'name="email"' not in page.text.lower()
+    assert '<input id="email" name="email" type="email" maxlength="254" autocomplete="email" value="">' in page.text
+    assert "required" not in page.text.split('name="email"', 1)[1].split(">", 1)[0]
     assert 'name="pseudo"' not in page.text.lower()
+    reprise = retours_module.formulaire(email='"><img src=x>')
+    assert 'value="&quot;&gt;&lt;img src=x&gt;"' in reprise
 
     assert client.post("/retours", data={"message": "  \n  "}).status_code == 400
     assert client.post("/retours", data={"message": "x" * 5001}).status_code == 400
@@ -26,10 +30,11 @@ def test_formulaire_public_et_validation_prg_et_stockage(tmp_path):
     assert "no-store" in confirmation.headers["cache-control"]
 
     with sqlite3.connect(tmp_path / "app.db") as db:
-        row = db.execute("SELECT id, message, created_at, traite FROM retour").fetchone()
+        row = db.execute("SELECT id, message, created_at, traite, email FROM retour").fetchone()
     assert row[0] == 1
     assert row[1] == "Service <script>alert(1)</script>\nÀ améliorer"
     assert row[2] and row[2].endswith("+00:00") and row[3] == 0
+    assert row[4] is None
 
 
 def test_table_retour_migree_idempotemment_sans_alterer_saisie_existante(tmp_path):
@@ -37,14 +42,29 @@ def test_table_retour_migree_idempotemment_sans_alterer_saisie_existante(tmp_pat
     with sqlite3.connect(database) as db:
         db.execute("CREATE TABLE saisie (client_id TEXT PRIMARY KEY)")
         db.execute("INSERT INTO saisie VALUES ('existant')")
+        db.execute(
+            """CREATE TABLE retour (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                traite INTEGER NOT NULL DEFAULT 0 CHECK (traite IN (0, 1))
+            )"""
+        )
+        db.execute("INSERT INTO retour VALUES (7, 'retour existant', '2026-10-14T00:00:00+00:00', 0)")
     app = create_app(tmp_path)
     create_app(tmp_path)
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT client_id FROM saisie").fetchone() == ("existant",)
         columns = {row[1]: row for row in db.execute("PRAGMA table_info(retour)")}
         assert columns["id"][2].upper() == "INTEGER"
-        assert {"message", "created_at", "traite"} <= columns.keys()
-        assert db.execute("SELECT COUNT(*) FROM retour").fetchone() == (0,)
+        assert {"message", "created_at", "traite", "email"} <= columns.keys()
+        assert db.execute("SELECT id, message, created_at, traite, email FROM retour").fetchone() == (
+            7,
+            "retour existant",
+            "2026-10-14T00:00:00+00:00",
+            0,
+            None,
+        )
 
 
 def test_admin_retours_authentifie_et_actions_et_pas_de_fuite_publique(tmp_path):
@@ -185,3 +205,84 @@ def test_admin_retours_page_par_pages_de_50_et_parametres_toleres(tmp_path):
         page = client.get("/admin", params={"retours_page": valeur})
         assert page.status_code == 200
         assert page.text.count('class="card retour-admin"') == 50
+
+
+def test_email_contact_est_visible_uniquement_dans_l_admin(tmp_path, caplog):
+    database = tmp_path / "app.db"
+    client = TestClient(create_app(tmp_path, admin_token="secret"))
+    email = "contact@example.org"
+    assert retours_module.enregistrer(database, "message privé", email=email) is None
+
+    for url in ("/retours", "/comptages", "/api/export.csv", "/api/sessions", "/api/publish"):
+        assert email not in client.get(url).text
+    assert email not in client.get("/admin").text
+
+    assert client.post("/admin/login", data={"token": "secret"}).status_code == 200
+    assert email in client.get("/admin").text
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE retour SET email = ?", ("<img src=x onerror=alert(1)>",))
+    panel = client.get("/admin").text
+    assert "&lt;img src=x onerror=alert(1)&gt;" in panel
+    assert "<img src=x onerror=alert(1)>" not in panel
+    assert email not in caplog.text
+
+
+def test_traiter_efface_definitivement_le_contact_email(tmp_path):
+    database = tmp_path / "app.db"
+    client = TestClient(create_app(tmp_path, admin_token="secret"))
+    email = "contact@example.org"
+    assert retours_module.enregistrer(database, "message privé", email=email) is None
+    client.post("/admin/login", data={"token": "secret"})
+    assert email in client.get("/admin").text
+
+    traite = client.post("/admin/retours/1/traiter", follow_redirects=False)
+    assert traite.status_code == 303
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT email, traite FROM retour WHERE id = 1").fetchone() == (None, 1)
+    assert email not in client.get("/admin").text
+
+
+def test_email_contact_est_optionnel_normalise_et_valide_avant_admission(tmp_path):
+    database = tmp_path / "app.db"
+    create_app(tmp_path)
+    assert retours_module.normaliser_email(None) is None
+    assert retours_module.normaliser_email(" \t ") is None
+    assert retours_module.normaliser_email(" contact@example.org ") == "contact@example.org"
+
+    for email in (
+        "pas-une-adresse",
+        "deux@@example.org",
+        "a..b@example.org",
+        "x@localhost",
+        f"{'a' * 65}@example.org",
+    ):
+        with pytest.raises(ValueError):
+            retours_module.normaliser_email(email)
+    with pytest.raises(ValueError):
+        retours_module.enregistrer(database, "message", email="invalide")
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM retour").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM retour_admission").fetchone() == (0,)
+
+
+def test_post_retours_transmet_et_valide_email_sans_le_journaliser(tmp_path, caplog):
+    database = tmp_path / "app.db"
+    client = TestClient(create_app(tmp_path))
+    email = "contact@example.org"
+    response = client.post(
+        "/retours",
+        data={"message": "Réponse souhaitée", "email": f" {email} "},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT message, email FROM retour").fetchone() == (
+            "Réponse souhaitée",
+            email,
+        )
+    assert email not in caplog.text
+
+    refuse = client.post("/retours", data={"message": "Sans contact", "email": "invalide"})
+    assert refuse.status_code == 400
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM retour").fetchone() == (1,)

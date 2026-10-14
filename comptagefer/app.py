@@ -10,7 +10,7 @@ import threading
 import time
 import urllib.request
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from html import escape
 from io import BytesIO
 from pathlib import Path
@@ -138,7 +138,11 @@ SCHEMA_SAISIE = (
     ("trajet", "TEXT"),
     ("voitures", "TEXT"),
     ("rames", "TEXT"),
+    ("is_historical", "INTEGER NOT NULL DEFAULT 0"),
+    ("observed_at", "TEXT"),
 )
+
+HISTORIQUE_MAX = timedelta(days=15)
 
 # Ce que « composition » veut dire, et pourquoi c'est une liste fermée.
 #
@@ -241,6 +245,28 @@ def create_app(
         if not {"voitures", "rames"} <= columns:
             for nom in ("voitures", "rames"):
                 connection.execute(f"ALTER TABLE saisie ADD COLUMN {nom} TEXT")
+        if "is_historical" not in columns:
+            connection.execute(
+                "ALTER TABLE saisie ADD COLUMN is_historical INTEGER NOT NULL DEFAULT 0"
+            )
+        if "observed_at" not in columns:
+            connection.execute("ALTER TABLE saisie ADD COLUMN observed_at TEXT")
+        anciennes_dates = (
+            connection.execute(
+                "SELECT rowid, created_at FROM saisie WHERE observed_at IS NULL"
+            ).fetchall()
+            if "created_at" in columns else []
+        )
+        dates_a_migrer = []
+        for rowid, date in anciennes_dates:
+            observed_at = _timestamp_aware(date, assume_utc=True)
+            if observed_at is not None:
+                dates_a_migrer.append((observed_at.isoformat(), rowid))
+        connection.executemany(
+            "UPDATE saisie SET observed_at = ? WHERE rowid = ?",
+            dates_a_migrer,
+        )
+        connection.execute("UPDATE saisie SET is_historical = 0 WHERE is_historical IS NULL")
         # `compte_id` vient de la phase 9 et n'est pas dans `SCHEMA_SAISIE` :
         # cette liste sert aussi à la copie de migration de `_clef_par_genre`,
         # et une colonne qui n'y est pas disparaît au passage. D'où l'ordre :
@@ -250,6 +276,11 @@ def create_app(
         _clef_par_genre(connection)
         preparer_compte(connection)
         retours_module.preparer(connection)
+        if "created_at" in columns:
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS saisie_date_observee ON saisie "
+                "((CASE WHEN is_historical = 1 THEN observed_at ELSE created_at END))"
+            )
 
     timetable = data_dir / "timetable.db"
     stops_database = data_dir / "stops.db"
@@ -375,6 +406,32 @@ def create_app(
             )
         return trips_serving(data_dir / "rt.db", from_, to, parsed, stops_database=data_dir / "stops.db")
 
+    @app.get("/api/trips/historical")
+    def historical_trips(
+        from_: str = Query(alias="from"), to: str = Query(), at: str = Query()
+    ) -> list[dict]:
+        observed_at = _timestamp_aware(at)
+        if observed_at is None:
+            raise HTTPException(status_code=422, detail="`at` doit être une date ISO avec fuseau")
+        _verifier_borne_historique(observed_at)
+        if not timetable.exists():
+            raise HTTPException(status_code=503, detail="horaires théoriques indisponibles")
+        trains = listed_trips(
+            timetable,
+            data_dir / "rt.db",
+            from_,
+            to,
+            observed_at,
+            stops_database=stops_database,
+            historical=True,
+        )
+        maintenant = _maintenant_utc()
+        return [
+            train for train in trains
+            if (depart := _timestamp_aware(train.get("departure_time"))) is not None
+            and maintenant - HISTORIQUE_MAX <= depart <= maintenant
+        ]
+
     @app.get("/api/trip-stops")
     def trip_stops(
         trip: str,
@@ -454,12 +511,8 @@ def create_app(
 
     @app.get("/carte", response_class=HTMLResponse)
     def carte() -> str:
-        rows = _list_saisies(database)
-        # `total` est le nombre de relevés collectés, `placos` le nombre de
-        # traits dessinés : l'écart entre les deux est l'information utile, il
-        # ne faut donc pas les confondre. Mais le décompte ignorait les trains
-        # signalés, qui sont eux dessinés — la page pouvait alors annoncer
-        # « 0 comptage au total, 1 sur la carte ».
+        # Les signalements ne sont ni des comptages ni des tracés non plaçables.
+        rows = [row for row in _list_saisies(database) if row.get("kind") != "missing"]
         return carte_page(counted_features(data_dir / "stops.db", rows), len(rows))
 
     @app.get("/gare", response_class=HTMLResponse)
@@ -508,21 +561,29 @@ def create_app(
     async def retours_submit(request: Request) -> Response:
         form = await request.form()
         message = str(form.get("message") or "").strip()
+        email_saisi = str(form.get("email") or "")
+        try:
+            email = retours_module.normaliser_email(email_saisi)
+        except ValueError:
+            return HTMLResponse(
+                retours_module.formulaire(message, "Adresse électronique invalide.", email=email_saisi),
+                status_code=400,
+            )
         if form.get("website"):
             return HTMLResponse(retours_module.formulaire(erreur="Envoi refusé."), status_code=400)
         if not message:
             return HTMLResponse(
-                retours_module.formulaire(erreur="Veuillez saisir un message."), status_code=400
+                retours_module.formulaire(erreur="Veuillez saisir un message.", email=email_saisi), status_code=400
             )
         if len(message) > retours_module.MAX_MESSAGE:
             return HTMLResponse(
-                retours_module.formulaire(message, "Votre message dépasse 5 000 caractères."),
+                retours_module.formulaire(message, "Votre message dépasse 5 000 caractères.", email=email_saisi),
                 status_code=400,
             )
-        retry_after = retours_module.enregistrer(database, message)
+        retry_after = retours_module.enregistrer(database, message, email=email)
         if retry_after is not None:
             return HTMLResponse(
-                retours_module.formulaire(message, "Trop de retours ont été reçus. Réessayez plus tard."),
+                retours_module.formulaire(message, "Trop de retours ont été reçus. Réessayez plus tard.", email=email_saisi),
                 status_code=429,
                 headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
             )
@@ -2007,6 +2068,105 @@ def _repartition(
     )
 
 
+def _timestamp_aware(value: object, *, assume_utc: bool = False) -> datetime | None:
+    """Parse un ISO 8601 avec fuseau ; les dates historiques n'acceptent pas de naive."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        if not assume_utc:
+            return None
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
+def _maintenant_utc() -> datetime:
+    return datetime.now(UTC)
+
+
+def _verifier_borne_historique(observed_at: datetime) -> None:
+    maintenant = _maintenant_utc()
+    if not maintenant - HISTORIQUE_MAX <= observed_at <= maintenant:
+        raise HTTPException(
+            status_code=422,
+            detail="la date historique doit être comprise dans les 15 derniers jours",
+        )
+
+
+def _trip_historique(
+    timetable: Path | None,
+    stops_database: Path | None,
+    origin: str,
+    destination: str,
+    trip_id: object,
+    observed_at: datetime,
+) -> dict:
+    """Retrouve la circulation théorique exacte pour cette date et cette desserte."""
+    if timetable is None or not Path(timetable).exists() or not isinstance(trip_id, str):
+        raise HTTPException(status_code=422, detail="circulation historique invalide")
+    offers = listed_trips(
+        Path(timetable),
+        Path(timetable).with_name("rt.db"),
+        origin,
+        destination,
+        observed_at,
+        stops_database=stops_database,
+        historical=True,
+    )
+    match = next(
+        (
+            item
+            for item in offers
+            if item.get("trip_id") == trip_id
+            and _timestamp_aware(item.get("departure_time")) == observed_at
+        ),
+        None,
+    )
+    if match is None:
+        raise HTTPException(
+            status_code=422,
+            detail="ce train ne dessert pas cette origine-destination à cette date",
+        )
+    return match
+
+
+def _photo_historique(train: dict | None) -> dict:
+    """Photo théorique reconstruite, sans état ni retard de temps réel."""
+
+    def inconnue(item: object) -> dict | None:
+        if not isinstance(item, dict):
+            return None
+        return {
+            "trip_id": item.get("trip_id"),
+            "kind": item.get("kind"),
+            "departure_time": item.get("departure_time"),
+            "status": None,
+            "delay_seconds": None,
+            "etat": "inconnu",
+        }
+
+    if train is None:
+        return {
+            "source": "offre théorique",
+            "courant": None,
+            "precedent": None,
+            "precedent_meme_type": None,
+            "suivant": None,
+            "suivant_meme_type": None,
+        }
+    return {
+        "source": "offre théorique",
+        "courant": inconnue(train),
+        "precedent": inconnue(train.get("precedent")),
+        "precedent_meme_type": inconnue(train.get("precedent_meme_type")),
+        "suivant": inconnue(train.get("suivant")),
+        "suivant_meme_type": inconnue(train.get("suivant_meme_type")),
+    }
+
+
 def _save_saisie(
     database: Path,
     body: dict,
@@ -2044,11 +2204,40 @@ def _save_saisie(
     voitures_text, rames_text = (
         _repartition(body, materiel, composition, perimetre) if kind == "count" else (None, None)
     )
-    snapshot = body.get("snapshot")
+    is_historical = body.get("is_historical", False)
+    if not isinstance(is_historical, bool):
+        raise HTTPException(status_code=422, detail="indicateur historique invalide")
+    train = None
+    if is_historical:
+        observed_at = _timestamp_aware(body.get("observed_at"))
+        if observed_at is None:
+            raise HTTPException(status_code=422, detail="`observed_at` doit être un ISO avec fuseau")
+        _verifier_borne_historique(observed_at)
+        if kind in {"count", "serpent"}:
+            train = _trip_historique(
+                timetable, stops_database, origin, destination, body.get("trip_id"), observed_at
+            )
+            snapshot = _photo_historique(train)
+            trip_id = train["trip_id"]
+        else:
+            snapshot = _photo_historique(None)
+            trip_id = None
+    else:
+        observed_at = _maintenant_utc()
+        snapshot = body.get("snapshot")
+        trip_id = body.get("trip_id")
     snapshot_text = json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None
     if snapshot_text and len(snapshot_text) > 20_000:
         snapshot_text = None
-    trajet_text = _freeze_trajet(timetable, stops_database, body)
+    body_trajet = {**body, "trip_id": trip_id}
+    if train is not None:
+        body_trajet["service_date"] = train["service_date"]
+    trajet_text = _freeze_trajet(
+        timetable,
+        stops_database,
+        body_trajet,
+        observed_at=observed_at if is_historical else None,
+    )
     with sqlite3.connect(database) as connection:
         existing = connection.execute(
             "SELECT client_id, kind FROM saisie WHERE client_id = ? AND kind = ?",
@@ -2078,9 +2267,10 @@ def _save_saisie(
             INSERT INTO saisie (
                 client_id, origin_stop_id, destination_stop_id, origin_name, destination_name, trip_id,
                 passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
-                materiel, composition, perimetre, snapshot, legs, trajet, voitures, rames, kind, created_at, compte_id
+                materiel, composition, perimetre, snapshot, legs, trajet, voitures, rames, kind, created_at,
+                compte_id, is_historical, observed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (client_id, kind) DO NOTHING
             """,
             (
@@ -2089,7 +2279,7 @@ def _save_saisie(
                 destination,
                 (body.get("origin_name") or "")[:80] or None,
                 (body.get("destination_name") or "")[:80] or None,
-                body.get("trip_id"),
+                trip_id,
                 passengers if kind in {"count", "serpent"} else None,
                 reliability if kind in {"count", "serpent"} else None,
                 (body.get("pseudo") or "")[:40] or None,
@@ -2106,8 +2296,10 @@ def _save_saisie(
                 voitures_text,
                 rames_text,
                 kind,
-                datetime.now(UTC).isoformat(),
+                _maintenant_utc().isoformat(),
                 compte_id,
+                int(is_historical),
+                observed_at.isoformat(),
             ),
         )
         if cursor.rowcount == 0:
@@ -2119,6 +2311,7 @@ def _freeze_trajet(
     timetable: Path | None,
     stops_database: Path | None,
     body: dict,
+    observed_at: datetime | None = None,
 ) -> str | None:
     """Le trajet complet du train, figé au moment du comptage.
 
@@ -2146,16 +2339,16 @@ def _freeze_trajet(
     arrets = trip_stops_all(timetable, trip_id, stops_database)
     if len(arrets) < 2:
         return None
-    return json.dumps(
-        {
-            "trip_id": trip_id,
-            "arrets": [
-                {"stop_id": item["stop_id"], "name": item["name"], "depart_sec": item["depart_sec"]}
-                for item in arrets
-            ],
-        },
-        ensure_ascii=False,
-    )
+    trajet = {
+        "trip_id": trip_id,
+        "arrets": [
+            {"stop_id": item["stop_id"], "name": item["name"], "depart_sec": item["depart_sec"]}
+            for item in arrets
+        ],
+    }
+    if observed_at is not None:
+        trajet["service_date"] = body["service_date"]
+    return json.dumps(trajet, ensure_ascii=False)
 
 
 def _clean_legs(value: object) -> str:
@@ -2372,7 +2565,7 @@ _COLONNES_SAISIE = """
             SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
                    trip_id, passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
                    materiel, composition, perimetre,
-                   snapshot, kind, created_at, legs, trajet, voitures, rames
+                   snapshot, kind, created_at, legs, trajet, voitures, rames, is_historical, observed_at
             FROM saisie
 """
 
@@ -2450,17 +2643,28 @@ def _releve_page(database: Path, client_id: str, kind: str) -> str:
     # nom/valeur se lit en descendant la colonne, ce qu'un `<p>` libre ne
     # garantit pas — deux paragraphes qui se suivent se lisent comme une
     # phrase.
-    faits = [
-        ("Date", _date_fr(row.get("created_at"))),
-        ("Trajet", f"{row.get('origin_name') or '—'} → {row.get('destination_name') or '—'}"),
-        ("Mode", _mode_texte(row.get("kind"))),
-        (
-            "Effectif",
-            "sans effectif" if row.get("passengers") is None else f"{row['passengers']} voyageurs",
-        ),
-        ("Fiabilité", _fiabilite_texte(row) or "—"),
-        ("Par", escape(row["pseudo"]) if row.get("pseudo") else "anonyme"),
-    ]
+    faits = []
+    if row.get("is_historical"):
+        faits.extend(
+            [
+                ("Train observé", _date_fr(row.get("observed_at"))),
+                ("Saisie effectuée le", _date_fr(row.get("created_at"))),
+            ]
+        )
+    else:
+        faits.append(("Date", _date_fr(row.get("created_at"))))
+    faits.extend(
+        [
+            ("Trajet", _od_texte(row)),
+            ("Mode", _mode_texte(row.get("kind"))),
+            (
+                "Effectif",
+                "sans effectif" if row.get("passengers") is None else f"{row['passengers']} voyageurs",
+            ),
+            ("Fiabilité", _fiabilite_texte(row) or "—"),
+            ("Par", escape(row["pseudo"]) if row.get("pseudo") else "anonyme"),
+        ]
+    )
     materiel = _materiel_texte(row)
     if materiel:
         faits.append(("Matériel", materiel))
@@ -2473,9 +2677,20 @@ def _releve_page(database: Path, client_id: str, kind: str) -> str:
     parcours = _trajet_text(row.get("trajet"))
     if parcours:
         faits.append(("Gares du parcours", parcours))
-    photo = _photo_detail(row)
+    photo = (
+        "Offre théorique uniquement ; aucun train n'a été retenu."
+        if row.get("is_historical") and row.get("kind") == "missing"
+        else _photo_detail(row)
+    )
     if photo:
-        faits.append(("Temps réel au moment du comptage", photo))
+        faits.append(
+            (
+                "Temps réel inconnu · offre théorique"
+                if row.get("is_historical")
+                else "Temps réel au moment du comptage",
+                photo,
+            )
+        )
     commentaire = (row.get("comment") or "").strip()
     if commentaire:
         faits.append(("Commentaire", escape(commentaire)))
@@ -2700,6 +2915,8 @@ def _ligne_saisie(row) -> dict:
         "trajet": json.loads(row[20]) if row[20] else None,
         "voitures": json.loads(row[21]) if row[21] else None,
         "rames": json.loads(row[22]) if row[22] else None,
+        "is_historical": bool(row[23]),
+        "observed_at": row[24],
     }
 
 
@@ -3046,6 +3263,28 @@ def _date_fr(created_at: object) -> str:
     return moment.strftime("%d/%m/%Y à %H:%M")
 
 
+def _od_texte(row: dict) -> str:
+    origine = row.get("origin_name") or row.get("origin_stop_id") or "—"
+    destination = row.get("destination_name") or row.get("destination_stop_id") or "—"
+    return f"{escape(str(origine))} → {escape(str(destination))}"
+
+
+def _date_reference(row: dict) -> str:
+    """La date du train pour l'historique, celle de saisie sinon."""
+    if row.get("is_historical"):
+        return str(row.get("observed_at") or row.get("created_at") or "")
+    return str(row.get("created_at") or "")
+
+
+def _date_liste(row: dict) -> str:
+    if row.get("is_historical"):
+        return (
+            f"Observé le {_date_fr(row.get('observed_at'))}<br>"
+            f"<small>Historique · saisi le {_date_fr(row.get('created_at'))}</small>"
+        )
+    return escape(_date_fr(row.get("created_at")))
+
+
 def _indicateur_texte(valeur: object, unite: str) -> str:
     """Une pastille d'indicateur, ou rien du tout.
 
@@ -3219,6 +3458,14 @@ def _reading_cards(rows: list[dict]) -> str:
     for row in rows:
         materiel = _materiel_texte(row)
         ligne_materiel = f"<p class='status'>{materiel}</p>" if materiel else ""
+        if row.get("kind") == "missing" and row.get("is_historical"):
+            resume = f"Train signalé sur {_od_texte(row)} · temps réel inconnu."
+        elif row.get("kind") == "missing":
+            resume = f"Train signalé sur {_od_texte(row)}."
+        elif row.get("is_historical"):
+            resume = "Temps réel inconnu · offre théorique"
+        else:
+            resume = _photo_phrase(row)
         # Le lien de détail est aussi en bas de carte, et pas seulement dans
         # le titre : sur téléphone le titre se lit vite et se tape par
         # habitude, alors qu'un lien nommé ne demande pas de deviner qu'il
@@ -3226,12 +3473,12 @@ def _reading_cards(rows: list[dict]) -> str:
         cards.append(
             "<article class='card'>"
             + _card_tete(row)
-            + f"<p class='status'>{_date_fr(row.get('created_at'))}</p>"
+            + f"<p class='status'>{_date_liste(row)}</p>"
             + ligne_materiel
             + _pastilles(row)
             + _legs_text(row.get("legs"))
             + _commentaire(row)
-            + f"<p class='status'>{_photo_phrase(row)}</p>"
+            + f"<p class='status'>{resume}</p>"
             + f"<p class='status'><a href='{_lien_releve(row)}'>Détail du comptage</a></p>"
             + "</article>"
         )
@@ -3250,7 +3497,7 @@ def _trier(rows: list[dict], tri: str, sens: str) -> list[dict]:
     orthographié est une page perdue.
     """
     ranges = {
-        "date": lambda r: r.get("created_at") or "",
+        "date": lambda r: _date_reference(r),
         "passengers": lambda r: r.get("passengers") or 0,
         "reliability": lambda r: r.get("reliability") or 0,
         "pseudo": lambda r: (r.get("pseudo") or "").lower(),
@@ -3325,7 +3572,7 @@ def _reading_table(rows: list[dict], tri: str, sens: str, filtres: Filtres) -> s
         materiel = _materiel_texte(row) or vide
         fiabilite = _fiabilite_texte(row) or vide
         pseudo = escape(row["pseudo"]) if row["pseudo"] else vide
-        moment = escape(_date_fr(row.get("created_at")))
+        moment = _date_liste(row)
         # Le trajet est un lien vers le relevé. Sur grand écran c'est la
         # seule colonne qui décrit le relevé, donc c'est elle qui doit
         # porter la sortie vers le détail — un lien nommé en fin de ligne
@@ -3376,11 +3623,7 @@ def _resume(affiches: list[dict], tranche: list[dict], total: int) -> str:
     """
     if not affiches:
         return ""
-    dates = sorted(
-        r["created_at"]
-        for r in affiches
-        if isinstance(r.get("created_at"), str) and r["created_at"]
-    )
+    dates = sorted(date for row in affiches if (date := _date_reference(row)))
     if not dates:
         return f"<p class='status'>{len(affiches)} comptage{_pluriel(len(affiches))}, sans date.</p>"
     debut = _date_fr(dates[0]).split(" à ")[0]

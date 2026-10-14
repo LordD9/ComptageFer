@@ -40,15 +40,16 @@ TILE_MAX_ZOOM = 19
 # Une couleur par mode de saisie, lisible sur fond clair. Le type de train
 # n'entre pas dans la couleur : deux comptages du même segment se superposent,
 # et c'est le mode qui distingue une observation d'un profil.
-COULEURS = {"count": "#1c1915", "serpent": "#1c6b4f", "missing": "#8a2b1b"}
-KIND_FR = {"count": "comptage unique", "serpent": "serpent", "missing": "train signalé manquant"}
+COULEURS = {"count": "#1c1915", "serpent": "#1c6b4f"}
+KIND_FR = {"count": "comptage unique", "serpent": "serpent"}
 
 
 def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
     """Un tracé par saisie, avec les points qu'on sait placer.
 
-    Une saisie dont on n'a pas les coordonnées est omise, pas dessinée au
-    hasard : `map_page` compare les deux longueurs et l'écrit en bas de page.
+    Un signalement de train manquant n'est pas un comptage et reste hors de la
+    carte. Une saisie comptable dont on n'a pas les coordonnées est omise, pas
+    dessinée au hasard : `map_page` compare les deux longueurs et l'écrit en bas.
 
     Les noms viennent de la base et peuvent contenir « < » ou « & » : ils sont
     échappés ici, une fois, et la page comme le script s'en servent tels quels.
@@ -57,6 +58,8 @@ def counted_features(stops_database: Path, rows: list[dict]) -> list[dict]:
     reseau = _reseau()
     features = []
     for row in rows:
+        if (row.get("kind") or "count") == "missing":
+            continue
         arretees = _trace(row)
         points = []
         placables = []
@@ -354,9 +357,9 @@ def _coordinates(stops_database: Path) -> dict[str, tuple[float, float]]:
 def map_page(features: list[dict], total: int) -> str:
     """La page de la carte.
 
-    `features` est sérialisé dans la page plutôt que relu après coup : le pied
-    annonce le nombre de la base entière, et la liste des tracés reste
-    lisible même si le navigateur n'a pas pu charger Leaflet.
+    `features` est sérialisé dans la page plutôt que relu après coup. `total`
+    compte les saisies de comptage (count et serpent), signalements manquants
+    exclus ; la liste des tracés reste lisible même si Leaflet ne charge pas.
 
     Sur un écran large, la carte passe en pleine hauteur et la liste des
     tracés se place à côté, pas en dessous : c'est la seule page du site où
@@ -364,6 +367,7 @@ def map_page(features: list[dict], total: int) -> str:
     d'un écran de 1080 px est la définition d'un espace perdu. Le téléphone
     garde la pile, parce que c'est là qu'on la fait défiler.
     """
+    features = [feature for feature in features if feature.get("kind") != "missing"]
     return chrome(
         "Carte",
         f"{_NOTE}"
@@ -416,18 +420,22 @@ def map_page(features: list[dict], total: int) -> str:
 def _pied(total: int, features: list[dict]) -> str:
     """Le décompte du bas de page, tracés droits compris.
 
-    Le nombre de tracés et le nombre de segments droits sont deux choses
+    Le nombre de comptages et le nombre de segments droits sont deux choses
     différentes, et les confondre dirait un comptage perdu alors qu'il est
     dessiné. Un serpent dont un seul des cinq segments est droit reste un
     seul tracé : on compte donc les tracés, et on précise les segments.
     """
     placos = len(features)
     droits = sum(1 for feature in features if feature.get("droite"))
-    texte = (
-        f"{total} comptage{'s' if total > 1 else ''} au total, "
-        f"{placos} sur la carte. "
-        "Les autres n'ont pas de coordonnées exploitables, ou pas deux arrêts distincts."
-    )
+    non_places = max(0, total - placos)
+    texte = f"{total} comptage{'s' if total > 1 else ''} au total, {placos} sur la carte."
+    if non_places == 1:
+        texte += " 1 comptage n'a pas de coordonnées exploitables, ou pas deux arrêts distincts."
+    elif non_places > 1:
+        texte += (
+            f" {non_places} comptages n'ont pas de coordonnées exploitables, "
+            "ou pas deux arrêts distincts."
+        )
     if droits == 0:
         return texte + " Tous les tracés suivent la voie ferrée."
     if droits == 1:

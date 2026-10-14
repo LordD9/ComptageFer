@@ -20,17 +20,43 @@ def _material(page):
     page.click("#materiel-list button:has-text('TER 2N 2 voitures')")
 
 
+def test_compositions_have_french_accessible_names_and_keep_their_codes(page, site):
+    _reach_material(page, site)
+    choices = [
+        ("compo-US", "Un seul train (US)", 1),
+        ("compo-UM2", "Deux trains (UM2)", 2),
+        ("compo-UM3", "Trois trains (UM3)", 3),
+    ]
+    for technical_id, label, count in choices:
+        button = page.get_by_role("button", name=label, exact=True)
+        assert button.count() == 1
+        assert button.get_attribute("id") == technical_id
+        button.focus()
+        page.keyboard.press("Space")
+        assert page.locator(".rame-box").count() == count
+    assert page.errors == []
+
+
 def test_rame_svg_selection_is_accessible_and_responsive(page, site):
     _reach_material(page, site)
     page.click("#compo-US")
     assert page.locator('.rame-box[data-rame="1"]').get_attribute("aria-pressed") == "true"
 
     page.click("#compo-UM3")
+    head = page.locator('.rame-box[data-rame="1"]')
     middle = page.locator('.rame-box[data-rame="2"]')
+    tail = page.locator('.rame-box[data-rame="3"]')
     assert middle.get_attribute("data-rame") == "2"
-    assert "position centrale" in middle.get_attribute("aria-label")
-    assert "milieu du train" in middle.text_content()
+    assert "rame intermédiaire" in middle.get_attribute("aria-label")
+    assert middle.locator(".rame-position").text_content() == "rame intermédiaire"
+    assert head.locator(".rame-position").text_content() == "train de tête"
+    assert tail.locator(".rame-position").text_content() == "train de queue"
+    assert "position extérieure" not in page.text_content("#rames-schema")
     assert middle.locator("svg").count() == 1
+    assert middle.locator("svg .cabine").count() == 2
+    arrow = middle.locator("svg .sens-marche")
+    assert arrow.count() == 1
+    assert arrow.evaluate("el => el.getBBox().width > 0 && getComputedStyle(el).stroke !== 'none'")
     middle.focus()
     page.keyboard.press("Space")
     assert page.locator('.rame-box[data-rame="2"]').get_attribute("aria-pressed") == "true"

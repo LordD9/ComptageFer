@@ -71,7 +71,7 @@ PAGE = """<!doctype html>
 <body>
 <main>
   <h1>ComptagesFer</h1>
-  <p class="hint">Choisissez votre train, puis comptez. Le reste vient du flux.</p>
+  <p class="hint">Choisissez un train courant ou passé, puis comptez. Le temps réel n'est consulté que pour les trains courants.</p>
   <section id="origin-step">
     <p class="hint">Indiquer les gares <strong>du trajet compté</strong>, et non pas celles de la ligne.</p>
     <label for="origin-q">Origine</label>
@@ -89,15 +89,25 @@ PAGE = """<!doctype html>
     <div class="chip"><span id="od-chip"></span><button class="ghost" id="change-od" type="button">Changer</button></div>
     <p class="hint">Trains des deux heures avant et après&nbsp;: TER, car, Intercités, TGV, et les trains Transiliens (RER et ligne U). Le retard et la suppression viennent du flux, quand le réseau les publie&nbsp;: les trains franciliens n'ont pas de flux temps réel ici, ils sont donc toujours « programmé ».</p>
     <div id="trains" class="choices"></div>
+    <details id="historical-picker">
+      <summary>Compter un train des 15 derniers jours</summary>
+      <p class="hint">La recherche consulte uniquement les horaires théoriques. Le temps réel passé est inconnu.</p>
+      <label for="historical-at">Date et heure de départ du train</label>
+      <input id="historical-at" type="datetime-local" required>
+      <button id="historical-search" type="button">Rechercher les trains théoriques</button>
+      <p id="historical-error" class="bad" role="status"></p>
+      <div id="historical-trains" class="choices"></div>
+    </details>
     <button class="ghost" id="missing" type="button">Mon train n'est pas dans la liste</button>
+    <p id="missing-error" class="bad" role="status"></p>
   </section>
   <section id="materiel-step" class="hidden">
     <div class="chip"><span id="mode-chip"></span><button class="ghost" id="change-mode" type="button">Changer</button></div>
     <div id="composition-choices" class="choices">
       <p>Composition du train</p>
-      <button id="compo-US" type="button">US</button>
-      <button id="compo-UM2" type="button">UM2</button>
-      <button id="compo-UM3" type="button">UM3</button>
+      <button id="compo-US" type="button">Un seul train (US)</button>
+      <button id="compo-UM2" type="button">Deux trains (UM2)</button>
+      <button id="compo-UM3" type="button">Trois trains (UM3)</button>
       <button class="ghost" id="compo-none" type="button">Je ne sais pas</button>
     </div>
     <div id="compte-zone" class="hidden">
@@ -183,7 +193,7 @@ PAGE = """<!doctype html>
 </main>
 <script src="/offline.js"></script>
 <script>
-const state = { origin: null, destination: null, trip: null, trains: [], passengers: 0, material: null, composition: "", selectedRames: [], voitures: [], rames: [], pad: { kind: "unique", rame: null, position: null } };
+const state = { origin: null, destination: null, trip: null, trains: [], passengers: 0, material: null, composition: "", selectedRames: [], voitures: [], rames: [], isHistorical: false, observedAt: null, pad: { kind: "unique", rame: null, position: null } };
 const $ = (id) => document.getElementById(id);
 // Les étapes se listent ici à la main depuis l'ajout du serpent : mode-step
 // et snake-step manquaient, donc choisir un train masquait toutes les
@@ -227,9 +237,10 @@ function chooseStop(listId, stop) {
     loadTrains();
   }
 }
-function formatTrain(train) {
+function formatTrain(train, historical = false) {
   const time = new Date(train.departure_time).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
   const kind = train.kind ? " · " + train.kind : "";
+  if (historical) return time + kind + " · horaire théorique · temps réel inconnu";
   if (train.etat === "supprimé" || train.status === "CANCELED") return time + kind + " · supprimé";
   if (train.delay_seconds) {
     const minutes = Math.round(train.delay_seconds / 60);
@@ -237,7 +248,23 @@ function formatTrain(train) {
   }
   return time + kind + " · " + (train.etat || "à l'heure");
 }
+function chooseTrain(train, historical) {
+  state.trip = train;
+  state.isHistorical = historical;
+  state.observedAt = historical ? train.departure_time : null;
+  state.photo = snapshot(train);
+  const label = formatTrain(train, historical);
+  $("mode-chip").textContent = label;
+  $("train-chip").textContent = label;
+  show("materiel-step");
+}
+let historicalRequest = 0;
 async function loadTrains() {
+  historicalRequest += 1;
+  $("historical-trains").replaceChildren();
+  $("historical-error").textContent = "";
+  state.isHistorical = false;
+  state.observedAt = null;
   show("train-step");
   $("trains").textContent = "Recherche…";
   const at = new Date().toISOString();
@@ -268,16 +295,71 @@ async function loadTrains() {
     const strong = document.createElement("strong");
     strong.textContent = formatTrain(train);
     button.appendChild(strong);
-    button.onclick = () => {
-      state.trip = train;
-      state.photo = snapshot(train);
-      $("mode-chip").textContent = formatTrain(train);
-      $("train-chip").textContent = formatTrain(train);
-      show("materiel-step");
-    };
+    button.onclick = () => chooseTrain(train, false);
     $("trains").appendChild(button);
   }
 }
+function localDateTimeValue(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+function setHistoricalBounds() {
+  const now = new Date();
+  $("historical-at").min = localDateTimeValue(new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000));
+  $("historical-at").max = localDateTimeValue(now);
+}
+async function loadHistoricalTrains() {
+  const request = ++historicalRequest;
+  state.isHistorical = false;
+  state.observedAt = null;
+  const value = $("historical-at").value;
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) {
+    $("historical-error").textContent = "Indiquez une date et une heure.";
+    return;
+  }
+  state.isHistorical = true;
+  state.observedAt = date.toISOString();
+  $("historical-error").textContent = "";
+  const list = $("historical-trains");
+  list.textContent = "Recherche dans les horaires théoriques…";
+  const url = "/api/trips/historical?from=" + encodeURIComponent(state.origin.stop_id)
+    + "&to=" + encodeURIComponent(state.destination.stop_id)
+    + "&at=" + encodeURIComponent(state.observedAt);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    if (request !== historicalRequest) return;
+    list.textContent = "La recherche historique demande le réseau.";
+    return;
+  }
+  if (!response.ok) {
+    if (request !== historicalRequest) return;
+    list.textContent = response.status === 422
+      ? "La date doit se situer dans les 15 derniers jours."
+      : "Les horaires théoriques sont indisponibles.";
+    return;
+  }
+  const trains = await response.json();
+  if (request !== historicalRequest) return;
+  list.replaceChildren();
+  if (!trains.length) {
+    list.textContent = "Aucun train théorique sur cette origine-destination autour de l'heure choisie.";
+    return;
+  }
+  for (const train of trains) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "train";
+    const strong = document.createElement("strong");
+    strong.textContent = formatTrain(train, true);
+    button.appendChild(strong);
+    button.onclick = () => chooseTrain(train, true);
+    list.appendChild(button);
+  }
+}
+setHistoricalBounds();
+$("historical-search").onclick = loadHistoricalTrains;
 $("origin-q").addEventListener("input", () => search($("origin-q").value, $("origin-list")));
 $("destination-q").addEventListener("input", () => search($("destination-q").value, $("destination-list")));
 $("change-origin").onclick = () => show("origin-step");
@@ -329,11 +411,17 @@ function renderRames() {
     button.className = "rame-box";
     button.dataset.rame = n;
     const selected = state.selectedRames.includes(n);
-    const position = size === 1 ? "position unique" : size === 2 || n === 1 || n === size
-      ? "position extérieure " + n + " sur " + size : "position centrale, milieu du train";
+    const position = size === 1 ? "rame seule" : n === 1 ? "train de tête"
+      : n === size ? "train de queue" : "rame intermédiaire";
     button.setAttribute("aria-pressed", String(selected));
     button.setAttribute("aria-label", "Rame " + n + ", " + position + (selected ? ", sélectionnée" : ", non sélectionnée"));
-    button.innerHTML = '<svg viewBox="0 0 120 36" role="img" aria-hidden="true" focusable="false"><path d="M7 7h96l10 9v12H7z" fill="currentColor"/><path d="M15 11h14v8H15zm19 0h14v8H34zm19 0h14v8H53zm19 0h14v8H72zm19 0h8v8h-8z" fill="#fff"/><circle cx="26" cy="30" r="4" fill="#1c1915"/><circle cx="95" cy="30" r="4" fill="#1c1915"/></svg>';
+    button.innerHTML = '<svg viewBox="0 0 120 42" role="img" aria-hidden="true" focusable="false">' +
+      '<path d="M16 8h88l12 9v13H4V17z" fill="currentColor"/>' +
+      '<path class="cabine" d="M12 12h14v10H7v-4z" fill="#fff"/>' +
+      '<path class="cabine" d="M94 12h14l5 6v4H94z" fill="#fff"/>' +
+      '<path d="M33 12h10v10H33z M48 12h10v10H48z M62 12h10v10H62z M77 12h10v10H77z" fill="#fff"/>' +
+      '<path class="sens-marche" d="M68 5H52m5-4-5 4 5 4" fill="none" stroke="#1c1915" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="25" cy="33" r="4" fill="#1c1915"/><circle cx="95" cy="33" r="4" fill="#1c1915"/></svg>';
     const label = document.createElement("span");
     label.textContent = "Rame " + n + (selected ? " ✓" : "");
     button.appendChild(label);
@@ -645,6 +733,9 @@ function writeSnake() {
       origin: state.origin,
       destination: state.destination,
       trip: state.trip,
+      is_historical: state.isHistorical,
+      observed_at: state.isHistorical ? state.observedAt : null,
+      snapshot: state.isHistorical ? state.photo : null,
       stops: state.stops,
       snakeIndex: state.snakeIndex,
       legs: state.legs,
@@ -673,6 +764,10 @@ function offerSnake() {
   state.origin = saved.origin;
   state.destination = saved.destination;
   state.trip = saved.trip;
+  state.isHistorical = saved.is_historical === true;
+  state.observedAt = state.isHistorical && typeof saved.observed_at === "string"
+    ? saved.observed_at : null;
+  state.photo = state.isHistorical ? saved.snapshot : null;
   state.stops = saved.stops;
   state.snakeIndex = saved.snakeIndex || 0;
   state.legs = Array.isArray(saved.legs) ? saved.legs : [];
@@ -829,6 +924,8 @@ async function saveSnake() {
     destination_stop_id: state.destination.stop_id,
     origin_name: state.origin.name,
     destination_name: state.destination.name,
+    is_historical: state.isHistorical,
+    observed_at: state.isHistorical ? state.observedAt : undefined,
     trip_id: state.trip.trip_id,
     passengers: state.legs[0].onboard,
     reliability,
@@ -884,15 +981,32 @@ $("near").onclick = () => {
   });
 };
 $("missing").onclick = async () => {
-  await fetch("/api/missing", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      client_id: clientId(),
-      origin_stop_id: state.origin.stop_id,
-      destination_stop_id: state.destination.stop_id
-    })
-  });
+  $("missing-error").textContent = "";
+  let response;
+  try {
+    response = await fetch("/api/missing", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_id: clientId(),
+        origin_stop_id: state.origin.stop_id,
+        destination_stop_id: state.destination.stop_id,
+        origin_name: state.origin.name,
+        destination_name: state.destination.name,
+        is_historical: state.isHistorical,
+        observed_at: state.isHistorical ? state.observedAt : undefined
+      })
+    });
+  } catch (error) {
+    $("missing-error").textContent = "Le signalement demande le réseau.";
+    return;
+  }
+  if (!response.ok) {
+    $("missing-error").textContent = response.status === 422
+      ? "La date historique doit être dans les 15 derniers jours."
+      : "Le signalement n'a pas été gardé.";
+    return;
+  }
   show("done-step");
 };
 function optionalNumber(id) {
@@ -909,6 +1023,8 @@ function countPayload() {
     client_id: clientId(), kind: "count",
     origin_stop_id: state.origin.stop_id, destination_stop_id: state.destination.stop_id,
     origin_name: state.origin.name, destination_name: state.destination.name,
+    is_historical: state.isHistorical,
+    observed_at: state.isHistorical ? state.observedAt : undefined,
     trip_id: state.trip.trip_id, passengers: total,
     reliability: Number($("reliability").value), pseudo: $("pseudo").value,
     comment: $("comment").value, standing: optionalNumber("standing"),

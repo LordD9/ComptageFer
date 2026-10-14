@@ -61,7 +61,7 @@ def test_optional_load_indicators_are_kept_and_bounded(tmp_path):
     assert refused.status_code == 422
 
 
-def test_export_and_page_show_the_count_and_the_licence(tmp_path):
+def test_export_has_native_header_and_pages_document_the_licence(tmp_path):
     client = TestClient(create_app(tmp_path))
     photo = {
         "precedent": {"trip_id": "PREV", "status": "CANCELED"},
@@ -71,13 +71,16 @@ def test_export_and_page_show_the_count_and_the_licence(tmp_path):
     client.post("/api/sessions", json=_count(photo))
 
     page = client.get("/comptages")
+    methode = client.get("/methode")
     exported = client.get("/api/export.csv")
 
     assert page.status_code == 200
     assert "pas une fréquentation officielle" not in page.text
     assert "railfan" in page.text
     assert "Lyon Part Dieu" in page.text
-    assert "Licence Ouverte 2.0" in exported.text
+    assert exported.text.splitlines()[0].startswith("created_at,origin,destination")
+    assert "Licence Ouverte 2.0" not in exported.text
+    assert "Licence Ouverte 2.0" in methode.text
     assert "railfan" in exported.text
     assert "CANCELED" in exported.text
 
