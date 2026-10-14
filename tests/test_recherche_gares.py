@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from comptagefer.app import create_app
 from comptagefer.offer import (
     PLAFOND_LISTE_COMPLETE,
+    _stop_family,
     cle_gare,
     import_stop_names,
     open_stops,
@@ -34,6 +35,19 @@ def _stops(tmp_path: Path, rows: list[tuple[str, str]]) -> Path:
         )
         for i, (stop_id, nom) in enumerate(rows):
             ecrit.writerow([stop_id, nom, 45 + i / 1000, 4 + i / 1000, 1, ""])
+    base = tmp_path / "stops.db"
+    import_stop_names(base, fichier)
+    return base
+
+
+def _stops_detailles(tmp_path: Path, rows: list[list[str]]) -> Path:
+    fichier = tmp_path / "stops.txt"
+    with fichier.open("w", newline="") as handle:
+        ecrit = csv.writer(handle)
+        ecrit.writerow(
+            ["stop_id", "stop_name", "stop_lat", "stop_lon", "location_type", "parent_station"]
+        )
+        ecrit.writerows(rows)
     base = tmp_path / "stops.db"
     import_stop_names(base, fichier)
     return base
@@ -89,6 +103,97 @@ def test_la_recherche_prend_les_jokers_sql_pour_du_texte(tmp_path):
 
     assert search_stops(base, "%%") == []
     assert search_stops(base, "l_") == []
+
+
+def test_les_aliases_de_gare_du_nord_rejoignent_une_famille(tmp_path):
+    base = _stops_detailles(
+        tmp_path,
+        [
+            ["IDFM:71410", "Gare du Nord", "48.88095669783061", "2.355687439691836", "1", ""],
+            [
+                "IDFM:monomodalStopPlace:462394",
+                "Gare du Nord",
+                "48.88230685842714",
+                "2.356693437528564",
+                "0",
+                "IDFM:71410",
+            ],
+            ["IDFM:22149", "Gare du Nord", "48.879510553130615", "2.356768884572096", "0", "IDFM:71410"],
+            ["IDFM:463182", "Gare du Nord", "48.87968001223662", "2.357342884924845", "0", "IDFM:71410"],
+            ["IDFM:463183", "Gare du Nord", "48.87959170741013", "2.356808788205409", "0", "IDFM:71410"],
+            ["StopArea:OCE87271007", "Paris Gare du Nord", "48.880136", "2.354851", "1", ""],
+            [
+                "StopPoint:OCETGV INOUI-87271007",
+                "Paris Gare du Nord",
+                "48.880136",
+                "2.354851",
+                "0",
+                "StopArea:OCE87271007",
+            ],
+            [
+                "StopPoint:OCETrain TER-87271007",
+                "Paris Gare du Nord",
+                "48.880136",
+                "2.354851",
+                "0",
+                "StopArea:OCE87271007",
+            ],
+            [
+                "StopPoint:OCETrain-87271007",
+                "Paris Gare du Nord",
+                "48.880136",
+                "2.354851",
+                "0",
+                "StopArea:OCE87271007",
+            ],
+        ],
+    )
+
+    attendu = [{"stop_id": "IDFM:71410", "name": "Gare du Nord"}]
+    assert search_stops(base, "Gare du Nord") == attendu
+    assert search_stops(base, "Paris Gare du Nord") == attendu
+    famille = {
+        "IDFM:71410",
+        "IDFM:monomodalStopPlace:462394",
+        "IDFM:22149",
+        "IDFM:463182",
+        "IDFM:463183",
+        "StopArea:OCE87271007",
+        "StopPoint:OCETGV INOUI-87271007",
+        "StopPoint:OCETrain TER-87271007",
+        "StopPoint:OCETrain-87271007",
+    }
+    assert set(_stop_family(base, "IDFM:71410")) == famille
+    assert set(_stop_family(base, "StopArea:OCE87271007")) == famille
+
+
+def test_les_aliases_lointains_et_les_gares_voisines_restent_distincts(tmp_path):
+    base = _stops_detailles(
+        tmp_path,
+        [
+            ["IDFM:71410", "Gare du Nord", "48.88095669783061", "2.355687439691836", "1", ""],
+            ["IDFM:monomodalStopPlace:462394", "Gare du Nord", "48.88230685842714", "2.356693437528564", "0", "IDFM:71410"],
+            ["StopArea:OCE87271007", "Paris Gare du Nord", "48.880136", "2.354851", "1", ""],
+            ["StopPoint:OCETrain-87271007", "Paris Gare du Nord", "48.880136", "2.354851", "0", "StopArea:OCE87271007"],
+            ["StopArea:GARE_NORD_DISTANTE", "Gare du Nord", "48.9", "2.7", "1", ""],
+            ["StopPoint:GARE_NORD_DISTANTE", "Gare du Nord", "48.9", "2.7", "0", "StopArea:GARE_NORD_DISTANTE"],
+            ["StopArea:LA_CHAPELLE", "La Chapelle", "48.883", "2.3565", "1", ""],
+            ["StopPoint:LA_CHAPELLE", "La Chapelle", "48.883", "2.3565", "0", "StopArea:LA_CHAPELLE"],
+        ],
+    )
+
+    found = search_stops(base, "gare du nord", complete=True)
+    assert len(found) == 2
+    assert "StopArea:GARE_NORD_DISTANTE" in {row["stop_id"] for row in found}
+    assert len({row["stop_id"] for row in found} & {"IDFM:71410", "StopArea:OCE87271007"}) == 1
+    famille_proche = set(_stop_family(base, "IDFM:71410"))
+    assert {"IDFM:71410", "StopArea:OCE87271007"} <= famille_proche
+    assert "StopArea:GARE_NORD_DISTANTE" not in famille_proche
+    assert "StopArea:LA_CHAPELLE" not in famille_proche
+    assert set(_stop_family(base, "StopArea:GARE_NORD_DISTANTE")) == {
+        "StopArea:GARE_NORD_DISTANTE",
+        "StopPoint:GARE_NORD_DISTANTE",
+    }
 
 
 def test_une_base_existante_recoit_ses_cles_a_louverture(tmp_path):

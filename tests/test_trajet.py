@@ -214,9 +214,7 @@ def test_le_csv_embarque_le_trajet_et_le_trip_id(tmp_path: Path):
     client = TestClient(create_app(tmp_path))
     _count(client, trip_id="T1")
     lignes = list(csv.reader(io.StringIO(render_csv(client.get("/api/sessions").json()))))
-    # La première ligne est la licence, pas l'en-tête.
-    assert lignes[0] == ["# Licence Ouverte 2.0"]
-    entete, premiere = lignes[1], lignes[2]
+    entete, premiere = lignes[0], lignes[1]
     assert "trip_id" in entete and "trajet" in entete
     trajet = json.loads(premiere[entete.index("trajet")])
     assert premiere[entete.index("trip_id")] == "T1"

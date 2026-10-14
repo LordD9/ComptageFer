@@ -24,7 +24,8 @@ import pytest
 
 import comptagefer.app as app_module
 from comptagefer.app import TRANSILIEN_URL, _timetable_has_transilien, ensure_referential
-from comptagefer.timetable import TRANSILIEN, kind_of
+from comptagefer.offer import import_stop_names
+from comptagefer.timetable import TRANSILIEN, import_timetable, kind_of, listed_trips
 
 PARIS = ZoneInfo("Europe/Paris")
 
@@ -319,3 +320,112 @@ def test_the_stop_window_keeps_both_families(tmp_path, gtfs):
     assert kinds[f"{TRANSILIEN}abc"] == "Transilien", (
         f"le francilien est classé « {kinds[f'{TRANSILIEN}abc']} » dans la liste des trains"
     )
+
+
+def test_a_rer_b_trip_is_visible_from_the_national_station_alias(tmp_path):
+    """Le RER B IDFM doit rester visible depuis « Paris Gare du Nord » du national."""
+    now = datetime.now(PARIS)
+    depart = now.replace(hour=max(1, now.hour - 1), minute=0, second=0, microsecond=0)
+    arrive = depart + timedelta(minutes=30)
+    identifiant = "IDFM:TN:SNCF:0f6a55e6-de6f-4ee7-8760-4df35e08e6ca"
+
+    stops = tmp_path / "stops.txt"
+    stops.write_text(
+        _csv(
+            ["stop_id", "stop_name", "stop_lat", "stop_lon", "location_type", "parent_station"],
+            ["IDFM:71410", "Gare du Nord", "48.88095669783061", "2.355687439691836", "1", ""],
+            [
+                "IDFM:monomodalStopPlace:462394",
+                "Gare du Nord",
+                "48.88230685842714",
+                "2.356693437528564",
+                "0",
+                "IDFM:71410",
+            ],
+            ["StopArea:OCE87271007", "Paris Gare du Nord", "48.880136", "2.354851", "1", ""],
+            [
+                "StopPoint:OCETrain-87271007",
+                "Paris Gare du Nord",
+                "48.880136",
+                "2.354851",
+                "0",
+                "StopArea:OCE87271007",
+            ],
+            ["IDFM:72211", "La Plaine Stade de France", "48.944", "2.359", "1", ""],
+            [
+                "IDFM:monomodalStopPlace:43145",
+                "La Plaine Stade de France",
+                "48.944",
+                "2.359",
+                "0",
+                "IDFM:72211",
+            ],
+        ),
+        encoding="utf-8",
+    )
+    import_stop_names(tmp_path / "stops.db", stops)
+
+    trips = tmp_path / "trips.txt"
+    trips.write_text(
+        _csv(["trip_id", "service_id", "route_id"], [identifiant, "SERVICE", "IDFM:C01743"]),
+        encoding="utf-8",
+    )
+    stop_times = tmp_path / "stop_times.txt"
+    stop_times.write_text(
+        _csv(
+            ["trip_id", "stop_id", "departure_time", "arrival_time"],
+            [identifiant, "IDFM:monomodalStopPlace:462394", depart.strftime("%H:%M:%S"), depart.strftime("%H:%M:%S")],
+            [identifiant, "IDFM:monomodalStopPlace:43145", arrive.strftime("%H:%M:%S"), arrive.strftime("%H:%M:%S")],
+        ),
+        encoding="utf-8",
+    )
+    dates = tmp_path / "calendar_dates.txt"
+    dates.write_text(
+        _csv(["service_id", "date", "exception_type"], ["SERVICE", depart.strftime("%Y%m%d"), "1"]),
+        encoding="utf-8",
+    )
+    routes = tmp_path / "routes.txt"
+    routes.write_text(
+        _csv(
+            ["route_id", "route_short_name", "route_long_name", "route_type"],
+            ["IDFM:C01743", "B", "B", "2"],
+        ),
+        encoding="utf-8",
+    )
+    timetable = tmp_path / "timetable.db"
+    import_timetable(timetable, trips, stop_times, dates, routes)
+
+    found = listed_trips(
+        timetable,
+        tmp_path / "rt.db",
+        "StopArea:OCE87271007",
+        "IDFM:monomodalStopPlace:43145",
+        depart,
+        stops_database=tmp_path / "stops.db",
+    )
+
+    rer = next(item for item in found if item["trip_id"] == identifiant)
+    assert rer["kind"] == "Transilien"
+
+
+def test_historique_ne_lit_jamais_le_temps_reel(tmp_path, gtfs, monkeypatch):
+    from comptagefer import timetable as timetable_module
+
+    ensure_referential(tmp_path)
+    maintenant = datetime.now(PARIS).replace(minute=0, second=0, microsecond=0)
+
+    def interdit(*_args, **_kwargs):
+        pytest.fail("le mode historique ne doit pas lire la base temps réel")
+
+    monkeypatch.setattr(timetable_module, "_realtime", interdit)
+    found = listed_trips(
+        tmp_path / "timetable.db",
+        tmp_path / "rt.db",
+        "IDFM:monomodalStopPlace:1",
+        "IDFM:monomodalStopPlace:2",
+        maintenant,
+        stops_database=tmp_path / "stops.db",
+        historical=True,
+    )
+
+    assert f"{TRANSILIEN}abc" in {item["trip_id"] for item in found}

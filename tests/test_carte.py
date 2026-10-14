@@ -439,8 +439,8 @@ def test_the_list_line_is_a_button_that_reveals_the_charge_curve(tmp_path):
     assert '<figure class="profil" id="profil-0" hidden></figure>' in page
 
 
-def test_a_reported_train_gets_no_curve(tmp_path):
-    """Pas d'effectif, pas de courbe — et pas de bouton qui ne fait rien."""
+def test_a_reported_train_is_not_a_map_count_or_an_omission(tmp_path):
+    """Un signalement n'est ni un tracé ni un comptage non plaçable."""
     stops = _stops_db(tmp_path)
     features = counted_features(
         stops,
@@ -454,9 +454,14 @@ def test_a_reported_train_gets_no_curve(tmp_path):
             "legs": None,
         }],
     )
-    page = map_page(features, 1)
+    assert features == []
+    page = map_page([{"kind": "missing"}], 0)
     assert "<polyline" not in page
     assert "<button" not in page, "un bouton sans courbe est une promesse que la page ne tient pas"
+    pied = _pied_de(page)
+    assert "0 comptage au total, 0 sur la carte" in pied
+    assert "coordonnées exploitables" not in pied
+    assert "train signalé manquant" not in page
 
 
 def test_an_incomplete_snake_is_told_where_its_curve_stops(tmp_path):

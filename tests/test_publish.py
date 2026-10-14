@@ -18,7 +18,6 @@ from comptagefer.publish import (
 CLE = "cle-de-test"
 JEU = "66a1b2c3d4e5f60718293a4b"
 CSV_AVEC_DONNEES = (
-    "# Licence Ouverte 2.0\n"
     "created_at,origin,destination,passengers\n"
     '2026-09-27,Lyon Part Dieu,Nimes Pont du Gard,40\n'
 )
@@ -66,10 +65,10 @@ def _compte() -> dict:
     }
 
 
-# --- le CSV reste le même qu'avant ---------------------------------------
+# --- le CSV natif est aussi celui de la publication ----------------------
 
 
-def test_le_csv_garde_sa_licence_et_ses_entetes():
+def test_le_csv_commence_par_son_entete_natif():
     csv = render_csv(
         [
             {
@@ -93,10 +92,48 @@ def test_le_csv_garde_sa_licence_et_ses_entetes():
     )
 
     lignes = csv.strip().splitlines()
-    assert lignes[0] == "# Licence Ouverte 2.0"
-    assert lignes[1].startswith("created_at,origin,destination")
-    assert "Lyon Part Dieu" in lignes[2]
-    assert lignes[2].count("CANCELED") == 1
+    assert lignes[0].startswith("created_at,origin,destination")
+    assert "Lyon Part Dieu" in lignes[1]
+    assert lignes[1].count("CANCELED") == 1
+
+
+def test_le_csv_et_la_publication_excluent_les_signalements(tmp_path: Path):
+    ligne = {
+        "created_at": "2026-09-27T10:00:00+00:00",
+        "origin_name": "Gare A",
+        "destination_name": "Gare B",
+        "passengers": 4,
+        "reliability": 80,
+        "pseudo": "railfan",
+        "comment": "",
+        "standing": None,
+        "seats_free": None,
+        "imbalance": None,
+        "snapshot": None,
+        "kind": "count",
+        "legs": None,
+        "trip_id": None,
+    }
+    texte = render_csv(
+        [
+            ligne,
+            {**ligne, "kind": "missing", "origin_name": "SIGNALMENT_MISSING_ONLY"},
+        ]
+    )
+    lignes = texte.strip().splitlines()
+    assert lignes[0].startswith("created_at,origin,destination")
+    assert len(lignes) == 2
+    assert "SIGNALMENT_MISSING_ONLY" not in texte
+
+    journal = Journal()
+    publication = Publication(
+        Config(api_key=CLE, dataset_id=JEU), tmp_path / "publish.json", lambda: texte
+    )
+    resultat = publication.publish_now(opener=journal)
+    assert resultat["ok"] is True
+    assert len(journal.appels) == 1
+    assert b"SIGNALMENT_MISSING_ONLY" not in journal.appels[0].data
+    assert b"created_at,origin,destination" in journal.appels[0].data
 
 
 def test_le_commentaire_parvient_jusqu_au_csv(tmp_path: Path):
@@ -113,7 +150,7 @@ def test_le_commentaire_parvient_jusqu_au_csv(tmp_path: Path):
 
     telecharge = client.get("/api/export.csv").text
     lignes = telecharge.strip().splitlines()
-    entetes = lignes[1].split(",")
+    entetes = lignes[0].split(",")
 
     assert "comment" in entetes, f"colonnes : {entetes}"
     colonne = entetes.index("comment")
@@ -121,13 +158,13 @@ def test_le_commentaire_parvient_jusqu_au_csv(tmp_path: Path):
     # seconde : on cherche la ligne du bon jeton plutôt que d'indexer.
     lignes_par_jeton = {
         ligne.split(",")[0]: ligne.split(",")[colonne]
-        for ligne in lignes[2:]
+        for ligne in lignes[1:]
     }
     assert "car de substitution" in lignes_par_jeton.values(), lignes_par_jeton
     # Le commentaire absent ne devient pas la chaîne « None ».
     client.post("/api/sessions", json={**_compte(), "client_id": "jeton2"})
     apres = client.get("/api/export.csv").text.strip().splitlines()
-    valeurs = [l.split(",")[colonne] for l in apres[2:]]
+    valeurs = [l.split(",")[colonne] for l in apres[1:]]
     assert len(valeurs) == 2, f"deux comptages attendus : {apres}"
     assert "" in valeurs, f"commentaire vide rendu : {valeurs}"
 
@@ -310,7 +347,7 @@ def test_un_csv_vide_ne_remplace_pas_la_ressource(tmp_path: Path):
     publication = Publication(
         Config(api_key=CLE, dataset_id=JEU),
         tmp_path / "publish.json",
-        lambda: "# Licence Ouverte 2.0\ncreated_at,origin\n",
+        lambda: "created_at,origin\n",
     )
 
     resultat = publication.publish_now(opener=journal)
@@ -326,7 +363,7 @@ def test_un_csv_avec_des_donnees_part(tmp_path: Path):
     publication = Publication(
         Config(api_key=CLE, dataset_id=JEU),
         tmp_path / "publish.json",
-        lambda: "# Licence Ouverte 2.0\ncreated_at,origin\n2026-09-27,Lyon\n",
+        lambda: "created_at,origin\n2026-09-27,Lyon\n",
     )
 
     resultat = publication.publish_now(opener=journal)

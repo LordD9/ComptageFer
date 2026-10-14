@@ -56,7 +56,7 @@ def test_formulaire_hors_ligne_conserve_les_cinq_etats_dans_le_csv(page, site):
     )
     response = page.request.get(site + "/api/export.csv")
     assert response.status == 200
-    rows = list(csv.DictReader(StringIO(response.text().split("\n", 1)[1])))
+    rows = list(csv.DictReader(StringIO(response.text())))
     assert len(rows) == 1
     columns = {"courant": "courant", "precedent": "precedent", "suivant": "suivant",
                "precedent_meme_type": "precedent_meme_type", "suivant_meme_type": "suivant_meme_type"}

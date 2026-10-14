@@ -43,14 +43,13 @@ STATE_NAME = "publish.json"
 
 
 def render_csv(rows: list[dict]) -> str:
-    """Le CSV des comptages, licence comprise en première ligne.
+    """Le CSV natif des comptages, dont la première ligne est l'en-tête.
 
     C'est le fichier que donne `/api/export.csv`, et c'est celui qui part sur
     data.gouv. Une seule fonction pour les deux : si le robot les sépare, le
     fichier publié n'est plus celui qu'on télécharge.
     """
     buffer = StringIO()
-    buffer.write("# Licence Ouverte 2.0\n")
     writer = csv.writer(buffer)
     writer.writerow(
         [
@@ -78,9 +77,13 @@ def render_csv(rows: list[dict]) -> str:
             "suivant_meme_type",
             "voitures",
             "rames",
+            "is_historical",
+            "observed_at",
         ]
     )
     for row in rows:
+        if row.get("kind") == "missing":
+            continue
         writer.writerow(
             [
                 row["created_at"],
@@ -107,6 +110,8 @@ def render_csv(rows: list[dict]) -> str:
                 _photo_status(row.get("snapshot"), "suivant_meme_type"),
                 json.dumps(row["voitures"], ensure_ascii=False) if row.get("voitures") else "",
                 json.dumps(row["rames"], ensure_ascii=False) if row.get("rames") else "",
+                int(bool(row.get("is_historical", False))),
+                row.get("observed_at") or "",
             ]
         )
     return buffer.getvalue()
@@ -261,12 +266,13 @@ class Publication:
         self._thread: threading.Thread | None = None
 
     def est_vide(self, payload: bytes) -> bool:
-        """Le CSV ne porte-t-il que la licence et l'en-tête, sans données ?
+        """Le CSV ne porte-t-il que l'en-tête, sans données ?
 
         On ne compte pas les virgules : l'en-tête en a déjà, autant que les
         lignes de données. Ce qui distingue les deux, c'est qu'une donnée
         s'ajoute sous l'en-tête. Le fichier est celui de l'export, donc le
-        test suit le même format : commentaire, en-tête, puis les lignes.
+        test suit le format natif : en-tête, puis les lignes. Les anciennes
+        lignes de commentaire sont ignorées pour accepter un fournisseur ancien.
         """
         lignes = [
             ligne

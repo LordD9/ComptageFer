@@ -1,5 +1,7 @@
 """L'autocomplétion des champs gare de /comptages, dans un vrai navigateur."""
 
+from urllib.parse import parse_qs, urlparse
+
 
 def _espionner(page) -> list[str]:
     """Les URL de `/api/stops` demandées par la page, dans l'ordre."""
@@ -47,6 +49,26 @@ def test_a_partir_de_cinq_caracteres_la_liste_complete_est_demandee(page, site):
         "document.querySelector('#gare-liste option') && "
         "document.querySelector('#gare-liste option').value === 'Valence'"
     )
+
+
+def test_l_alias_de_gare_du_nord_affiche_une_seule_option(page, site):
+    demandes = _espionner(page)
+    page.route(
+        "**/api/stops?*",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='[{"stop_id":"IDFM:71410","name":"Gare du Nord"}]',
+        ),
+    )
+    page.goto(site + "/comptages")
+
+    page.fill("#gare", "Paris Gare du Nord")
+    page.wait_for_function("document.querySelectorAll('#gare-liste option').length === 1")
+
+    assert _options(page, "gare-liste") == ["Gare du Nord"]
+    assert parse_qs(urlparse(demandes[-1]).query)["q"] == ["Paris Gare du Nord"]
+    assert page.errors == []
 
 
 def test_la_recherche_est_insensible_aux_accents_et_le_second_champ_aussi(page, site):

@@ -205,10 +205,15 @@ def listed_trips(
     window: timedelta = timedelta(hours=2),
     neighbor_window: timedelta = timedelta(hours=12),
     stops_database: Path | None = None,
+    historical: bool = False,
 ) -> list[dict]:
     local = at.astimezone(PARIS)
     wider = _pairs(database, origin_stop_id, destination_stop_id, local, neighbor_window, stops_database)
-    realtime_rows = _realtime(realtime, [item["trip_id"] for item in wider], origin_stop_id, stops_database)
+    realtime_rows = (
+        {}
+        if historical
+        else _realtime(realtime, [item["trip_id"] for item in wider], origin_stop_id, stops_database)
+    )
     annotated = []
     for item in wider:
         status, delay = realtime_rows.get(item["trip_id"], (None, None))
@@ -232,6 +237,8 @@ def listed_trips(
     shown = [item for item in annotated if start <= item["departure"] <= end]
     for item in shown:
         item.pop("departure", None)
+        if not historical:
+            item.pop("service_date", None)
     return shown
 
 
@@ -241,6 +248,8 @@ def _pairs(database, origin_stop_id, destination_stop_id, local, window, stops_d
     start = local - window
     end = local + window
     days = {(start.date()).isoformat(), local.date().isoformat(), end.date().isoformat()}
+    # Un départ GTFS à 25:00 appartient au service de la veille.
+    days.add((start.date() - timedelta(days=1)).isoformat())
     origin_marks = ",".join("?" for _ in origins)
     destination_marks = ",".join("?" for _ in destinations)
     day_marks = ",".join("?" for _ in days)
@@ -266,7 +275,7 @@ def _pairs(database, origin_stop_id, destination_stop_id, local, window, stops_d
         midnight = datetime.fromisoformat(day).replace(tzinfo=PARIS)
         departure = midnight + timedelta(seconds=origin_sec)
         if start <= departure <= end:
-            found.append({"trip_id": trip_id, "kind": kind, "departure": departure})
+            found.append({"trip_id": trip_id, "kind": kind, "departure": departure, "service_date": day})
     return found
 
 

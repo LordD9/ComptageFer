@@ -48,8 +48,8 @@ HISTORIQUES = [
 
 def _lignes(csv_text: str) -> tuple[list[str], dict[str, str]]:
     rows = list(csv.reader(StringIO(csv_text)))
-    headers = rows[1]
-    values = rows[2]
+    headers = rows[0]
+    values = rows[1]
     return headers, dict(zip(headers, values))
 
 
@@ -78,7 +78,7 @@ def test_export_preserve_les_cinq_etats_figes_apres_post(tmp_path: Path):
     # Les colonnes historiques gardent leur place ; les nouvelles se rajoutent
     # à la fin, donc aucun consommateur existant n'est décalé.
     assert headers[: len(HISTORIQUES)] == HISTORIQUES
-    assert {"voitures", "rames"} <= set(headers)
+    assert headers[-4:] == ["voitures", "rames", "is_historical", "observed_at"]
     assert [values[key] for key in ETATS] == [
         "PREVIOUS",
         "CURRENT",
@@ -121,6 +121,24 @@ def test_etats_absents_partiels_et_malformes_restent_vides(tmp_path: Path):
         assert headers[: len(HISTORIQUES)] == HISTORIQUES
         assert values["precedent_meme_type"] == ""
         assert values["suivant_meme_type"] == ("0" if isinstance(snapshot, dict) and isinstance(snapshot.get("suivant_meme_type"), dict) else "")
+        assert values["is_historical"] == "0"
+        assert values["observed_at"] == ""
+
+    headers, values = _lignes(
+        render_csv(
+            [
+                {
+                    **ligne,
+                    "snapshot": None,
+                    "is_historical": True,
+                    "observed_at": "2026-10-14T12:30:00+02:00",
+                }
+            ]
+        )
+    )
+    assert headers[-2:] == ["is_historical", "observed_at"]
+    assert values["is_historical"] == "1"
+    assert values["observed_at"] == "2026-10-14T12:30:00+02:00"
 
 
 def test_publication_envoie_le_meme_csv_que_export(tmp_path: Path):

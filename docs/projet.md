@@ -30,7 +30,7 @@ Le cas d'usage est un téléphone, dans un train, souvent avec un réseau médio
 
 1. J'ouvre l'application. Si je l'autorise, la position propose la gare la plus proche, puis elle est oubliée. Sinon je cherche mon origine.
 2. Je donne ma destination.
-3. L'outil liste les circulations qui desservent cette origine-destination, sur une plage de 4 heures centrée sur maintenant : les deux heures passées, les deux heures à venir. L'heure et l'état viennent du flux temps réel, pas de l'horaire théorique. Je sélectionne mon train. S'il n'y est pas, je signale une offre manquante. Je ne l'invente pas dans le référentiel.
+3. L'outil liste les circulations qui desservent cette origine-destination, sur une plage de 4 heures centrée sur maintenant : les deux heures passées, les deux heures à venir. L'horaire vient du GTFS ; le retard et la suppression viennent du temps réel lorsqu'il est disponible. Si le train est plus ancien, je recherche une date et une heure dans les quinze derniers jours. Cette recherche reste théorique, explicitement sans temps réel historique. Si le train manque aussi à l'offre, je le signale sans l'inventer dans le référentiel.
 4. Je passe au formulaire. Le retard, l'heure et la suppression ne se tapent pas.
    - **Comptage unique.** Une interstation (les deux arrêts qui l'encadrent), un effectif, et trois indicateurs approximatifs : part de gens debout, part de places assises restantes, écart de charge entre la partie la plus chargée et la moins chargée.
    - **Serpent de charge.** Je monte, je compte une fois les portes fermées, puis à chaque arrêt j'indique montées et descentes jusqu'à ma descente. Les indicateurs du mode unique sont optionnels sur chaque interstation. Compter sa propre descente est optionnel.
@@ -54,7 +54,7 @@ L'export des données brutes, lui, arrive tôt. C'est le retour dû aux gens qui
 - **Simple à poser.** Un conteneur, une base fichier, pas de base managée. La commande est la même partout où Docker tourne.
 - **Le téléphone dans le train est le client principal.** Grandes zones tactiles, peu d'étapes. On saisit le compte, pas le contexte que le flux connaît déjà.
 - **Brut avant estimé.** Pas de chiffre annuel tant que la règle d'extrapolation n'est pas écrite et affichée à côté du chiffre. Une suppression du train précédent est un fait conservé, pas un effectif qu'on réécrit.
-- **Anonyme par défaut, et c'est encore vrai.** On peut contribuer sans compte, sans pseudo, et sans rien laisser qui permette de retrouver qui a compté. Un compte existe depuis la phase 9 et n'est jamais demandé : il donne un historique et un classement, et rien qui touche aux données des autres. Aucune adresse email n'est stockée, aucune. Un pseudo facultatif peut signer un comptage. Il n'identifie personne, et il n'ouvre aucun droit.
+- **Anonyme par défaut, et c'est encore vrai.** On peut contribuer sans compte, sans pseudo, et sans rien laisser qui permette de retrouver qui a compté. Un compte existe depuis la phase 9 et n'est jamais demandé : il donne un historique et un classement, et rien qui touche aux données des autres. Aucun email n'est demandé pour compter ou se connecter. Seul un retour privé peut porter un contact facultatif, effacé dès son traitement. Un pseudo facultatif peut signer un comptage. Il n'ouvre aucun droit.
 - **L'offre vient du GTFS, le contexte du temps réel, les comptages des gens.** On ne mélange pas les trois. Une circulation absente est un signalement, pas une ligne créée à la main.
 - **Pas de trace GPS.** La position peut proposer l'arrêt le plus proche. Elle n'est pas enregistrée.
 - **Les comptages partagés sont en Licence Ouverte 2.0.** Le code reste en GPL-3.0. Les deux licences ne se mélangent pas.
@@ -473,6 +473,12 @@ Le CSV publié et celui de `/api/export.csv` sortent de la même fonction, dans
 divergerait de ce que l'utilisateur télécharge, et personne ne le verrait avant
 des mois.
 
+La première ligne est directement l'en-tête CSV, sans commentaire de licence,
+pour être reconnue par data.gouv.fr. La Licence Ouverte 2.0 demeure applicable,
+documentée ici et sur `/methode`. Les signalements de train manquant restent
+dans les listes, avec leur origine et leur destination, mais sont exclus du
+CSV, de la publication et de la carte, y compris de son décompte.
+
 Ce que la publication automatique ne fait pas, et qui reste à faire : la
 checksum de la ressource, la page de catalogue, et l'historique — data.gouv.fr
 garde les versions, mais rien ici ne les expose.
@@ -581,15 +587,10 @@ apporté.
 Quatre règles gouvernent toute la phase, et chacune a déjà coûté une décision
 ailleurs dans ce document :
 
-- **Aucune adresse email n'est stockée, et c'est une règle de conception, pas
-  un oubli.** Une adresse est un identifiant *direct* : elle relie toute
-  l'activité future d'une personne à une identité réelle, et elle sert à autre
-  chose qu'à ce projet — c'est une clé d'envoi, un identifiant de connection, un
-  moyen de la croiser avec n'importe quelle fuite. Le §3 dit « pas de trace GPS »
-  et « anonyme par défaut » ; stocker un email les deux rendrait faux. Un secret
-  long n'identifie personne : il ne peut servir qu'ici, donc une base qui fuite
-  donne des pseudos et des hachages — exactement ce que le projet assume déjà de
-  publier.
+- **Aucune adresse email n'est stockée pour les comptes.** La connexion reste
+  un secret long, jamais un lien envoyé par email. Le contact facultatif d'un
+  retour privé est une exception bornée : il ne rejoint ni compte ni relevé,
+  et disparaît lorsque l'administration traite le message.
 - **L'application marche sans l'option compte.** C'est la première règle, parce
   qu'elle décide si la phase est réversible. Sans variable d'envoi dans le `.env`,
   l'application démarre, la saisie marche, le classement affiche sa liste vide, et
@@ -1192,7 +1193,8 @@ permettre de distinguer.
 #### Les trois étapes
 
 1. **La composition, les rames comptées, puis le matériel en option.**
-   L'obligatoire vient en premier : la composition du train (US, UM2, UM3 ou
+   L'obligatoire vient en premier : la composition du train (un seul train
+   (US), deux trains (UM2), trois trains (UM3) ou
    « Je ne sais pas ») et les rames que l'on va compter sur le schéma. On
    compte toujours une rame **entière** : une rame seule d'une UM, oui ; une
    voiture isolée d'une rame de trois, jamais. Le périmètre ne se demande donc
@@ -1316,7 +1318,14 @@ Les longueurs ont été vérifiées dans les descriptions techniques suivantes :
 La page `/retours`, présente dans la navigation publique, permet à chacun de
 proposer une amélioration ou de signaler un bug sans créer de compte. Un champ
 libre obligatoire accepte de 1 à 5 000 caractères après retrait des espaces
-extérieurs. Aucun email, pseudo ou identifiant de compte n'est demandé.
+extérieurs. Un email de contact est facultatif, uniquement pour permettre une
+réponse. Aucun pseudo ou identifiant de compte n'est demandé. Le contact est
+validé côté serveur, réservé à l'administration et absent des API publiques,
+exports et journaux. Marquer le retour traité efface l'adresse dans la base
+avec `email = NULL` et `secure_delete` ; supprimer le retour l'efface aussi.
+Cela ne purge pas des sauvegardes externes déjà réalisées, dont la conservation
+reste sous la responsabilité de l'hébergeur. La migration ajoute la colonne
+nullable sans altérer les messages existants ; elle est idempotente.
 
 Les messages sont conservés séparément des relevés dans `app.db` : ils ne sont
 ni des commentaires de comptage, ni des signalements de relevés. Ils ne figurent
@@ -1340,6 +1349,38 @@ avec navigation vers les messages plus anciens. Aucun service externe ni
 nouvelle configuration n'est nécessaire. Un outil de tickets externe serait
 disproportionné ici et imposerait un compte ou une visibilité différente de
 celle demandée.
+
+### Comptages passés, gares et schéma de rame
+
+`GET /api/trips/historical?from=&to=&at=` recherche l'offre théorique autour
+de l'heure choisie. Les bornes glissantes `[maintenant − 15 jours, maintenant]`
+sont vérifiées côté serveur à la recherche et à l'enregistrement. La validation
+vérifie aussi le train, sa date de circulation et sa desserte. Le GTFS doit
+encore contenir cette journée : les horaires périmés ne sont pas reconstitués
+ni inventés, et une offre absente reste absente.
+
+`is_historical` distingue la saisie passée ; `observed_at` porte le départ
+théorique retenu, `created_at` la saisie. Les anciens relevés restent non
+historiques et reprennent leur date existante. Les listes, le détail et le CSV
+conservent cette distinction. Les filtres et tris de date utilisent la date
+du train pour l'historique. La photo est reconstruite côté serveur avec états
+et retards inconnus, même si le client en fournit. La date de service GTFS
+est figée séparément du départ civil, notamment après minuit.
+
+La vérification des GTFS SNCF et Transilien a retrouvé les RER B et D à
+Gare du Nord. L'aire `IDFM:71410` (« Gare du Nord ») et
+`StopArea:OCE87271007` (« Paris Gare du Nord ») désignent le même lieu à 110 m.
+L'alias explicite réunit leurs familles de 49 et 4 identifiants en une famille
+de 53 arrêts. Les deux recherches renvoient une gare, et la sélection accède
+aux deux offres. Ce n'est pas une fusion générale des noms : le seuil de
+500 m reste nécessaire, les homonymes éloignés et gares voisines restent
+distincts. Le GTFS Transilien mesuré contient 37 routes, dont 24 de rail, et
+49 998 circulations. Aucun flux temps réel IDFM n'est ajouté.
+
+Le SVG représente une rame symétrique avec cabine à chaque extrémité. Une
+petite flèche indique le sens de marche, vers le train de tête. Les positions
+sont « train de tête », « train de queue » et « rame intermédiaire » ; les
+codes stockés US/UM2/UM3 et les indices de rame restent inchangés.
 
 ## 8. Décisions
 

@@ -23,6 +23,24 @@ def _nom_cle(name: str) -> str:
     return " ".join(name.casefold().split())
 
 
+# Les deux sources nomment la même aire différemment. L'équivalence est
+# volontairement explicite : la proximité seule fusionnerait aussi des gares
+# distinctes du même quartier.
+_NOMS_GARE_DU_NORD = ("Gare du Nord", "Paris Gare du Nord")
+_CLES_GARE_DU_NORD = {"gare du nord", "paris gare du nord"}
+
+
+def _cle_famille_gare(name: str) -> str:
+    key = _nom_cle(name)
+    return "gare du nord" if key in _CLES_GARE_DU_NORD else key
+
+
+def _noms_famille_gare(name: str) -> tuple[str, ...]:
+    if _cle_famille_gare(name) == "gare du nord":
+        return _NOMS_GARE_DU_NORD
+    return (name,)
+
+
 # Ce que le lecteur tape à la place d'un tiret, d'une apostrophe ou d'un point :
 # « saint etienne » pour « Saint-Étienne », « l isle » pour « L'Isle ». Les
 # ligatures n'ont pas de décomposition NFKD (« œ » reste « œ ») : on les écrit.
@@ -159,9 +177,9 @@ def nearest_stops(database: Path, lat: float, lon: float, limit: int = 5) -> lis
 def _fusionnees(rows: list[dict], limit: int) -> list[dict]:
     """Une entrée par gare, l'aire de coach et celle de train réunies.
 
-    `rows` sont des aires déjà filtrées par le nom. Dans un même nom normalisé,
-    deux aires distantes de moins de FUSION_METRES sont un seul lieu vu deux fois
-    par le GTFS :
+    `rows` sont des aires déjà filtrées par le nom, plus les variantes d'alias
+    explicitement développées. Une même clé de famille à moins de FUSION_METRES
+    désigne un lieu vu deux fois par le GTFS :
 
     - le lien est transitif, deux aires chacune à 400 m de l'aire retenue
       forment un seul groupe ;
@@ -170,7 +188,9 @@ def _fusionnees(rows: list[dict], limit: int) -> list[dict]:
     - les autres ne sont pas perdues : la gare affichée n'est qu'une des deux
       moitiés, mais `_stop_family` regroupe les deux, donc les offres, le serpent
       et le temps réel voient les trains des deux aires ;
-    - deux aires du même nom trop éloignées restent deux entrées distinctes,
+    - seul l'alias vérifié « Gare du Nord » / « Paris Gare du Nord » permet deux
+      noms différents ; la proximité ne suffit jamais à créer un alias ;
+    - deux aires de la même famille trop éloignées restent deux entrées distinctes,
       parce qu'une interstation comptée entre deux lieux distincts serait fausse.
 
     Une aire sans coordonnées n'est jamais fusionnée : sans distance, rien ne
@@ -178,7 +198,7 @@ def _fusionnees(rows: list[dict], limit: int) -> list[dict]:
     """
     par_nom: dict[str, list[dict]] = {}
     for row in rows:
-        par_nom.setdefault(_nom_cle(row["name"]), []).append(row)
+        par_nom.setdefault(_cle_famille_gare(row["name"]), []).append(row)
 
     found = []
     for membres in par_nom.values():
@@ -236,9 +256,17 @@ def search_stops(
             """,
             (needle, limit * 4),
         ).fetchall()
-        # Un seul GROUP BY remplace 32 COUNT(*). Les `stop_id` sont ceux déjà
-        # trouvés par la requête du dessus, donc les deux ne peuvent pas
-        # diverger sur le filtrage. Avec l'index sur `parent`, la requête
+        if any(len(_noms_famille_gare(row[1])) > 1 for row in rows):
+            alias_keys = tuple(cle_gare(name) for name in _NOMS_GARE_DU_NORD)
+            alias_rows = connection.execute(
+                "SELECT stop_id, name, lat, lon FROM stop "
+                "WHERE is_area = 1 AND name_key IN (?, ?)",
+                alias_keys,
+            ).fetchall()
+            rows = list({row[0]: row for row in (*rows, *alias_rows)}.values())
+        # Un seul GROUP BY remplace 32 COUNT(*). Les `stop_id` sont ceux de la
+        # recherche et, pour l'alias explicite, de son expansion ; les deux
+        # requêtes comptent donc la même famille. Avec l'index sur `parent`, elle
         # passe de 94 ms à quelques millisecondes sur 36 000 arrêts.
         enfants = dict(
             connection.execute(
@@ -265,10 +293,10 @@ def _proximites(connection, stop_id: str) -> list[str]:
     """Les aires de gare que `stop_id` décrit, quand le GTFS en donne plusieurs.
 
     Même gare vue deux fois : une aire de coach et une aire de train, à quelques
-    dizaines de mètres. On ne renvoie que celles dont le nom normalisé est
-    identique ET qui sont à moins de FUSION_METRES de l'aire demandée — sinon
-    deux lieux distincts du même nom (`Lérouville` à 641 m) seraient confondus, et
-    l'interstation comptée entre les deux serait fausse.
+    dizaines de mètres. On ne renvoie que celles dont le nom est identique (ou
+    l'alias explicitement vérifié) ET qui sont à moins de FUSION_METRES de l'aire
+    demandée — sinon deux lieux distincts du même nom (`Lérouville` à 641 m)
+    seraient confondus, et l'interstation comptée entre les deux serait fausse.
 
     L'aire demandée est toujours dans le résultat, coordonnées absentes ou non :
     une recherche qui ne trouve aucune sœur rend l'aire seule, pas le vide.
@@ -285,15 +313,17 @@ def _proximites(connection, stop_id: str) -> list[str]:
     name, lat, lon, is_area = anchor
     if not is_area:
         return [stop_id]
+    name_keys = tuple(cle_gare(alias) for alias in _noms_famille_gare(name))
+    marks = ",".join("?" for _ in name_keys)
     candidates = connection.execute(
-        "SELECT stop_id, name, lat, lon FROM stop WHERE is_area = 1 AND lower(name) = lower(?)",
-        (name,),
+        f"SELECT stop_id, name, lat, lon FROM stop WHERE is_area = 1 AND name_key IN ({marks})",
+        name_keys,
     ).fetchall()
-    key = _nom_cle(name)
+    key = _cle_famille_gare(name)
     groupe = [stop_id]
     if lat is not None and lon is not None:
         for other_id, other_name, other_lat, other_lon in candidates:
-            if other_id == stop_id or _nom_cle(other_name) != key:
+            if other_id == stop_id or _cle_famille_gare(other_name) != key:
                 continue
             if other_lat is None or other_lon is None:
                 continue
