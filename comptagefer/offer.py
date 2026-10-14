@@ -19,26 +19,27 @@ from unicodedata import combining, normalize
 FUSION_METRES = 500
 
 
-def _nom_cle(name: str) -> str:
-    return " ".join(name.casefold().split())
-
-
-# Les deux sources nomment la même aire différemment. L'équivalence est
-# volontairement explicite : la proximité seule fusionnerait aussi des gares
-# distinctes du même quartier.
-_NOMS_GARE_DU_NORD = ("Gare du Nord", "Paris Gare du Nord")
-_CLES_GARE_DU_NORD = {"gare du nord", "paris gare du nord"}
-
-
-def _cle_famille_gare(name: str) -> str:
-    key = _nom_cle(name)
-    return "gare du nord" if key in _CLES_GARE_DU_NORD else key
-
-
-def _noms_famille_gare(name: str) -> tuple[str, ...]:
-    if _cle_famille_gare(name) == "gare du nord":
-        return _NOMS_GARE_DU_NORD
-    return (name,)
+# Les noms d'aires différents observés dans les ZIP SNCF national / IDFM /
+# Transilien. Les familles sont étayées par IDs, hiérarchies et dessertes des
+# archives, pas par la seule distance. Les voisins ambigus restent hors liste.
+_FAMILLES_GARES = (
+    ("Gare du Nord", "Paris Gare du Nord"),
+    ("Gare Saint-Lazare", "Paris Saint-Lazare"),
+    ("Gare de l'Est", "Paris Est"),
+    ("Champigny", "Champigny-sur-Yonne"),
+    ("Aéroport CDG (Terminal 2) - TGV", "Aéroport Charles de Gaulle 2 TGV"),
+    (
+        "Saint-Quentin en Yvelines - Montigny-le-Bretonneux",
+        "Saint-Quentin en Yvelines",
+    ),
+    (
+        "Gare Montparnasse",
+        "Paris Montparnasse Hall 1 - 2",
+        "Paris Montparnasse Vaugirard",
+    ),
+    ("Gare de Lyon", "Paris Gare de Lyon Hall 1 - 2"),
+    ("Gare d'Austerlitz", "Paris Austerlitz"),
+)
 
 
 # Ce que le lecteur tape à la place d'un tiret, d'une apostrophe ou d'un point :
@@ -76,6 +77,24 @@ def cle_gare(texte: str) -> str:
     decompose = normalize("NFKD", (texte or "").casefold())
     sans_accent = "".join(c for c in decompose if not combining(c))
     return " ".join(sans_accent.translate(_SEPARATEURS).split())
+
+
+_FAMILLE_PAR_NOM = {
+    cle_gare(nom): cle_gare(noms[0])
+    for noms in _FAMILLES_GARES
+    for nom in noms
+}
+_NOMS_PAR_FAMILLE = {cle_gare(noms[0]): noms for noms in _FAMILLES_GARES}
+
+
+def _cle_famille_gare(name: str) -> str:
+    key = cle_gare(name)
+    return _FAMILLE_PAR_NOM.get(key, key)
+
+
+def _noms_famille_gare(name: str) -> tuple[str, ...]:
+    key = _cle_famille_gare(name)
+    return _NOMS_PAR_FAMILLE.get(key, (name,))
 
 
 def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -188,8 +207,8 @@ def _fusionnees(rows: list[dict], limit: int) -> list[dict]:
     - les autres ne sont pas perdues : la gare affichée n'est qu'une des deux
       moitiés, mais `_stop_family` regroupe les deux, donc les offres, le serpent
       et le temps réel voient les trains des deux aires ;
-    - seul l'alias vérifié « Gare du Nord » / « Paris Gare du Nord » permet deux
-      noms différents ; la proximité ne suffit jamais à créer un alias ;
+    - seuls les noms explicitement vérifiés dans `_FAMILLES_GARES` permettent
+      deux libellés différents ; la proximité seule ne crée jamais un alias ;
     - deux aires de la même famille trop éloignées restent deux entrées distinctes,
       parce qu'une interstation comptée entre deux lieux distincts serait fausse.
 
@@ -256,14 +275,63 @@ def search_stops(
             """,
             (needle, limit * 4),
         ).fetchall()
-        if any(len(_noms_famille_gare(row[1])) > 1 for row in rows):
-            alias_keys = tuple(cle_gare(name) for name in _NOMS_GARE_DU_NORD)
-            alias_rows = connection.execute(
-                "SELECT stop_id, name, lat, lon FROM stop "
-                "WHERE is_area = 1 AND name_key IN (?, ?)",
+        # Un alias explicite peut n'être porté que par un enfant. Remonter à son
+        # aire parente donne l'ancre d'identité pour développer la famille.
+        if len(_noms_famille_gare(query)) > 1:
+            child_anchors = connection.execute(
+                """
+                SELECT parent.stop_id, parent.name, parent.lat, parent.lon
+                FROM stop AS child
+                JOIN stop AS parent ON parent.stop_id = child.parent
+                WHERE child.is_area = 0 AND child.name_key = ? AND parent.is_area = 1
+                """,
+                (needle,),
+            ).fetchall()
+            rows = list({row[0]: row for row in (*rows, *child_anchors)}.values())
+
+        # N'étendre que les alias des aires trouvées, et seulement aux aires
+        # proches de l'une d'elles. Un nom générique comme « Champigny » peut
+        # ainsi rester ambigu sans que l'alias « Champigny-sur-Yonne » ajoute la
+        # gare homonyme du Val-de-Marne à une recherche exacte.
+        alias_families = {}
+        for name in (query, *(row[1] for row in rows)):
+            noms = _noms_famille_gare(name)
+            if len(noms) > 1:
+                alias_families.setdefault(_cle_famille_gare(name), noms)
+        alias_rows = []
+        if alias_families:
+            alias_names = tuple(
+                dict.fromkeys(name for names in alias_families.values() for name in names)
+            )
+            alias_keys = tuple(cle_gare(name) for name in alias_names)
+            marks = ",".join("?" for _ in alias_keys)
+            candidates = connection.execute(
+                f"SELECT stop_id, name, lat, lon FROM stop "
+                f"WHERE is_area = 1 AND name_key IN ({marks})",
                 alias_keys,
             ).fetchall()
-            rows = list({row[0]: row for row in (*rows, *alias_rows)}.values())
+            anchors_by_family = {
+                family_key: [row for row in rows if _cle_famille_gare(row[1]) == family_key]
+                for family_key in alias_families
+            }
+            anchor_ids_by_family = {
+                family_key: {row[0] for row in anchors}
+                for family_key, anchors in anchors_by_family.items()
+            }
+            for candidate in candidates:
+                family_key = _cle_famille_gare(candidate[1])
+                anchors = anchors_by_family.get(family_key, [])
+                if candidate[0] in anchor_ids_by_family.get(family_key, set()) or any(
+                    anchor[2] is not None
+                    and anchor[3] is not None
+                    and candidate[2] is not None
+                    and candidate[3] is not None
+                    and _distance_m(anchor[2], anchor[3], candidate[2], candidate[3])
+                    <= FUSION_METRES
+                    for anchor in anchors
+                ):
+                    alias_rows.append(candidate)
+        rows = list({row[0]: row for row in (*rows, *alias_rows)}.values())
         # Un seul GROUP BY remplace 32 COUNT(*). Les `stop_id` sont ceux de la
         # recherche et, pour l'alias explicite, de son expansion ; les deux
         # requêtes comptent donc la même famille. Avec l'index sur `parent`, elle

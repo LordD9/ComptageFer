@@ -23,9 +23,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import comptagefer.app as app_module
+import comptagefer.timetable as timetable_module
 from comptagefer.app import TRANSILIEN_URL, _timetable_has_transilien, ensure_referential
 from comptagefer.offer import import_stop_names
-from comptagefer.timetable import TRANSILIEN, import_timetable, kind_of, listed_trips
+from comptagefer.timetable import TRANSILIEN, find_line, import_timetable, kind_of, listed_trips
 
 PARIS = ZoneInfo("Europe/Paris")
 
@@ -322,26 +323,22 @@ def test_the_stop_window_keeps_both_families(tmp_path, gtfs):
     )
 
 
-def test_a_rer_b_trip_is_visible_from_the_national_station_alias(tmp_path):
-    """Le RER B IDFM doit rester visible depuis « Paris Gare du Nord » du national."""
-    now = datetime.now(PARIS)
-    depart = now.replace(hour=max(1, now.hour - 1), minute=0, second=0, microsecond=0)
-    arrive = depart + timedelta(minutes=30)
-    identifiant = "IDFM:TN:SNCF:0f6a55e6-de6f-4ee7-8760-4df35e08e6ca"
+def test_les_rer_b_et_d_sont_visibles_en_mode_normal_sans_base_rt(tmp_path):
+    """Le parcours normal liste le statique avec état RT inconnu si la base manque."""
+    depart = datetime.now(PARIS).replace(hour=8, minute=0, second=0, microsecond=0) - timedelta(
+        days=1
+    )
+    rer_b = "IDFM:TN:SNCF:rer-b-fixture"
+    rer_d = "IDFM:TN:SNCF:rer-d-fixture"
+    gare_du_nord = "IDFM:monomodalStopPlace:462394"
+    chatelet_les_halles = "IDFM:monomodalStopPlace:45102"
 
     stops = tmp_path / "stops.txt"
     stops.write_text(
         _csv(
             ["stop_id", "stop_name", "stop_lat", "stop_lon", "location_type", "parent_station"],
             ["IDFM:71410", "Gare du Nord", "48.88095669783061", "2.355687439691836", "1", ""],
-            [
-                "IDFM:monomodalStopPlace:462394",
-                "Gare du Nord",
-                "48.88230685842714",
-                "2.356693437528564",
-                "0",
-                "IDFM:71410",
-            ],
+            [gare_du_nord, "Gare du Nord", "48.88230685842714", "2.356693437528564", "0", "IDFM:71410"],
             ["StopArea:OCE87271007", "Paris Gare du Nord", "48.880136", "2.354851", "1", ""],
             [
                 "StopPoint:OCETrain-87271007",
@@ -351,15 +348,10 @@ def test_a_rer_b_trip_is_visible_from_the_national_station_alias(tmp_path):
                 "0",
                 "StopArea:OCE87271007",
             ],
-            ["IDFM:72211", "La Plaine Stade de France", "48.944", "2.359", "1", ""],
-            [
-                "IDFM:monomodalStopPlace:43145",
-                "La Plaine Stade de France",
-                "48.944",
-                "2.359",
-                "0",
-                "IDFM:72211",
-            ],
+            ["IDFM:474151", "Châtelet - Les Halles", "48.86174503191322", "2.34697651043533", "1", ""],
+            [chatelet_les_halles, "Châtelet - Les Halles", "48.86174503191322", "2.34697651043533", "0", "IDFM:474151"],
+            ["IDFM:71264", "Châtelet", "48.85835374843885", "2.348491031653374", "1", ""],
+            ["IDFM:22364", "Châtelet", "48.85693592038867", "2.3482429871100323", "0", "IDFM:71264"],
         ),
         encoding="utf-8",
     )
@@ -367,21 +359,42 @@ def test_a_rer_b_trip_is_visible_from_the_national_station_alias(tmp_path):
 
     trips = tmp_path / "trips.txt"
     trips.write_text(
-        _csv(["trip_id", "service_id", "route_id"], [identifiant, "SERVICE", "IDFM:C01743"]),
+        _csv(
+            ["trip_id", "service_id", "route_id"],
+            [rer_b, "SERVICE_B", "IDFM:C01743"],
+            [rer_d, "SERVICE_D", "IDFM:C01728"],
+        ),
         encoding="utf-8",
     )
     stop_times = tmp_path / "stop_times.txt"
+    depart_d = depart + timedelta(minutes=15)
     stop_times.write_text(
         _csv(
             ["trip_id", "stop_id", "departure_time", "arrival_time"],
-            [identifiant, "IDFM:monomodalStopPlace:462394", depart.strftime("%H:%M:%S"), depart.strftime("%H:%M:%S")],
-            [identifiant, "IDFM:monomodalStopPlace:43145", arrive.strftime("%H:%M:%S"), arrive.strftime("%H:%M:%S")],
+            [rer_b, gare_du_nord, depart.strftime("%H:%M:%S"), depart.strftime("%H:%M:%S")],
+            [
+                rer_b,
+                chatelet_les_halles,
+                (depart + timedelta(minutes=12)).strftime("%H:%M:%S"),
+                (depart + timedelta(minutes=12)).strftime("%H:%M:%S"),
+            ],
+            [rer_d, gare_du_nord, depart_d.strftime("%H:%M:%S"), depart_d.strftime("%H:%M:%S")],
+            [
+                rer_d,
+                chatelet_les_halles,
+                (depart_d + timedelta(minutes=12)).strftime("%H:%M:%S"),
+                (depart_d + timedelta(minutes=12)).strftime("%H:%M:%S"),
+            ],
         ),
         encoding="utf-8",
     )
     dates = tmp_path / "calendar_dates.txt"
     dates.write_text(
-        _csv(["service_id", "date", "exception_type"], ["SERVICE", depart.strftime("%Y%m%d"), "1"]),
+        _csv(
+            ["service_id", "date", "exception_type"],
+            ["SERVICE_B", depart.strftime("%Y%m%d"), "1"],
+            ["SERVICE_D", depart.strftime("%Y%m%d"), "1"],
+        ),
         encoding="utf-8",
     )
     routes = tmp_path / "routes.txt"
@@ -389,23 +402,31 @@ def test_a_rer_b_trip_is_visible_from_the_national_station_alias(tmp_path):
         _csv(
             ["route_id", "route_short_name", "route_long_name", "route_type"],
             ["IDFM:C01743", "B", "B", "2"],
+            ["IDFM:C01728", "D", "D", "2"],
         ),
         encoding="utf-8",
     )
     timetable = tmp_path / "timetable.db"
     import_timetable(timetable, trips, stop_times, dates, routes)
 
+    rt = tmp_path / "rt.db"
+    assert not rt.exists()
     found = listed_trips(
         timetable,
-        tmp_path / "rt.db",
+        rt,
         "StopArea:OCE87271007",
-        "IDFM:monomodalStopPlace:43145",
+        "IDFM:474151",
         depart,
         stops_database=tmp_path / "stops.db",
     )
 
-    rer = next(item for item in found if item["trip_id"] == identifiant)
-    assert rer["kind"] == "Transilien"
+    assert {item["trip_id"] for item in found} == {rer_b, rer_d}
+    assert all(item["status"] is None and item["delay_seconds"] is None for item in found)
+    assert not rt.exists()
+    ligne_b = find_line(timetable, "IDFM:C01743")
+    ligne_d = find_line(timetable, "IDFM:C01728")
+    assert ligne_b is not None and ligne_b["mode"] == "train"
+    assert ligne_d is not None and ligne_d["mode"] == "train"
 
 
 def test_historique_ne_lit_jamais_le_temps_reel(tmp_path, gtfs, monkeypatch):

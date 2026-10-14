@@ -3,6 +3,7 @@ import re
 from fastapi.testclient import TestClient
 
 from comptagefer.app import create_app
+from comptagefer.offer import open_stops
 
 
 def _count(photo: dict) -> dict:
@@ -130,6 +131,11 @@ def test_a_count_without_a_value_sorts_last_in_both_directions(tmp_path):
     Trié par effectif, il doit tomber en dernier — jamais en premier, où il
     se lirait comme le relevé le plus chargé alors qu'il n'a pas été compté.
     """
+    with open_stops(tmp_path / "stops.db") as stops:
+        stops.executemany(
+            "INSERT INTO stop (stop_id, name, is_area) VALUES (?, ?, 1)",
+            [("A", "Signale"), ("B", "Z")],
+        )
     client = TestClient(create_app(tmp_path))
     photo = {"precedent": None, "courant": {"trip_id": "T", "status": "SCHEDULED"}, "suivant": None}
     client.post("/api/sessions", json={**_count(photo), "client_id": "a", "passengers": 12,

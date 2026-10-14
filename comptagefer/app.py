@@ -450,7 +450,7 @@ def create_app(
 
     @app.get("/api/sessions")
     def list_sessions() -> list[dict]:
-        return _list_saisies(database)
+        return _avec_noms_od(stops_database, _list_saisies(database))
 
     @app.get("/comptages", response_class=HTMLResponse)
     def comptages(
@@ -507,6 +507,7 @@ def create_app(
             vue=vue,
             page=_page_depuis(page),
             total=total,
+            stops_database=stops_database,
         )
 
     @app.get("/carte", response_class=HTMLResponse)
@@ -547,7 +548,7 @@ def create_app(
         `client_id` vient du navigateur, donc il est échappé comme n'importe
         quelle donnée client — règle 1 de `docs/regles.md`.
         """
-        return _releve_page(database, client_id, kind)
+        return _releve_page(database, client_id, kind, stops_database=stops_database)
 
     @app.get("/methode", response_class=HTMLResponse)
     def methode() -> str:
@@ -636,7 +637,13 @@ def create_app(
 
     @app.post("/api/missing")
     def missing(request: Request, body: dict) -> dict:
-        return _save_saisie(database, body, kind="missing", compte_id=_compte_de_cookie(request))
+        return _save_saisie(
+            database,
+            body,
+            kind="missing",
+            stops_database=stops_database,
+            compte_id=_compte_de_cookie(request),
+        )
 
     def _compte_de_cookie(request: Request) -> str | None:
         """Le compte du cookie de session, ou `None`.
@@ -2180,6 +2187,13 @@ def _save_saisie(
     destination = str(body.get("destination_stop_id") or "")
     if not client_id or not origin or not destination:
         raise HTTPException(status_code=422, detail="origine, destination et jeton requis")
+    if kind == "missing":
+        noms = _noms_des_stops(stops_database, [origin, destination])
+        origin_name = noms.get(origin)
+        destination_name = noms.get(destination)
+    else:
+        origin_name = (body.get("origin_name") or "")[:80] or None
+        destination_name = (body.get("destination_name") or "")[:80] or None
     passengers = body.get("passengers")
     reliability = body.get("reliability")
     if kind == "serpent":
@@ -2277,8 +2291,8 @@ def _save_saisie(
                 client_id,
                 origin,
                 destination,
-                (body.get("origin_name") or "")[:80] or None,
-                (body.get("destination_name") or "")[:80] or None,
+                origin_name,
+                destination_name,
                 trip_id,
                 passengers if kind in {"count", "serpent"} else None,
                 reliability if kind in {"count", "serpent"} else None,
@@ -2612,7 +2626,12 @@ def _lien_releve(row: dict) -> str:
     )
 
 
-def _releve_page(database: Path, client_id: str, kind: str) -> str:
+def _releve_page(
+    database: Path,
+    client_id: str,
+    kind: str,
+    stops_database: Path | None = None,
+) -> str:
     """Un comptage, tout entier, sur une page qui se partage.
 
     La liste des comptages est un résumé : elle compare des relevés, donc
@@ -2638,6 +2657,7 @@ def _releve_page(database: Path, client_id: str, kind: str) -> str:
             "Il a pu être supprimé depuis qu'il a été copié, "
             "ou le lien a été tronqué.",
         )
+    row = _avec_noms_od(stops_database, [row])[0]
     titre = "Train signalé" if row["kind"] == "missing" else "Comptage"
     # Chaque fait est dans une ligne `dt`/`dd` : une liste de couples
     # nom/valeur se lit en descendant la colonne, ce qu'un `<p>` libre ne
@@ -2822,7 +2842,7 @@ def _gare_page(database: Path, stops_database: Path, stop_id: str) -> str:
             "Les gares viennent du GTFS national. "
             "Un identifiant qui n'y est pas n'ouvre aucune page de comptages.",
         )
-    rows = _saisies_de_gare(database, stops_database, stop_id)
+    rows = _avec_noms_od(stops_database, _saisies_de_gare(database, stops_database, stop_id))
     if rows:
         # Le lien `/comptages` garde le corridor entier dans l'URL, donc la
         # page se partage et se marque. `/gare` n'a pas besoin d'être
@@ -3263,9 +3283,64 @@ def _date_fr(created_at: object) -> str:
     return moment.strftime("%d/%m/%Y à %H:%M")
 
 
+def _noms_des_stops(stops_database: Path | None, stop_ids: list[str]) -> dict[str, str]:
+    """Les noms exacts du référentiel, indexés par identifiant d'arrêt."""
+    identifiants = list(dict.fromkeys(str(stop_id) for stop_id in stop_ids if stop_id))
+    if not identifiants or stops_database is None or not stops_database.exists():
+        return {}
+
+    noms = {}
+    with open_stops(stops_database) as connection:
+        for debut in range(0, len(identifiants), 500):
+            tranche = identifiants[debut : debut + 500]
+            placeholders = ", ".join("?" for _ in tranche)
+            rows = connection.execute(
+                "SELECT s.stop_id, COALESCE(NULLIF(TRIM(p.name), ''), s.name) "
+                "FROM stop AS s LEFT JOIN stop AS p ON p.stop_id = s.parent "
+                f"WHERE s.stop_id IN ({placeholders})",
+                tranche,
+            ).fetchall()
+            for stop_id, nom in rows:
+                nom = str(nom or "").strip()
+                if nom:
+                    noms[str(stop_id)] = nom
+    return noms
+
+
+def _avec_noms_od(stops_database: Path | None, rows: list[dict]) -> list[dict]:
+    """Remplace les noms des signalements par ceux résolus depuis leurs IDs."""
+    if stops_database is None:
+        return rows
+    signalements = [row for row in rows if row.get("kind") == "missing"]
+    noms = _noms_des_stops(
+        stops_database,
+        [
+            str(row.get(cle) or "")
+            for row in signalements
+            for cle in ("origin_stop_id", "destination_stop_id")
+        ],
+    )
+    return [
+        {
+            **row,
+            "origin_name": noms.get(str(row.get("origin_stop_id") or ""))
+            or row.get("origin_name"),
+            "destination_name": noms.get(str(row.get("destination_stop_id") or ""))
+            or row.get("destination_name"),
+        }
+        if row.get("kind") == "missing"
+        else row
+        for row in rows
+    ]
+
+
 def _od_texte(row: dict) -> str:
-    origine = row.get("origin_name") or row.get("origin_stop_id") or "—"
-    destination = row.get("destination_name") or row.get("destination_stop_id") or "—"
+    if row.get("kind") == "missing":
+        origine = row.get("origin_name") or "—"
+        destination = row.get("destination_name") or "—"
+    else:
+        origine = row.get("origin_name") or row.get("origin_stop_id") or "—"
+        destination = row.get("destination_name") or row.get("destination_stop_id") or "—"
     return f"{escape(str(origine))} → {escape(str(destination))}"
 
 
@@ -3577,10 +3652,12 @@ def _reading_table(rows: list[dict], tri: str, sens: str, filtres: Filtres) -> s
         # seule colonne qui décrit le relevé, donc c'est elle qui doit
         # porter la sortie vers le détail — un lien nommé en fin de ligne
         # ferait une colonne de plus, et du bruit visuel dans chaque ligne.
-        trajet = (
-            f"<a href='{_lien_releve(row)}'>"
-            f"{escape(row['origin_name'] or '')} → {escape(row['destination_name'] or '')}</a>"
+        od = (
+            _od_texte(row)
+            if row.get("kind") == "missing"
+            else f"{escape(row['origin_name'] or '')} → {escape(row['destination_name'] or '')}"
         )
+        trajet = f"<a href='{_lien_releve(row)}'>{od}</a>"
         cellules = [
             f"<td class='nombre'>{moment}</td>",
             f"<td>{trajet}</td>",
@@ -4024,6 +4101,7 @@ def _reading_page(
     vue: str = "",
     page: int = 1,
     total: int | None = None,
+    stops_database: Path | None = None,
 ) -> str:
     """La liste des comptages, la plus récente d'abord.
 
@@ -4035,6 +4113,7 @@ def _reading_page(
     `filtres`, `vue` et `page` ont des valeurs par défaut pour que
     l'appel direct reste possible ; la route les fournit tous.
     """
+    rows = _avec_noms_od(stops_database, rows)
     filtres = filtres or Filtres()
     total = total if total is not None else len(rows)
     # `en_paires`, pas `par_paire` : ce dernier nom est celui de la

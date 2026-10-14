@@ -5,6 +5,7 @@ import io
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+from comptagefer.offer import open_stops
 from tests.conftest import TER
 from tests.test_historique import _application_avec_offre, _corps_historique
 
@@ -13,10 +14,17 @@ def test_carte_et_csv_excluent_le_signalement_y_compris_du_total(tmp_path):
     from fastapi.testclient import TestClient
     from comptagefer.app import create_app
 
+    with open_stops(tmp_path / 'stops.db') as stops:
+        stops.executemany(
+            'INSERT INTO stop (stop_id, name, is_area) VALUES (?, ?, 1)',
+            [('StopArea:OD_INTEGRATION_ORIGINE', 'Origine'),
+             ('StopArea:OD_INTEGRATION_DESTINATION', 'Destination')],
+        )
     client = TestClient(create_app(tmp_path))
     assert client.post('/api/missing', json={
-        'client_id': 'signalement-seul', 'origin_stop_id': 'A',
-        'destination_stop_id': 'B', 'origin_name': 'Origine', 'destination_name': 'Destination',
+        'client_id': 'signalement-seul', 'origin_stop_id': 'StopArea:OD_INTEGRATION_ORIGINE',
+        'destination_stop_id': 'StopArea:OD_INTEGRATION_DESTINATION',
+        'origin_name': 'Origine', 'destination_name': 'Destination',
     }).status_code == 200
     carte = client.get('/carte').text
     assert '0 comptage au total, 0 sur la carte' in carte
