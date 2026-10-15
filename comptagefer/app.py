@@ -27,6 +27,7 @@ from comptagefer import score as score_module
 from comptagefer.affichage import chrome
 from comptagefer.carte import counted_features
 from comptagefer.carte import map_page as carte_page
+from comptagefer.changelog import changelog_page
 from comptagefer.compte import COOKIE_COMPTE, compte_de_session
 from comptagefer.compte import preparer as preparer_compte
 from comptagefer.filtres import (
@@ -554,6 +555,10 @@ def create_app(
     def methode() -> str:
         return _method_page()
 
+    @app.get("/changelog", response_class=HTMLResponse)
+    def changelog() -> str:
+        return changelog_page()
+
     @app.get("/retours", response_class=HTMLResponse)
     def retours_page(request: Request, envoye: int = Query(0)) -> str:
         return retours_module.formulaire(confirmation=envoye == 1)
@@ -994,13 +999,37 @@ def create_app(
             return False
         return True
 
-    def admin_dashboard(retours_page: int = 1, publication: dict | None = None) -> str:
+    def admin_dashboard(
+        onglet: str = "comptages",
+        retours_page: int = 1,
+        publication: dict | None = None,
+    ) -> str:
+        if onglet == "retours":
+            retours_html = retours_module.panneau_admin(database, retours_page)
+            return _admin_list([], onglet="retours", retours_html=retours_html)
         return _admin_list(
             _list_saisies(database),
             publication=publication,
             signalements=compte_module.signalements(database),
-            retours_html=retours_module.panneau_admin(database, retours_page),
         )
+
+    def page_retours_depuis_requete(request: Request, apres_modification: bool = False) -> int:
+        valeur = request.query_params.get("retours_page", "1")
+        if not valeur.isdecimal() or len(valeur) > 12:
+            return 1
+        page = max(1, int(valeur))
+        pages = max(
+            1,
+            (retours_module.compter(database) + retours_module.PAGE_RETOURS - 1)
+            // retours_module.PAGE_RETOURS,
+        )
+        if page > pages:
+            return pages if apres_modification else 1
+        return page
+
+    def url_admin_retours(page: int) -> str:
+        suffixe = f"&retours_page={page}" if page > 1 else ""
+        return f"/admin?onglet=retours{suffixe}"
 
     def identifiant_retour(identifiant: str) -> int | None:
         if not identifiant.isdecimal() or len(identifiant) > 19:
@@ -1009,16 +1038,19 @@ def create_app(
         return valeur if 0 < valeur <= 9_223_372_036_854_775_807 else None
 
     @app.get("/admin", response_class=HTMLResponse)
-    def admin(request: Request, retours_page: str = Query("1")) -> str:
+    def admin(
+        request: Request,
+        onglet: str = Query("comptages"),
+        retours_page: str = Query("1"),
+    ) -> str:
         if not admin_open(request):
             return _admin_login()
-        page = 1
-        if retours_page.isdecimal() and len(retours_page) <= 12:
-            page = int(retours_page)
-            pages = max(1, (retours_module.compter(database) + retours_module.PAGE_RETOURS - 1) // retours_module.PAGE_RETOURS)
-            if page > pages:
-                page = 1
-        return admin_dashboard(retours_page=max(1, page))
+        if onglet != "retours" or any(
+            cle not in {"onglet", "retours_page"} for cle in request.query_params
+        ):
+            return admin_dashboard()
+        page = page_retours_depuis_requete(request)
+        return admin_dashboard(onglet="retours", retours_page=page)
 
     @app.get("/admin/modifier", response_class=HTMLResponse)
     def admin_modifier_page(request: Request, client_id: str = Query(""), kind: str = Query("")) -> str:
@@ -1116,7 +1148,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="retour introuvable")
         if not retours_module.traiter(database, id_retour):
             raise HTTPException(status_code=404, detail="retour introuvable")
-        return Response(status_code=303, headers={"Location": "/admin"})
+        page = page_retours_depuis_requete(request, apres_modification=True)
+        return Response(status_code=303, headers={"Location": url_admin_retours(page)})
 
     @app.post("/admin/retours/{identifiant}/supprimer", response_class=HTMLResponse)
     def admin_supprimer_retour(request: Request, identifiant: str) -> Response:
@@ -1127,7 +1160,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="retour introuvable")
         if not retours_module.supprimer(database, id_retour):
             raise HTTPException(status_code=404, detail="retour introuvable")
-        return Response(status_code=303, headers={"Location": "/admin"})
+        page = page_retours_depuis_requete(request, apres_modification=True)
+        return Response(status_code=303, headers={"Location": url_admin_retours(page)})
 
     return app
 
@@ -1771,7 +1805,9 @@ def _admin_list(
     publication: dict | None = None,
     signalements: list[dict] | None = None,
     retours_html: str | None = None,
+    onglet: str = "comptages",
 ) -> str:
+    onglet = "retours" if onglet == "retours" else "comptages"
     cards = []
     for row in rows:
         who = escape(row["pseudo"]) if row["pseudo"] else "anonyme"
@@ -1802,6 +1838,30 @@ def _admin_list(
             "</form></article>"
         )
     body = "\n".join(cards) or "<p>Aucun comptage.</p>"
+    onglets = (
+        '<nav class="admin-tabs" aria-label="Navigation d’administration">'
+        + (
+            '<a href="/admin" aria-current="page">Comptages</a>'
+            if onglet == "comptages"
+            else '<a href="/admin">Comptages</a>'
+        )
+        + (
+            '<a href="/admin?onglet=retours" aria-current="page">Retours</a>'
+            if onglet == "retours"
+            else '<a href="/admin?onglet=retours">Retours</a>'
+        )
+        + "</nav>"
+    )
+    if onglet == "retours":
+        contenu = retours_html or "<h2>Retours privés</h2><p>Aucun retour.</p>"
+        consigne = ""
+    else:
+        contenu = (
+            _panneau_signalements(signalements or [])
+            + body
+            + ("" if publication is None else _publication_panel(publication))
+        )
+        consigne = "<p>Supprimer retire le comptage de la liste et du CSV.</p>"
     return f"""<!doctype html>
 <html lang="fr"><head>
 <meta charset="utf-8">
@@ -1813,14 +1873,17 @@ def _admin_list(
   .card {{ background: #fff; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
   button {{ font: inherit; min-height: 3.2rem; width: 100%; border: 0; border-radius: 0.8rem; background: #8a2b1b; color: #fff; }}
   .signalement {{ background: #fff; border-left: 4px solid #8a2b1b; border-radius: 0.8rem; padding: 0.8rem; margin: 0.6rem 0; }}
+  .admin-tabs {{ display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0; }}
+  .admin-tabs a {{ align-items: center; border: 2px solid #1c1915; border-radius: 0.8rem; box-sizing: border-box; color: #1c1915; display: flex; flex: 1 1 10rem; justify-content: center; min-height: 3.2rem; padding: 0.5rem 0.75rem; text-decoration: none; }}
+  .admin-tabs a[aria-current="page"] {{ background: #1c1915; color: #fff; }}
+  .admin-tabs a:focus-visible {{ outline: 3px solid #8a2b1b; outline-offset: 2px; }}
+  .contact-retour {{ overflow-wrap: anywhere; }}
 </style>
 </head><body><main>
   <h1>Admin</h1>
-  <p>Supprimer retire le comptage de la liste et du CSV.</p>
-  {_panneau_signalements(signalements or [])}
-  {body}
-  {retours_html or ''}
-  {"" if publication is None else _publication_panel(publication)}
+  {consigne}
+  {onglets}
+  {contenu}
 </main></body></html>
 """
 
