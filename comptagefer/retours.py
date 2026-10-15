@@ -145,6 +145,7 @@ def panneau_admin(database: Path, page: int = 1) -> str:
     pages = max(1, (total + PAGE_RETOURS - 1) // PAGE_RETOURS)
     page = min(max(1, page), pages)
     rows = lister(database, page)
+    suffixe_page = f"?retours_page={page}" if page > 1 else ""
     if not rows:
         return "<h2>Retours privés</h2><p>Aucun retour.</p>"
     cartes = []
@@ -158,14 +159,14 @@ def panneau_admin(database: Path, page: int = 1) -> str:
               <p><time datetime="{escape(date, quote=True)}">{escape(date)}</time></p>
               <p class="message-retour">{contenu}</p>
               {contact}
-              <form method="post" action="/admin/retours/{identifiant}/traiter"><button type="submit">Marquer traité</button></form>
-              <form method="post" action="/admin/retours/{identifiant}/supprimer"><button type="submit">Supprimer ce retour</button></form>
+              <form method="post" action="/admin/retours/{identifiant}/traiter{suffixe_page}"><button type="submit">Marquer traité</button></form>
+              <form method="post" action="/admin/retours/{identifiant}/supprimer{suffixe_page}"><button type="submit">Supprimer ce retour</button></form>
             </article>"""
         )
     navigation = ""
     if pages > 1:
-        precedent = f"<a href='/admin?retours_page={page - 1}'>Page précédente</a>" if page > 1 else ""
-        suivant = f"<a href='/admin?retours_page={page + 1}'>Page suivante</a>" if page < pages else ""
+        precedent = f"<a href='/admin?onglet=retours&amp;retours_page={page - 1}'>Page précédente</a>" if page > 1 else ""
+        suivant = f"<a href='/admin?onglet=retours&amp;retours_page={page + 1}'>Page suivante</a>" if page < pages else ""
         navigation = f"<nav aria-label='Pages de retours'>{precedent} Page {page} sur {pages} {suivant}</nav>"
     return (
         "<h2>Retours privés</h2><p>Messages confidentiels, visibles uniquement ici.</p>"

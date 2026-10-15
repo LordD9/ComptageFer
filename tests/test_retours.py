@@ -78,7 +78,7 @@ def test_admin_retours_authentifie_et_actions_et_pas_de_fuite_publique(tmp_path)
     assert client.get("/admin").status_code == 200
     assert "privé" not in client.get("/admin").text
     assert client.post("/admin/login", data={"token": "secret"}).status_code == 200
-    panel = client.get("/admin")
+    panel = client.get("/admin?onglet=retours")
     assert "privé &lt;img" in panel.text
     assert "<img" not in panel.text
     assert "&lt;img src=x onerror=alert(1)&gt;" in panel.text
@@ -87,11 +87,11 @@ def test_admin_retours_authentifie_et_actions_et_pas_de_fuite_publique(tmp_path)
         "/admin/retours/1/traiter", headers={"Origin": "https://evil.example"}
     )
     assert refused.status_code == 403
-    assert "À traiter" in client.get("/admin").text
+    assert "À traiter" in client.get("/admin?onglet=retours").text
     assert client.post("/admin/retours/invalide/traiter").status_code == 404
     assert client.post("/admin/retours/99999999999999999999/traiter").status_code == 404
     assert client.post("/admin/retours/1/traiter", follow_redirects=False).status_code == 303
-    panel = client.get("/admin")
+    panel = client.get("/admin?onglet=retours")
     assert "Traité" in panel.text
     assert client.post("/admin/retours/1/supprimer", follow_redirects=False).status_code == 303
     assert client.post("/admin/retours/1/supprimer").status_code == 404
@@ -193,8 +193,8 @@ def test_admin_retours_page_par_pages_de_50_et_parametres_toleres(tmp_path):
     for numero in range(51):
         client.post("/retours", data={"message": f"retour-{numero}"})
 
-    premiere = client.get("/admin")
-    seconde = client.get("/admin?retours_page=2")
+    premiere = client.get("/admin?onglet=retours")
+    seconde = client.get("/admin?onglet=retours&retours_page=2")
     assert premiere.text.count('class="card retour-admin"') == 50
     assert seconde.text.count('class="card retour-admin"') == 1
     assert "retour-50" in premiere.text and "retour-0" not in premiere.text
@@ -202,7 +202,7 @@ def test_admin_retours_page_par_pages_de_50_et_parametres_toleres(tmp_path):
     assert "retours_page=2" in premiere.text
     assert "retours_page=1" in seconde.text
     for valeur in ("bad", "-1", "999", "999999999999999999999999999999999999999"):
-        page = client.get("/admin", params={"retours_page": valeur})
+        page = client.get("/admin", params={"onglet": "retours", "retours_page": valeur})
         assert page.status_code == 200
         assert page.text.count('class="card retour-admin"') == 50
 
@@ -218,10 +218,10 @@ def test_email_contact_est_visible_uniquement_dans_l_admin(tmp_path, caplog):
     assert email not in client.get("/admin").text
 
     assert client.post("/admin/login", data={"token": "secret"}).status_code == 200
-    assert email in client.get("/admin").text
+    assert email in client.get("/admin?onglet=retours").text
     with sqlite3.connect(database) as db:
         db.execute("UPDATE retour SET email = ?", ("<img src=x onerror=alert(1)>",))
-    panel = client.get("/admin").text
+    panel = client.get("/admin?onglet=retours").text
     assert "&lt;img src=x onerror=alert(1)&gt;" in panel
     assert "<img src=x onerror=alert(1)>" not in panel
     assert email not in caplog.text
@@ -233,13 +233,13 @@ def test_traiter_efface_definitivement_le_contact_email(tmp_path):
     email = "contact@example.org"
     assert retours_module.enregistrer(database, "message privé", email=email) is None
     client.post("/admin/login", data={"token": "secret"})
-    assert email in client.get("/admin").text
+    assert email in client.get("/admin?onglet=retours").text
 
     traite = client.post("/admin/retours/1/traiter", follow_redirects=False)
     assert traite.status_code == 303
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT email, traite FROM retour WHERE id = 1").fetchone() == (None, 1)
-    assert email not in client.get("/admin").text
+    assert email not in client.get("/admin?onglet=retours").text
 
 
 def test_email_contact_est_optionnel_normalise_et_valide_avant_admission(tmp_path):

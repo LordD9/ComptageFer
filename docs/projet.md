@@ -1350,6 +1350,20 @@ nouvelle configuration n'est nécessaire. Un outil de tickets externe serait
 disproportionné ici et imposerait un compte ou une visibilité différente de
 celle demandée.
 
+### Onglets d'administration et changelog — 15 octobre 2026
+
+L'administration sépare deux files de travail : **Comptages**, ouvert par défaut
+sur `/admin`, et **Retours**, sur `/admin?onglet=retours`. Les signalements de
+relevés et la publication restent avec les comptages. Les messages privés et
+leurs contacts ne sont rendus que dans l'onglet Retours, toujours après
+authentification. La pagination et les actions de traitement restent dans cet
+onglet. Les liens fonctionnent sans JavaScript.
+
+La page publique `/changelog`, accessible depuis la navigation commune,
+présente les améliorations et corrections par date, de la plus récente à la
+plus ancienne. Son contenu est maintenu avec le code de chaque livraison ;
+il ne reprend aucun message privé ni contact de la file des retours.
+
 ### Comptages passés, gares et schéma de rame
 
 `GET /api/trips/historical?from=&to=&at=` recherche l'offre théorique autour
