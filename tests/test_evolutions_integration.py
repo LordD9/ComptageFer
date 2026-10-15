@@ -68,7 +68,8 @@ def test_train_apres_minuit_conserve_la_journee_de_service_gtfs(tmp_path):
     assert response.status_code == 200, response.text
     row = client.get('/api/sessions').json()[0]
     assert row['trajet']['service_date'] == service_date
-    assert datetime.fromisoformat(row['observed_at']).date() != depart.date()
+    assert datetime.fromisoformat(row['observed_at']).astimezone(depart.tzinfo) == observed_at
+    assert observed_at.date() == depart.date() + timedelta(days=1)
 
 
 def test_recherche_historique_ne_propose_pas_train_hors_bornes(tmp_path, monkeypatch):
