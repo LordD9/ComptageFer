@@ -152,11 +152,44 @@ def open_stops(database: Path) -> sqlite3.Connection:
     return connection
 
 
-def import_stop_names(database: Path, stops_file: Path) -> int:
+def arrets_ferroviaires(folder: Path) -> set[str] | None:
+    """Les arrêts d'un GTFS desservis par un train, et leurs gares parentes.
+
+    Le GTFS transilien décrit tout le pôle : 818 aires, dont 310 sans aucun
+    train — les stations de métro (`Châtelet`, `Gambetta`…) et leurs accès.
+    On ne compte que des gares ferroviaires : un arrêt n'est gardé que si un
+    trip d'une ligne `route_type` 2 s'y arrête. Les cars de remplacement
+    (`route_type` 3) n'ouvrent pas d'arrêt à eux seuls.
+    """
+    if not all((folder / name).exists() for name in ("routes.txt", "trips.txt", "stop_times.txt")):
+        return None
+    with (folder / "routes.txt").open(newline="", encoding="utf-8-sig") as handle:
+        rail = {
+            row["route_id"]
+            for row in csv.DictReader(handle)
+            if (row.get("route_type") or "").strip() == "2"
+        }
+    with (folder / "trips.txt").open(newline="", encoding="utf-8-sig") as handle:
+        trips = {row["trip_id"] for row in csv.DictReader(handle) if row.get("route_id") in rail}
+    with (folder / "stop_times.txt").open(newline="", encoding="utf-8-sig") as handle:
+        servis = {row["stop_id"] for row in csv.DictReader(handle) if row.get("trip_id") in trips}
+    with (folder / "stops.txt").open(newline="", encoding="utf-8-sig") as handle:
+        parents = {
+            row["parent_station"]
+            for row in csv.DictReader(handle)
+            if row.get("stop_id") in servis and row.get("parent_station")
+        }
+    return servis | parents
+
+
+def import_stop_names(database: Path, stops_file: Path, garder: set[str] | None = None) -> int:
+    """Copie les arrêts du GTFS dans `stops.db`, ou seulement ceux de `garder`."""
     stored = 0
     with open_stops(database) as connection, stops_file.open(newline="") as handle:
         for row in csv.DictReader(handle):
             if not row.get("stop_name"):
+                continue
+            if garder is not None and row.get("stop_id") not in garder:
                 continue
             connection.execute(
                 """

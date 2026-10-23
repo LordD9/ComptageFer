@@ -318,7 +318,7 @@ def test_the_stop_window_keeps_both_families(tmp_path, gtfs):
     ids = [item["trip_id"] for item in trips]
     assert f"{TRANSILIEN}abc" in ids, f"le trip francilien ne sort pas de la fenêtre : {ids}"
     kinds = {item["trip_id"]: item["kind"] for item in trips}
-    assert kinds[f"{TRANSILIEN}abc"] == "Transilien", (
+    assert kinds[f"{TRANSILIEN}abc"] == "RER A", (
         f"le francilien est classé « {kinds[f'{TRANSILIEN}abc']} » dans la liste des trains"
     )
 

@@ -25,13 +25,38 @@ KINDS = {
 TRANSILIEN = "IDFM:TN:SNCF:"
 
 
-def kind_of(trip_id: str) -> str:
+RER = {"A", "B", "C", "D", "E"}
+
+
+def kind_of(trip_id: str, route: dict | None = None) -> str:
     if trip_id.startswith(TRANSILIEN):
-        return "Transilien"
+        return _kind_francilien(route)
     marker = ""
     if "_F:" in trip_id or "_R:" in trip_id:
         marker = trip_id.split(":", 2)[1]
     return KINDS.get(marker, marker or "Train")
+
+
+def _kind_francilien(route: dict | None) -> str:
+    """RER, Transilien, TER ou car, lu sur la ligne du trip.
+
+    Le `trip_id` francilien ne dit rien du service : `IDFM:TN:SNCF:<uuid>` vaut
+    pour un RER B comme pour un TER Normandie. La ligne le dit. Le GTFS
+    transilien porte 38 routes : A à E sont les RER, « TER » les TER qui
+    entrent en Île-de-France, `route_type` 3 les cars de remplacement, et les
+    autres lettres (H, J, K, L, N, P, R, U, V) les lignes Transilien. La lettre
+    reste dans le libellé : « RER B » se compte et se cherche, « RER » seul non.
+    """
+    if not route:
+        return "Transilien"
+    court = (route.get("route_short_name") or "").strip()
+    if (route.get("route_type") or "").strip() == "3":
+        return "Car"
+    if court == "TER":
+        return "TER"
+    if court in RER:
+        return f"RER {court}"
+    return f"Transilien {court}" if court else "Transilien"
 
 
 def etat_of(status: str | None, delay_seconds: int | None) -> str:
@@ -79,6 +104,7 @@ def import_timetable(
     times_file: Path,
     dates_file: Path,
     routes_file: Path | None = None,
+    calendar_file: Path | None = None,
 ) -> int:
     database.parent.mkdir(parents=True, exist_ok=True)
     stored = 0
@@ -137,11 +163,22 @@ def import_timetable(
             )
             """
         )
+        routes = {}
+        if routes_file is not None and Path(routes_file).exists():
+            routes = {
+                row["route_id"]: row
+                for row in csv.DictReader(_opened(routes_file))
+                if row.get("route_id")
+            }
         with trips_file.open(newline="") as handle:
             connection.executemany(
                 "INSERT OR REPLACE INTO circulation (trip_id, service_id, kind) VALUES (?, ?, ?)",
                 (
-                    (row["trip_id"], row["service_id"], kind_of(row["trip_id"]))
+                    (
+                        row["trip_id"],
+                        row["service_id"],
+                        kind_of(row["trip_id"], routes.get(row.get("route_id") or "")),
+                    )
                     for row in csv.DictReader(handle)
                 ),
             )
@@ -184,16 +221,63 @@ def import_timetable(
                     "INSERT OR REPLACE INTO passage (trip_id, stop_id, depart_sec) VALUES (?, ?, ?)",
                     passages,
                 )
-        with dates_file.open(newline="") as handle:
+        if calendar_file is not None and Path(calendar_file).exists():
             connection.executemany(
                 "INSERT OR REPLACE INTO service_day (service_id, day) VALUES (?, ?)",
                 (
-                    (row["service_id"], f"{row['date'][:4]}-{row['date'][4:6]}-{row['date'][6:8]}")
-                    for row in csv.DictReader(handle)
-                    if row.get("exception_type") in {None, "", "1"}
+                    (row["service_id"], day)
+                    for row in csv.DictReader(_opened(calendar_file))
+                    for day in _calendar_days(row)
                 ),
             )
+        retraits = []
+        with dates_file.open(newline="") as handle:
+            ajouts = []
+            for row in csv.DictReader(handle):
+                day = f"{row['date'][:4]}-{row['date'][4:6]}-{row['date'][6:8]}"
+                if row.get("exception_type") in {None, "", "1"}:
+                    ajouts.append((row["service_id"], day))
+                elif row.get("exception_type") == "2":
+                    retraits.append((row["service_id"], day))
+            connection.executemany(
+                "INSERT OR REPLACE INTO service_day (service_id, day) VALUES (?, ?)", ajouts
+            )
+        # Le retrait passe après `calendar.txt` : une exception 2 annule un jour
+        # que la semaine type avait ouvert (un férié). Le national n'en a pas,
+        # il ne publie que des ajouts ; le francilien, oui.
+        connection.executemany(
+            "DELETE FROM service_day WHERE service_id = ? AND day = ?", retraits
+        )
     return stored
+
+
+JOURS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _calendar_days(row: dict) -> list[str]:
+    """Les jours qu'ouvre une ligne de `calendar.txt`, au format `AAAA-MM-JJ`.
+
+    Le GTFS national ne publie que `calendar_dates.txt`. Le francilien fait
+    l'inverse : 41 471 trips sur 45 515 n'ont leurs jours que dans la semaine
+    type de `calendar.txt`. Sans elle, un RER ne circulait que les rares jours
+    ajoutés par exception — Gare du Nord → Châtelet donnait 59 trains un jour
+    et 0 les suivants.
+    """
+    try:
+        start = datetime.strptime(row["start_date"], "%Y%m%d").date()
+        end = datetime.strptime(row["end_date"], "%Y%m%d").date()
+    except (KeyError, ValueError):
+        return []
+    ouverts = {index for index, jour in enumerate(JOURS) if (row.get(jour) or "").strip() == "1"}
+    if not ouverts:
+        return []
+    days = []
+    day = start
+    while day <= end:
+        if day.weekday() in ouverts:
+            days.append(day.isoformat())
+        day += timedelta(days=1)
+    return days
 
 
 def listed_trips(

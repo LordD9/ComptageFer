@@ -39,18 +39,12 @@ def _selectionner_train_historique(page, site, tmp_path):
     page.click("#destination-list button:has-text('Valence')")
     page.wait_for_selector("#train-step:not(.hidden)")
 
-    page.locator("#historical-picker summary").click()
-    valeur_locale = page.evaluate(
-        """iso => {
-          const date = new Date(iso);
-          return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
-            .toISOString().slice(0, 16);
-        }""",
-        depart.isoformat(),
-    )
-    page.fill("#historical-at", valeur_locale)
+    assert page.locator("#historical-day").is_visible(), "l'autre jour doit se voir sans déplier"
+    page.fill("#historical-day", depart.date().isoformat())
     page.click("#historical-search")
-    page.wait_for_selector("#historical-trains button")
+    page.wait_for_selector("#historical-trains button.train")
+    assert page.locator("#now-trains").is_hidden(), "la liste du jour remplace celle de maintenant"
+    assert "toute la journée" in page.locator("#historical-trains").text_content()
     train = page.locator("#historical-trains button:has-text('TER')")
     assert train.count() == 1
     assert "temps réel inconnu" in train.text_content().lower()

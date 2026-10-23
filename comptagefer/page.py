@@ -18,7 +18,7 @@ PAGE = """<!doctype html>
   p.hint { color: #5c564c; margin: 0 0 1rem; }
   label { display: block; font-weight: 650; margin: 1rem 0 0.4rem; }
   input, button, select { font: inherit; }
-  input[type="search"], input[type="number"], input[type="text"], select {
+  input[type="search"], input[type="number"], input[type="text"], input[type="date"], select {
     width: 100%; box-sizing: border-box; min-height: 3.2rem; padding: 0.6rem 0.8rem;
     border: 1px solid #c9c1b4; border-radius: 0.8rem; background: #fff;
   }
@@ -33,6 +33,10 @@ PAGE = """<!doctype html>
   #rames-schema .rame-position { display: block; font-size: 0.78rem; line-height: 1.2; }
   @media (max-width: 360px) { #rames-schema { grid-template-columns: 1fr; } }
   .train strong { display: block; font-size: 1.5rem; }
+  .autre-jour { background: #fff; border: 1px solid #c9c1b4; border-radius: 0.8rem; padding: 0.7rem 0.8rem; margin-top: 0.6rem; }
+  .autre-jour label { font-weight: 600; }
+  .jour-row { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
+  .jour-row input { flex: 1; min-width: 0; }
   .chip { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; background: #fff; border-radius: 0.8rem; padding: 0.7rem 0.8rem; margin-top: 0.6rem; }
   .hidden { display: none; }
   .status { font-size: 0.95rem; color: #5c564c; }
@@ -87,17 +91,21 @@ PAGE = """<!doctype html>
   </section>
   <section id="train-step" class="hidden">
     <div class="chip"><span id="od-chip"></span><button class="ghost" id="change-od" type="button">Changer</button></div>
-    <p class="hint">Trains des deux heures avant et après&nbsp;: TER, car, Intercités, TGV, et les trains Transiliens (RER et ligne U). Le retard et la suppression viennent du flux, quand le réseau les publie&nbsp;: les trains franciliens n'ont pas de flux temps réel ici, ils sont donc toujours « programmé ».</p>
-    <div id="trains" class="choices"></div>
-    <details id="historical-picker">
-      <summary>Compter un train des 15 derniers jours</summary>
-      <p class="hint">La recherche consulte uniquement les horaires théoriques. Le temps réel passé est inconnu.</p>
-      <label for="historical-at">Date et heure de départ du train</label>
-      <input id="historical-at" type="datetime-local" required>
-      <button id="historical-search" type="button">Rechercher les trains théoriques</button>
+    <div id="historical-picker" class="autre-jour">
+      <label for="historical-day">Un train d'un autre jour&nbsp;?</label>
+      <div class="jour-row">
+        <input id="historical-day" type="date" required>
+        <button id="historical-search" type="button">Voir les trains du jour</button>
+      </div>
+      <p class="hint">Toute la journée choisie, dans les 15 derniers jours. Horaires théoriques&nbsp;: le temps réel passé est inconnu.</p>
       <p id="historical-error" class="bad" role="status"></p>
+      <button class="ghost hidden" id="historical-back" type="button">Revenir aux trains de maintenant</button>
       <div id="historical-trains" class="choices"></div>
-    </details>
+    </div>
+    <div id="now-trains">
+      <p class="hint" id="window-hint"><strong>Trains de maintenant</strong>&nbsp;: départs de <span id="window-start">2 h avant</span> à <span id="window-end">2 h après</span>, soit une fenêtre de 4&nbsp;heures autour de l'heure actuelle. TER, car, Intercités, TGV, RER et Transilien. Le retard et la suppression viennent du flux, quand le réseau les publie&nbsp;: les trains franciliens n'ont pas de flux temps réel ici, ils sont donc toujours « programmé ».</p>
+      <div id="trains" class="choices"></div>
+    </div>
     <button class="ghost" id="missing" type="button">Mon train n'est pas dans la liste</button>
     <p id="missing-error" class="bad" role="status"></p>
   </section>
@@ -265,9 +273,16 @@ async function loadTrains() {
   $("historical-error").textContent = "";
   state.isHistorical = false;
   state.observedAt = null;
+  $("historical-back").classList.add("hidden");
+  $("now-trains").classList.remove("hidden");
+  setHistoricalBounds();
   show("train-step");
   $("trains").textContent = "Recherche…";
-  const at = new Date().toISOString();
+  const now = new Date();
+  const heure = (date) => date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  $("window-start").textContent = heure(new Date(now.getTime() - 2 * 3600000));
+  $("window-end").textContent = heure(new Date(now.getTime() + 2 * 3600000));
+  const at = now.toISOString();
   const url = "/api/trips?from=" + encodeURIComponent(state.origin.stop_id)
     + "&to=" + encodeURIComponent(state.destination.stop_id)
     + "&at=" + encodeURIComponent(at);
@@ -285,7 +300,7 @@ async function loadTrains() {
   state.trains = await response.json();
   $("trains").replaceChildren();
   if (!state.trains.length) {
-    $("trains").textContent = "Aucun train sur cette origine-destination dans les 4 heures.";
+    $("trains").textContent = "Aucun train sur cette origine-destination entre " + $("window-start").textContent + " et " + $("window-end").textContent + " (fenêtre de 4 heures). Choisissez un autre jour ci-dessus, ou signalez le train manquant.";
     return;
   }
   for (const train of state.trains) {
@@ -299,54 +314,65 @@ async function loadTrains() {
     $("trains").appendChild(button);
   }
 }
-function localDateTimeValue(date) {
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+function localDateValue(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 function setHistoricalBounds() {
   const now = new Date();
-  $("historical-at").min = localDateTimeValue(new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000));
-  $("historical-at").max = localDateTimeValue(now);
+  const input = $("historical-day");
+  input.min = localDateValue(new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000));
+  input.max = localDateValue(now);
+  if (!input.value) input.value = localDateValue(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+}
+function showNowTrains() {
+  historicalRequest += 1;
+  $("historical-trains").replaceChildren();
+  $("historical-error").textContent = "";
+  $("historical-back").classList.add("hidden");
+  $("now-trains").classList.remove("hidden");
 }
 async function loadHistoricalTrains() {
   const request = ++historicalRequest;
   state.isHistorical = false;
   state.observedAt = null;
-  const value = $("historical-at").value;
-  const date = new Date(value);
-  if (!value || Number.isNaN(date.getTime())) {
-    $("historical-error").textContent = "Indiquez une date et une heure.";
+  const value = $("historical-day").value;
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value)) {
+    $("historical-error").textContent = "Indiquez un jour.";
     return;
   }
-  state.isHistorical = true;
-  state.observedAt = date.toISOString();
   $("historical-error").textContent = "";
+  $("now-trains").classList.add("hidden");
+  $("historical-back").classList.remove("hidden");
   const list = $("historical-trains");
-  list.textContent = "Recherche dans les horaires théoriques…";
+  const jour = new Date(value + "T12:00:00").toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+  list.textContent = "Recherche des trains du " + jour + "…";
   const url = "/api/trips/historical?from=" + encodeURIComponent(state.origin.stop_id)
     + "&to=" + encodeURIComponent(state.destination.stop_id)
-    + "&at=" + encodeURIComponent(state.observedAt);
+    + "&jour=" + encodeURIComponent(value);
   let response;
   try {
     response = await fetch(url);
   } catch (error) {
     if (request !== historicalRequest) return;
-    list.textContent = "La recherche historique demande le réseau.";
+    list.textContent = "La recherche d'un autre jour demande le réseau.";
     return;
   }
   if (!response.ok) {
     if (request !== historicalRequest) return;
     list.textContent = response.status === 422
-      ? "La date doit se situer dans les 15 derniers jours."
+      ? "Le jour doit se situer dans les 15 derniers jours."
       : "Les horaires théoriques sont indisponibles.";
     return;
   }
   const trains = await response.json();
   if (request !== historicalRequest) return;
   list.replaceChildren();
-  if (!trains.length) {
-    list.textContent = "Aucun train théorique sur cette origine-destination autour de l'heure choisie.";
-    return;
-  }
+  const titre = document.createElement("p");
+  titre.className = "hint";
+  titre.textContent = trains.length
+    ? trains.length + " train" + (trains.length > 1 ? "s" : "") + " le " + jour + ", toute la journée."
+    : "Aucun train théorique sur cette origine-destination le " + jour + ".";
+  list.appendChild(titre);
   for (const train of trains) {
     const button = document.createElement("button");
     button.type = "button";
@@ -360,6 +386,7 @@ async function loadHistoricalTrains() {
 }
 setHistoricalBounds();
 $("historical-search").onclick = loadHistoricalTrains;
+$("historical-back").onclick = showNowTrains;
 $("origin-q").addEventListener("input", () => search($("origin-q").value, $("origin-list")));
 $("destination-q").addEventListener("input", () => search($("destination-q").value, $("destination-list")));
 $("change-origin").onclick = () => show("origin-step");
