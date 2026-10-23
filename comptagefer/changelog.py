@@ -7,6 +7,27 @@ from comptagefer.affichage import chrome
 
 CHANGEMENTS = (
     (
+        "2026-10-23",
+        "23 octobre 2026",
+        (
+            (
+                "Améliorations",
+                (
+                    "Pour compter un train d’un autre jour, on choisit le jour et la liste montre tous les trains de la journée.",
+                    "La liste des trains de maintenant indique clairement sa fenêtre de 4 heures.",
+                    "Les trains franciliens portent leur ligne : RER A à E, Transilien H à V, TER ou car de remplacement.",
+                ),
+            ),
+            (
+                "Corrections",
+                (
+                    "Les RER et Transiliens apparaissent tous les jours où ils circulent, et plus seulement certains jours.",
+                    "La recherche de gares ne propose plus les stations de métro, seulement les gares ferroviaires.",
+                ),
+            ),
+        ),
+    ),
+    (
         "2026-10-15",
         "15 octobre 2026",
         (

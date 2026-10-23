@@ -87,10 +87,22 @@ STOPS_URL = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_
 # permet de les importer dans la même base sans qu'un trip_id national soit
 # écrasé par un francilien, ou l'inverse.
 TRANSILIEN_URL = "https://eu.ftp.opendatasoft.com/sncf/gtfs/transilien-gtfs.zip"
+# Version du contenu de `timetable.db`. 2 : le francilien lit `calendar.txt`,
+# nomme ses trains par ligne (« RER B », « Transilien L ») et ne garde que les
+# gares ferroviaires dans `stops.db`. Une base plus
+# ancienne réimporte le jeu francilien au démarrage, une seule fois.
+TIMETABLE_VERSION = 2
 
 # Les fichiers lus dans chaque archive. Un GTFS n'est pas obligé d'avoir le
 # même contenu que son voisin ; on prend ce qui est là plutôt que d'exiger.
-GTFS_FILES = ("stops.txt", "trips.txt", "stop_times.txt", "calendar_dates.txt", "routes.txt")
+GTFS_FILES = (
+    "stops.txt",
+    "trips.txt",
+    "stop_times.txt",
+    "calendar_dates.txt",
+    "calendar.txt",
+    "routes.txt",
+)
 
 # Une session d'administration tient une heure de travail, pas plus. Le
 # dictionnaire qui les porte est en mémoire : sans expiration il ne redescend
@@ -144,6 +156,7 @@ SCHEMA_SAISIE = (
 )
 
 HISTORIQUE_MAX = timedelta(days=15)
+PARIS_TZ = ZoneInfo("Europe/Paris")
 
 # Ce que « composition » veut dire, et pourquoi c'est une liste fermée.
 #
@@ -409,12 +422,27 @@ def create_app(
 
     @app.get("/api/trips/historical")
     def historical_trips(
-        from_: str = Query(alias="from"), to: str = Query(), at: str = Query()
+        from_: str = Query(alias="from"),
+        to: str = Query(),
+        at: str | None = Query(None),
+        jour: str | None = Query(None, max_length=10),
     ) -> list[dict]:
-        observed_at = _timestamp_aware(at)
-        if observed_at is None:
-            raise HTTPException(status_code=422, detail="`at` doit être une date ISO avec fuseau")
-        _verifier_borne_historique(observed_at)
+        """Les trains théoriques d'un moment passé, ou de toute une journée.
+
+        Avec `jour` (AAAA-MM-JJ, heure de Paris), la liste couvre la journée
+        entière : on choisit son train dans la liste au lieu de deviner une
+        heure. `at` reste accepté pour les clients en cache, avec sa fenêtre de
+        quatre heures.
+        """
+        if jour is not None:
+            debut, fin = _bornes_jour(jour)
+            moment, fenetre = debut + (fin - debut) / 2, (fin - debut) / 2
+        else:
+            observed_at = _timestamp_aware(at)
+            if observed_at is None:
+                raise HTTPException(status_code=422, detail="`at` doit être une date ISO avec fuseau")
+            _verifier_borne_historique(observed_at)
+            moment, fenetre = observed_at, timedelta(hours=2)
         if not timetable.exists():
             raise HTTPException(status_code=503, detail="horaires théoriques indisponibles")
         trains = listed_trips(
@@ -422,7 +450,9 @@ def create_app(
             data_dir / "rt.db",
             from_,
             to,
-            observed_at,
+            moment,
+            window=fenetre,
+            neighbor_window=max(fenetre + timedelta(hours=6), timedelta(hours=12)),
             stops_database=stops_database,
             historical=True,
         )
@@ -1660,7 +1690,7 @@ def _extract(payload: bytes, folder: Path, names: tuple[str, ...]) -> None:
 
 
 def ensure_referential(data_dir: Path) -> None:
-    from comptagefer.offer import import_stop_names, open_stops
+    from comptagefer.offer import arrets_ferroviaires, import_stop_names, open_stops
     from comptagefer.timetable import import_timetable
 
     stops = data_dir / "stops.db"
@@ -1704,21 +1734,34 @@ def ensure_referential(data_dir: Path) -> None:
                 folder / "stop_times.txt",
                 folder / "calendar_dates.txt",
                 folder / "routes.txt",
+                folder / "calendar.txt",
             )
         if need_transilien:
             _extract(_fetch(TRANSILIEN_URL, timeout=300), transilien_folder, GTFS_FILES)
             # Les gares franciliennes aussi : sans elles, l'usager ne peut ni
             # choisir une gare parisienne, ni faire de géolocalisation. Elles ont
-            # leurs propres `stop_id`, donc rien n'écrase le national.
-            import_stop_names(stops, transilien_folder / "stops.txt")
+            # leurs propres `stop_id`, donc rien n'écrase le national. Seules
+            # les gares ferroviaires entrent : les stations de métro du pôle ne
+            # se comptent pas. Les arrêts `IDFM:` d'un import précédent sont
+            # effacés d'abord, sinon ces stations resteraient dans la recherche.
+            with open_stops(stops) as connection:
+                connection.execute("DELETE FROM stop WHERE stop_id LIKE 'IDFM:%'")
+            import_stop_names(
+                stops,
+                transilien_folder / "stops.txt",
+                garder=arrets_ferroviaires(transilien_folder),
+            )
             import_timetable(
                 importing,
                 transilien_folder / "trips.txt",
                 transilien_folder / "stop_times.txt",
                 transilien_folder / "calendar_dates.txt",
                 transilien_folder / "routes.txt",
+                transilien_folder / "calendar.txt",
             )
         if need_times or need_transilien:
+            with sqlite3.connect(importing) as connection:
+                connection.execute(f"PRAGMA user_version = {TIMETABLE_VERSION}")
             # Le remplacement n'a lieu qu'une fois, les deux jeux importés. Une
             # interruption entre les deux laisserait une base à moitié
             # francilienne, qu'aucun test ne détecterait ensuite : `timetable.db`
@@ -1736,6 +1779,11 @@ def _timetable_has_transilien(timetable: Path) -> bool:
     change avec la refonte d'une ligne, un préfixe d'exploitant non. Et on
     regarde `circulation`, pas `ligne` : les RER sont 25 routes sur 38, donc
     compter les routes donnerait un faux positif dès qu'une seule est présente.
+
+    Une base d'avant `TIMETABLE_VERSION` a ses trips franciliens mais sans
+    `calendar.txt` ni la ligne : ses RER n'avaient presque aucun jour de
+    circulation, et tous s'appelaient « Transilien ». On réimporte alors le jeu
+    francilien, une seule fois — la version est écrite à la fin de l'import.
     """
     if not timetable.exists():
         return False
@@ -1744,9 +1792,10 @@ def _timetable_has_transilien(timetable: Path) -> bool:
             row = connection.execute(
                 "SELECT 1 FROM circulation WHERE trip_id LIKE 'IDFM:TN:SNCF:%' LIMIT 1"
             ).fetchone()
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
     except sqlite3.Error:
         return False
-    return row is not None
+    return row is not None and version >= TIMETABLE_VERSION
 
 
 def _timetable_has_lignes(timetable: Path) -> bool:
@@ -2155,6 +2204,27 @@ def _timestamp_aware(value: object, *, assume_utc: bool = False) -> datetime | N
 
 def _maintenant_utc() -> datetime:
     return datetime.now(UTC)
+
+
+def _bornes_jour(jour: str) -> tuple[datetime, datetime]:
+    """Minuit à minuit, heure de Paris, pour une journée des 15 derniers jours.
+
+    La journée est bornée à maintenant : la partie à venir d'aujourd'hui n'a
+    pas encore roulé, on ne la compte pas. Un jour hors borne est une 422.
+    """
+    try:
+        date = datetime.strptime(jour, "%Y-%m-%d").date()
+    except ValueError as ex:
+        raise HTTPException(status_code=422, detail="`jour` doit être une date AAAA-MM-JJ") from ex
+    debut = datetime(date.year, date.month, date.day, tzinfo=PARIS_TZ)
+    fin = datetime.combine(date + timedelta(days=1), datetime.min.time(), tzinfo=PARIS_TZ)
+    maintenant = _maintenant_utc()
+    if fin <= maintenant - HISTORIQUE_MAX or debut > maintenant:
+        raise HTTPException(
+            status_code=422,
+            detail="la date historique doit être comprise dans les 15 derniers jours",
+        )
+    return debut, fin
 
 
 def _verifier_borne_historique(observed_at: datetime) -> None:
