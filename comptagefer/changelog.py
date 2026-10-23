@@ -16,6 +16,7 @@ CHANGEMENTS = (
                     "Pour compter un train d’un autre jour, on choisit le jour et la liste montre tous les trains de la journée.",
                     "La liste des trains de maintenant indique clairement sa fenêtre de 4 heures.",
                     "Les trains franciliens portent leur ligne : RER A à E, Transilien H à V, TER ou car de remplacement.",
+                    "Les RER et Transiliens affichent leur retard ou leur suppression, lus dans le flux temps réel SNCF.",
                 ),
             ),
             (

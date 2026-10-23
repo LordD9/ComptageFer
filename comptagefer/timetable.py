@@ -141,6 +141,13 @@ def import_timetable(
             """
         )
         connection.execute("CREATE INDEX IF NOT EXISTS trip_ligne_ligne ON trip_ligne(route_id)")
+        # Le numéro commercial du train (`trip_short_name`). C'est la seule clé
+        # que le SIRI SNCF partage avec le GTFS francilien : sans elle, aucun
+        # retard de RER ne se rattache à un trip.
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS numero_train (trip_id TEXT PRIMARY KEY, numero TEXT NOT NULL)"
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS numero_train_numero ON numero_train(numero)")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS passage (
@@ -170,6 +177,14 @@ def import_timetable(
                 for row in csv.DictReader(_opened(routes_file))
                 if row.get("route_id")
             }
+        connection.executemany(
+            "INSERT OR REPLACE INTO numero_train (trip_id, numero) VALUES (?, ?)",
+            (
+                (row["trip_id"], row["trip_short_name"].strip())
+                for row in csv.DictReader(_opened(trips_file))
+                if row.get("trip_id") and (row.get("trip_short_name") or "").strip()
+            ),
+        )
         with trips_file.open(newline="") as handle:
             connection.executemany(
                 "INSERT OR REPLACE INTO circulation (trip_id, service_id, kind) VALUES (?, ?, ?)",
