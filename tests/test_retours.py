@@ -105,8 +105,13 @@ def test_routes_retours_refusent_session_absente_expiree_et_token_vide(tmp_path,
     assert client.post("/admin/retours/1/traiter").status_code == 401
     client.post("/admin/login", data={"token": "secret"})
     cookie = client.cookies["comptagefer_admin"]
+    # Vider d'abord : depuis httpx2 2.16, `set` ajoute un second cookie (domaine
+    # vide) à côté de celui posé par le serveur au lieu de le remplacer, et la
+    # requête envoie encore la session valide.
+    client.cookies.clear()
     client.cookies.set("comptagefer_admin", "invalide")
     assert client.post("/admin/retours/1/traiter").status_code == 401
+    client.cookies.clear()
     client.cookies.set("comptagefer_admin", cookie)
     import time
 
