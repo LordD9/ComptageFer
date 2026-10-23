@@ -103,7 +103,7 @@ PAGE = """<!doctype html>
       <div id="historical-trains" class="choices"></div>
     </div>
     <div id="now-trains">
-      <p class="hint" id="window-hint"><strong>Trains de maintenant</strong>&nbsp;: départs de <span id="window-start">2 h avant</span> à <span id="window-end">2 h après</span>, soit une fenêtre de 4&nbsp;heures autour de l'heure actuelle. TER, car, Intercités, TGV, RER et Transilien. Le retard et la suppression viennent du flux, quand le réseau les publie&nbsp;: les trains franciliens n'ont pas de flux temps réel ici, ils sont donc toujours « programmé ».</p>
+      <p class="hint" id="window-hint"><strong>Trains de maintenant</strong>&nbsp;: départs de <span id="window-start">2 h avant</span> à <span id="window-end">2 h après</span>, soit une fenêtre de 4&nbsp;heures autour de l'heure actuelle. TER, car, Intercités, TGV, RER et Transilien. Le retard et la suppression viennent du flux, quand le réseau les publie, trains franciliens compris&nbsp;; sinon le train reste « programmé ».</p>
       <div id="trains" class="choices"></div>
     </div>
     <button class="ghost" id="missing" type="button">Mon train n'est pas dans la liste</button>

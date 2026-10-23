@@ -60,6 +60,7 @@ from comptagefer.rt import (
     cache_status,
     poll_once,
 )
+from comptagefer.rt_francilien import store_siri_francilien
 from comptagefer.securite import https_actif, origine_autorisee
 from comptagefer.timetable import (
     find_line,
@@ -89,9 +90,11 @@ STOPS_URL = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_
 TRANSILIEN_URL = "https://eu.ftp.opendatasoft.com/sncf/gtfs/transilien-gtfs.zip"
 # Version du contenu de `timetable.db`. 2 : le francilien lit `calendar.txt`,
 # nomme ses trains par ligne (« RER B », « Transilien L ») et ne garde que les
-# gares ferroviaires dans `stops.db`. Une base plus
+# gares ferroviaires dans `stops.db`. 3 : numéros de train et table UIC pour
+# le temps réel francilien (SIRI SNCF). Une base plus
 # ancienne réimporte le jeu francilien au démarrage, une seule fois.
-TIMETABLE_VERSION = 2
+TIMETABLE_VERSION = 3
+SIRI_FRANCILIEN_TOURS = 3
 
 # Les fichiers lus dans chaque archive. Un GTFS n'est pas obligé d'avoir le
 # même contenu que son voisin ; on prend ce qui est là plutôt que d'exiger.
@@ -1664,7 +1667,23 @@ def _poll_forever(database: Path) -> None:
     # SIRI ne sert qu'une fois, en filet d'un flux GTFS-RT vide. Sans cet état,
     # la boucle le retéléchargeait toutes les 120 secondes.
     siri_tente = False
+    tour = 0
     while True:
+        # Les RER et Transiliens : le SIRI SNCF est la seule source qui les
+        # porte. Le fichier fait ~23 Mo, non compressé : lu toutes les
+        # 2 minutes, c'est 16 Go par jour. Un tour sur trois (6 minutes) suffit
+        # à un retard de RER et divise le trafic par trois.
+        if tour % SIRI_FRANCILIEN_TOURS == 0:
+            try:
+                store_siri_francilien(
+                    database,
+                    database.parent / "timetable.db",
+                    _fetch(SIRI_URL, timeout=120),
+                    datetime.now(UTC),
+                )
+            except Exception:
+                log.exception("temps réel francilien échoué")
+        tour += 1
         try:
             siri_tente = poll_once(
                 database,
@@ -1691,6 +1710,7 @@ def _extract(payload: bytes, folder: Path, names: tuple[str, ...]) -> None:
 
 def ensure_referential(data_dir: Path) -> None:
     from comptagefer.offer import arrets_ferroviaires, import_stop_names, open_stops
+    from comptagefer.rt_francilien import TRANSCO_URL, import_transcodification
     from comptagefer.timetable import import_timetable
 
     stops = data_dir / "stops.db"
@@ -1759,6 +1779,13 @@ def ensure_referential(data_dir: Path) -> None:
                 transilien_folder / "routes.txt",
                 transilien_folder / "calendar.txt",
             )
+            # La table UIC → arrêt sert au seul temps réel francilien. Son
+            # absence ne bloque pas l'import des horaires : les RER restent
+            # alors « programmé », comme avant.
+            try:
+                import_transcodification(importing, _fetch(TRANSCO_URL, timeout=120))
+            except Exception:
+                logging.getLogger("comptagefer.rt").exception("transcodification IDFM indisponible")
         if need_times or need_transilien:
             with sqlite3.connect(importing) as connection:
                 connection.execute(f"PRAGMA user_version = {TIMETABLE_VERSION}")
@@ -4483,11 +4510,12 @@ faites rien de plus, et la saisie ne change pas.</p>
       est celui connu à cet instant&nbsp;: « programmé » veut dire
       « l'horaire existe, le retard n'est pas encore connu&nbsp;», pas
       « à l'heure&nbsp;».
-      <br><strong>Les trains franciliens n'ont pas de flux temps réel ici.</strong>
-      Les RER publient leur état par SIRI sur la plateforme d'Île-de-France
-      Mobilités, qui n'est pas au format GTFS-RT. Un RER affiché
-      « programmé&nbsp;» l'est donc <em>toujours</em>, même en retard&nbsp;: c'est
-      une absence de donnée, pas une absence de retard.</li>
+      <br><strong>Les RER et Transiliens</strong> ont leur état dans le flux SIRI
+      Lite de la SNCF, lu toutes les 6 minutes. Il se rattache aux horaires par
+      le numéro du train et le code UIC de la gare. Un train que le flux ne
+      porte pas, ou qu'il ne permet pas d'identifier sans ambiguïté, reste
+      « programmé&nbsp;» : c'est une absence de donnée, pas une absence de
+      retard.</li>
   <li><strong>Les comptages</strong> viennent des gens. C'est la seule source qui
       ne soit ni un horaire théorique ni un flux automatique.</li>
   <li><strong>Le tracé de la carte</strong> suit la voie ferrée réelle, à partir

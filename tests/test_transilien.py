@@ -196,9 +196,10 @@ def test_the_second_call_does_not_fetch_anything(tmp_path, gtfs):
     chaque démarrage de conteneur, et un airain de 130 Mo sur la carte SD.
     """
     ensure_referential(tmp_path)
-    assert len(gtfs) == 2, f"un premier import doit demander les deux archives, pas {gtfs}"
+    # Les deux archives, plus la table UIC du temps réel francilien.
+    assert len(gtfs) == 3, f"un premier import doit demander les deux archives et la table UIC, pas {gtfs}"
     ensure_referential(tmp_path)
-    assert len(gtfs) == 2, f"le deuxième appel a retéléchargé : {gtfs}"
+    assert len(gtfs) == 3, f"le deuxième appel a retéléchargé : {gtfs}"
 
 
 def test_the_francilien_stops_reach_the_stop_database(tmp_path, gtfs):
@@ -275,7 +276,9 @@ def test_the_train_page_says_the_francilien_has_no_realtime(tmp_path):
     assert "programmé" in accueil, "la page ne dit plus ce qu'est un état « programmé »"
 
     methode = client.get("/methode").text
-    assert "pas de flux temps réel" in methode, "/methode ne dit pas que le francilien n'a pas de temps réel"
+    assert "SIRI" in methode and "numéro du train" in methode, (
+        "/methode ne dit pas d'où vient le temps réel francilien"
+    )
     assert "Transilien" in methode, "/methode ne dit pas d'où viennent les horaires franciliens"
 
 
