@@ -1364,7 +1364,7 @@ présente les améliorations et corrections par date, de la plus récente à la
 plus ancienne. Son contenu est maintenu avec le code de chaque livraison ;
 il ne reprend aucun message privé ni contact de la file des retours.
 
-### Matériel francilien, et une voiture comptée seule
+### Matériel francilien, et le comptage partiel par voiture
 
 La liste fermée ajoute le matériel d'Île-de-France qui manquait : MI 09 et
 MI 2N Altéo (RER A, 5 voitures), MI 79 / MI 84 (RER B, 4 voitures), Z 8800
@@ -1372,21 +1372,26 @@ MI 2N Altéo (RER A, 5 voitures), MI 79 / MI 84 (RER B, 4 voitures), Z 8800
 Dualis (T11, T13, 4 caisses). Les nombres viennent des fiches techniques
 (Wikipédia, Trains d'Europe). Le MI 20 attendra sa mise en service.
 
-Sans matériel reconnu, deux renseignements s'ajoutent à la composition :
+**Le comptage partiel passe par le comptage voiture par voiture.**
 
-- `nb_voitures` : le nombre de voitures d'une rame, de 1 à 20. Refusé avec un
-  matériel de la liste, qui donne déjà ce nombre et pourrait être contredit.
+- `nb_voitures` : sans matériel reconnu, le nombre de voitures d'une rame, de
+  1 à 20. Il donne le schéma du comptage par voiture, comme une formation.
+  Refusé avec un matériel de la liste, qui donne déjà ce nombre.
+- Sur le schéma, « Je ne compte pas cette voiture » passe une voiture. Elle
+  n'entre pas dans `voitures` : une voiture passée n'est pas une voiture vide,
+  qui porte zéro. Une rame comptée peut donc avoir moins de N positions.
 - `representativite` : `representative`, `moins` ou `plus`. Elle dit ce que
-  vaut une **voiture comptée seule** face aux autres. Elle exige
-  `perimetre: "voiture"`, sans détail voiture par voiture, et un nombre de
-  voitures connu.
+  valent les voitures comptées face aux autres. Exigée dès qu'une rame
+  comptée a une voiture passée, refusée sinon : sans voiture passée, il n'y a
+  pas d'« autres voitures ». L'écran la demande à la dernière étape,
+  seulement si le comptage est partiel.
 
-La règle « jamais une voiture isolée » de la phase 10 s'assouplit donc : une
-voiture seule se compte, à condition de dire de combien de voitures elle fait
-partie et si elle est représentative. Sans ces deux mots, l'effectif d'une
-voiture ne se rapporte à rien, et l'écran refuse de passer au comptage. Les
-deux colonnes sortent dans le CSV, à la fin, et dans la phrase du matériel sur
-`/releve`.
+La règle « toutes les voitures d'une rame comptée » de la phase 10 tombe
+donc, remplacée par cette obligation de dire la représentativité. Le serpent
+de charge garde un effectif initial complet : on ne peut pas y passer de
+voiture. Les deux colonnes sortent dans le CSV, à la fin, et dans la phrase du
+matériel sur `/releve`. Elles ne sont pas modifiables après coup : elles
+portent le schéma de la répartition enregistrée.
 
 ### Comptages passés, gares et schéma de rame
 

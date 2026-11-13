@@ -127,17 +127,7 @@ PAGE = """<!doctype html>
     <div id="echelle-zone" class="hidden">
       <label for="nb-voitures">Voitures par rame (facultatif)</label>
       <input id="nb-voitures" type="number" inputmode="numeric" min="1" max="{VOITURES_MAX}" step="1" placeholder="ex. 5">
-      <fieldset id="portee">
-        <legend>Ce que vous comptez</legend>
-        <label><input type="radio" name="portee" value="rame" checked> Toutes les voitures des rames choisies</label>
-        <label><input type="radio" name="portee" value="voiture"> Une seule voiture</label>
-      </fieldset>
-      <fieldset id="representativite-zone" class="hidden">
-        <legend>Votre voiture, par rapport aux autres</legend>
-        <label><input type="radio" name="representativite" value="representative"> Représentative</label>
-        <label><input type="radio" name="representativite" value="moins"> Moins fréquentée</label>
-        <label><input type="radio" name="representativite" value="plus"> Plus fréquentée</label>
-      </fieldset>
+      <p class="hint">Avec ce nombre, le comptage se fait voiture par voiture, et vous pouvez passer les voitures que vous ne comptez pas.</p>
     </div>
     <p id="rames-error" class="bad" role="status" hidden></p>
     <p><button id="materiel-next" type="button">Passer au comptage</button></p>
@@ -164,6 +154,7 @@ PAGE = """<!doctype html>
     <div id="voitures-schema" class="choices hidden"></div>
     <p><button class="ghost hidden" id="voiture-prev" type="button">Précédent</button>
        <button class="hidden" id="voiture-next" type="button">Suivant</button></p>
+    <p><button class="ghost hidden" id="voiture-skip" type="button">Je ne compte pas cette voiture</button></p>
     <div class="counter" id="counter">
       <div class="counter-row"><button type="button" id="plus1">+1</button><button type="button" id="plus5">+5</button>
       <button type="button" id="plus10">+10</button><button type="button" id="plus20">+20</button></div>
@@ -190,6 +181,12 @@ PAGE = """<!doctype html>
   <section id="form-step" class="hidden">
     <div class="chip"><span id="train-chip"></span><button class="ghost" id="change-train" type="button">Changer</button></div>
     <p class="hint">Ce compte vaut pour l'interstation entre <span id="od-rappel"></span>. En gare, sans monter dans le train&nbsp;: comptez à partir de la dernière gare desservie avant le terminus ou de la première gare desservie après l'origine du trajet compté, et non pas celles de la ligne.</p>
+    <fieldset id="representativite-zone" class="hidden">
+      <legend>Des voitures n'ont pas été comptées. Les voitures comptées, par rapport aux autres&nbsp;:</legend>
+      <label><input type="radio" name="representativite" value="representative"> Représentatives</label>
+      <label><input type="radio" name="representativite" value="moins"> Moins fréquentées</label>
+      <label><input type="radio" name="representativite" value="plus"> Plus fréquentées</label>
+    </fieldset>
     <label for="reliability">Fiabilité du compte, de 0 à 100</label>
     <input id="reliability" type="number" inputmode="numeric" min="0" max="100" step="1" value="80">
     <details>
@@ -216,7 +213,7 @@ PAGE = """<!doctype html>
 </main>
 <script src="/offline.js"></script>
 <script>
-const state = { origin: null, destination: null, trip: null, trains: [], passengers: 0, material: null, composition: "", selectedRames: [], voitures: [], rames: [], isHistorical: false, observedAt: null, pad: { kind: "unique", rame: null, position: null } };
+const state = { origin: null, destination: null, trip: null, trains: [], passengers: 0, material: null, composition: "", selectedRames: [], voitures: [], rames: [], passees: new Set(), isHistorical: false, observedAt: null, pad: { kind: "unique", rame: null, position: null } };
 const $ = (id) => document.getElementById(id);
 // Les étapes se listent ici à la main depuis l'ajout du serpent : mode-step
 // et snake-step manquaient, donc choisir un train masquait toutes les
@@ -440,28 +437,38 @@ function chooseMaterial(item) {
   $("composition-choices").classList.remove("hidden");
   renderRames();
 }
-// Sans matériel reconnu, l'usager peut dire combien de voitures a sa rame, et
-// compter une seule voiture en disant ce qu'elle vaut face aux autres. Avec un
-// matériel, la formation donne déjà le nombre : le bloc se tait.
+// Sans matériel reconnu, l'usager peut dire combien de voitures a sa rame :
+// c'est le schéma du comptage voiture par voiture, comme le donnerait une
+// formation. Avec un matériel, la formation donne déjà le nombre : le bloc se tait.
 function renderEchelle() {
   $("echelle-zone").classList.toggle("hidden", !state.composition || !!state.material);
-  $("representativite-zone").classList.toggle("hidden", !uneSeuleVoiture());
-}
-function uneSeuleVoiture() {
-  return !!state.composition && !state.material
-    && document.querySelector('input[name="portee"]:checked').value === "voiture";
 }
 function nbVoitures() {
   if (state.material || !state.composition) return null;
   const v = $("nb-voitures").value.trim();
   return v === "" ? null : Number(v);
 }
+// Le nombre de voitures du schéma, ou null s'il n'y a pas de schéma.
+function taille() {
+  if (state.material) return state.material.voitures;
+  const nb = nbVoitures();
+  return Number.isInteger(nb) && nb >= 1 && nb <= {VOITURES_MAX} ? nb : null;
+}
+// Un comptage partiel : une rame comptée dont au moins une voiture a été
+// passée. Une rame dont aucune voiture n'est comptée n'est pas comptée du tout.
+function partiel() {
+  if (state.pad.kind !== "car") return false;
+  const n = taille();
+  return state.selectedRames.some(rame => {
+    const vues = state.voitures.filter(v => v.rame === rame).length;
+    return vues > 0 && vues < n;
+  });
+}
 function representativite() {
-  if (!uneSeuleVoiture()) return null;
+  if (!partiel()) return null;
   const choix = document.querySelector('input[name="representativite"]:checked');
   return choix ? choix.value : null;
 }
-for (const radio of document.querySelectorAll('input[name="portee"]')) radio.onchange = renderEchelle;
 function renderRames() {
   renderEchelle();
   const size = { US: 1, UM2: 2, UM3: 3 }[state.composition] || 0;
@@ -536,7 +543,7 @@ function startUnique() {
   state.pad = { kind: "unique", rame: null, position: null };
   state.passengers = 0; state.voitures = []; state.rames = [];
   $("count-display").textContent = "0"; $("passengers").value = "0";
-  $("pad-label").textContent = uneSeuleVoiture() ? "Voyageurs dans votre voiture" : "Voyageurs dans le train";
+  $("pad-label").textContent = "Voyageurs dans le train";
   $("count-modes").classList.remove("hidden"); $("voitures-schema").classList.add("hidden");
   $("voiture-prev").classList.add("hidden"); $("voiture-next").classList.add("hidden");
   $("count-next").classList.remove("hidden");
@@ -563,16 +570,11 @@ function goCounting(directCars = false) {
     $("rames-error").hidden = false;
     return;
   }
-  if (uneSeuleVoiture() && (nb === null || !representativite())) {
-    $("rames-error").textContent = "Pour une seule voiture, indiquez le nombre de voitures de la rame et si la vôtre est représentative.";
-    $("rames-error").hidden = false;
-    return;
-  }
   $("od-rappel").textContent = state.origin.name + " et " + state.destination.name;
   $("count-modes").classList.remove("hidden");
   $("mode-rame").classList.add("hidden");
   $("counter").classList.remove("hidden");
-  if (state.material) {
+  if (taille()) {
     if (directCars) startCars(false);
     else {
       state.snakeFromCars = false;
@@ -591,8 +593,8 @@ function goCounting(directCars = false) {
     state.pad = { kind: "unique", rame: null, position: null };
     state.passengers = 0; state.voitures = []; state.rames = [];
     $("count-display").textContent = "0"; $("passengers").value = "0";
-    $("pad-label").textContent = uneSeuleVoiture() ? "Voyageurs dans votre voiture" : "Voyageurs dans le train";
-    const multi = state.composition.startsWith("UM") && state.selectedRames.length > 1 && !uneSeuleVoiture();
+    $("pad-label").textContent = "Voyageurs dans le train";
+    const multi = state.composition.startsWith("UM") && state.selectedRames.length > 1;
     $("mode-rame").classList.toggle("hidden", !multi);
     $("count-modes").classList.remove("hidden"); $("count-next").classList.remove("hidden");
     $("voitures-schema").classList.add("hidden");
@@ -604,25 +606,31 @@ $("materiel-compter").onclick = () => goCounting(true);
 function startCars(forSnake = false) {
   state.snakeFromCars = forSnake;
   $("counter").classList.remove("hidden");
-  state.voitures = []; state.rames = []; state.rameIndex = 0; state.position = 1;
+  state.voitures = []; state.rames = []; state.passees = new Set(); state.rameIndex = 0; state.position = 1;
   $("count-modes").classList.add("hidden"); $("count-next").classList.add("hidden");
   $("voitures-schema").classList.remove("hidden"); $("voiture-prev").classList.remove("hidden");
-  $("voiture-next").classList.remove("hidden"); renderCar(); show("comptage-step");
+  $("voiture-next").classList.remove("hidden");
+  // Le serpent part d'un effectif à bord complet : pas de voiture passée.
+  $("voiture-skip").classList.toggle("hidden", forSnake);
+  renderCar(); show("comptage-step");
 }
 function renderCar() {
   const rame = state.selectedRames[state.rameIndex];
   if (!rame) { finishCounting(); return; }
   const schema = $("voitures-schema"); schema.replaceChildren();
-  for (let p = 1; p <= state.material.voitures; p++) {
+  for (let p = 1; p <= taille(); p++) {
     const button = document.createElement("button"); button.type = "button"; button.className = "voiture-box";
     button.dataset.rame = rame; button.dataset.position = p;
     const row = state.voitures.find(v => v.rame === rame && v.position === p);
-    button.textContent = (p === state.position ? "▶ " : "") + "Voiture " + p + (row ? " : " + row.passengers : "");
+    const passee = state.passees.has(rame + "-" + p);
+    button.dataset.passee = String(passee);
+    button.textContent = (p === state.position ? "▶ " : "") + "Voiture " + p
+      + (row ? " : " + row.passengers : passee ? " : non comptée" : "");
     button.onclick = () => { state.position = p; loadCarPad(); renderCar(); };
     schema.appendChild(button);
   }
   $("pad-label").textContent = "Voiture " + state.position + ", rame " + rame;
-  loadCarPad(); $("voiture-next").textContent = state.position < state.material.voitures ? "Voiture suivante" : state.rameIndex < state.selectedRames.length - 1 ? "Rame suivante" : "Terminer";
+  loadCarPad(); $("voiture-next").textContent = state.position < taille() ? "Voiture suivante" : state.rameIndex < state.selectedRames.length - 1 ? "Rame suivante" : "Terminer";
 }
 function loadCarPad() {
   const row = state.voitures.find(v => v.rame === state.selectedRames[state.rameIndex] && v.position === state.position);
@@ -644,18 +652,29 @@ function loadRamePad() {
 $("mode-rame").onclick = startRame;
 $("voiture-prev").onclick = () => {
   if (state.position > 1) state.position--;
-  else if (state.rameIndex > 0) { state.rameIndex--; state.position = state.material.voitures; }
+  else if (state.rameIndex > 0) { state.rameIndex--; state.position = taille(); }
   renderCar();
 };
-$("voiture-next").onclick = () => {
-  savePad();
-  if (state.position < state.material.voitures) state.position++;
+function avancerVoiture() {
+  if (state.position < taille()) state.position++;
   else if (state.rameIndex < state.selectedRames.length - 1) { state.rameIndex++; state.position = 1; }
   else { finishCounting(); return; }
   renderCar();
+}
+$("voiture-next").onclick = () => { savePad(); avancerVoiture(); };
+// Passer une voiture la retire du comptage : une voiture non comptée n'est pas
+// une voiture vide, et elle ne doit pas partir avec un zéro.
+$("voiture-skip").onclick = () => {
+  const rame = state.selectedRames[state.rameIndex];
+  state.voitures = state.voitures.filter(v => !(v.rame === rame && v.position === state.position));
+  state.passees.add(rame + "-" + state.position);
+  state.pad = { kind: "car", rame, position: null };
+  avancerVoiture();
 };
 function savePad() {
   if (state.pad.kind === "car") {
+    if (state.pad.position === null) return;
+    state.passees.delete(state.pad.rame + "-" + state.pad.position);
     const item = { rame: state.pad.rame, position: state.pad.position, passengers: state.passengers };
     const index = state.voitures.findIndex(v => v.rame === item.rame && v.position === item.position);
     if (index < 0) state.voitures.push(item); else state.voitures[index] = item;
@@ -678,8 +697,14 @@ function finishCounting() {
     startSnake(onboard);
     return;
   }
+  if (state.pad.kind === "car" && !state.voitures.length) {
+    state.rameIndex = 0; state.position = 1; renderCar();
+    $("pad-label").textContent = "Comptez au moins une voiture.";
+    return;
+  }
   $("count-modes").classList.add("hidden"); $("voitures-schema").classList.add("hidden");
-  $("count-next").classList.add("hidden");
+  $("count-next").classList.add("hidden"); $("voiture-skip").classList.add("hidden");
+  $("representativite-zone").classList.toggle("hidden", !partiel());
   $("form-step").classList.remove("hidden"); show("form-step");
 }
 
@@ -772,8 +797,8 @@ $("passengers").addEventListener("input", (e) => {
   savePad();
 });
 
-$("mode-snake").onclick = () => state.material ? startCars(true) : startSnake();
-$("mode-unique").onclick = () => state.material ? startCars(false) : startUnique();
+$("mode-snake").onclick = () => taille() ? startCars(true) : startSnake();
+$("mode-unique").onclick = () => taille() ? startCars(false) : startUnique();
 $("snake-back").onclick = () => show("materiel-step");
 $("snake-drop").onclick = () => {
   clearSnake();
@@ -1110,10 +1135,9 @@ function countPayload() {
     materiel: state.material ? state.material.label : "",
     composition: state.composition || "",
     // Par défaut on compte une rame entière : une composition suffit à dire
-    // « um ». Le détail voiture par voiture, avec un matériel, garde
-    // « voiture » parce qu'il porte la répartition. Une voiture comptée seule,
-    // sans matériel, aussi : sa représentativité dit ce qu'elle vaut.
-    perimetre: state.pad.kind === "car" || uneSeuleVoiture() ? "voiture" : state.composition ? "um" : "",
+    // « um ». Le détail voiture par voiture garde « voiture » parce qu'il
+    // porte la répartition, partielle ou non.
+    perimetre: state.pad.kind === "car" ? "voiture" : state.composition ? "um" : "",
     nb_voitures: nbVoitures(),
     representativite: representativite(),
     rames: rameRows.length ? rameRows : null,
@@ -1169,6 +1193,10 @@ flushQueue();
 offerSnake();
 $("send").onclick = async () => {
   $("error").textContent = "";
+  if (partiel() && !representativite()) {
+    $("error").textContent = "Dites si les voitures comptées sont représentatives des autres.";
+    return;
+  }
   let body;
   try {
     body = countPayload();
