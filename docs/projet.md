@@ -1364,6 +1364,30 @@ présente les améliorations et corrections par date, de la plus récente à la
 plus ancienne. Son contenu est maintenu avec le code de chaque livraison ;
 il ne reprend aucun message privé ni contact de la file des retours.
 
+### Matériel francilien, et une voiture comptée seule
+
+La liste fermée ajoute le matériel d'Île-de-France qui manquait : MI 09 et
+MI 2N Altéo (RER A, 5 voitures), MI 79 / MI 84 (RER B, 4 voitures), Z 8800
+(RER C, 4 voitures), et les tram-trains Avanto (T4, 5 caisses) et Citadis
+Dualis (T11, T13, 4 caisses). Les nombres viennent des fiches techniques
+(Wikipédia, Trains d'Europe). Le MI 20 attendra sa mise en service.
+
+Sans matériel reconnu, deux renseignements s'ajoutent à la composition :
+
+- `nb_voitures` : le nombre de voitures d'une rame, de 1 à 20. Refusé avec un
+  matériel de la liste, qui donne déjà ce nombre et pourrait être contredit.
+- `representativite` : `representative`, `moins` ou `plus`. Elle dit ce que
+  vaut une **voiture comptée seule** face aux autres. Elle exige
+  `perimetre: "voiture"`, sans détail voiture par voiture, et un nombre de
+  voitures connu.
+
+La règle « jamais une voiture isolée » de la phase 10 s'assouplit donc : une
+voiture seule se compte, à condition de dire de combien de voitures elle fait
+partie et si elle est représentative. Sans ces deux mots, l'effectif d'une
+voiture ne se rapporte à rien, et l'écran refuse de passer au comptage. Les
+deux colonnes sortent dans le CSV, à la fin, et dans la phrase du matériel sur
+`/releve`.
+
 ### Comptages passés, gares et schéma de rame
 
 `GET /api/trips/historical?from=&to=&at=` recherche l'offre théorique autour

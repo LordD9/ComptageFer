@@ -156,6 +156,8 @@ SCHEMA_SAISIE = (
     ("rames", "TEXT"),
     ("is_historical", "INTEGER NOT NULL DEFAULT 0"),
     ("observed_at", "TEXT"),
+    ("nb_voitures", "INTEGER"),
+    ("representativite", "TEXT"),
 )
 
 HISTORIQUE_MAX = timedelta(days=15)
@@ -169,12 +171,21 @@ PARIS_TZ = ZoneInfo("Europe/Paris")
 # se multiplient par 2. Une liste fermée rend la donnée calculable, ou absente.
 COMPOSITIONS = {"US": 1, "UM2": 2, "UM3": 3}
 
-# Ce que l'effectif de la saisie compte. La page de comptage n'envoie plus
-# que « um » (la rame entière : on peut compter une rame d'une UM, jamais une
-# voiture isolée) ou « voiture » quand le détail voiture par voiture d'un
-# matériel connu accompagne l'effectif. « voiture » seul reste lisible pour
-# les relevés écrits avant.
+# Ce que l'effectif de la saisie compte : « um » (la rame entière) ou
+# « voiture », quand le détail voiture par voiture d'un matériel connu
+# accompagne l'effectif, ou quand une voiture seule est comptée sans matériel
+# avec sa représentativité (voir `_echelle`).
 PERIMETRES = {"voiture", "um"}
+
+# Ce que vaut une voiture comptée seule, rapportée aux autres. Sans cette
+# précision, 40 voyageurs dans une voiture ne se multiplient par rien : la
+# voiture de tête d'un RER bondé n'est pas celle de queue. Liste fermée pour la
+# même raison que la composition, la valeur décide d'un calcul.
+REPRESENTATIVITES = {
+    "representative": "représentative des autres voitures",
+    "moins": "moins fréquentée que les autres voitures",
+    "plus": "plus fréquentée que les autres voitures",
+}
 
 
 def _clef_par_genre(connection: sqlite3.Connection) -> None:
@@ -268,6 +279,12 @@ def create_app(
             )
         if "observed_at" not in columns:
             connection.execute("ALTER TABLE saisie ADD COLUMN observed_at TEXT")
+        # Même piège que pour les répartitions : déclarées dans `SCHEMA_SAISIE`,
+        # donc ajoutées ici, sinon la recopie de `_clef_par_genre` plante.
+        if "nb_voitures" not in columns:
+            connection.execute("ALTER TABLE saisie ADD COLUMN nb_voitures INTEGER")
+        if "representativite" not in columns:
+            connection.execute("ALTER TABLE saisie ADD COLUMN representativite TEXT")
         anciennes_dates = (
             connection.execute(
                 "SELECT rowid, created_at FROM saisie WHERE observed_at IS NULL"
@@ -2087,6 +2104,60 @@ def _materiel(body: dict, strict: bool = True) -> tuple[str | None, str | None, 
     return materiel or None, composition or None, perimetre or None
 
 
+def _echelle(
+    body: dict, materiel: str | None, perimetre: str | None, detail_voitures: bool
+) -> tuple[int | None, str | None]:
+    """Le nombre de voitures d'une rame sans matériel, et ce que vaut une voiture seule.
+
+    Rend `(nb_voitures, representativite)`. Sans matériel reconnu, l'usager
+    peut dire combien de voitures a sa rame : c'est le dénominateur qui manquait
+    pour rapporter un effectif à la voiture. Avec un matériel, la formation le
+    donne déjà, et un second nombre pourrait la contredire : refusé.
+
+    La représentativité ne vaut que pour un comptage sur **une** voiture
+    (`perimetre` à `voiture`, sans détail voiture par voiture). Elle exige un
+    nombre de voitures connu, par le matériel ou par `nb_voitures` : dire
+    « ma voiture est représentative » sans dire de combien ne permet aucun
+    calcul.
+    """
+    brut = body.get("nb_voitures")
+    if brut in (None, ""):
+        nb_voitures = None
+    else:
+        if isinstance(brut, str) and brut.strip().isdigit():
+            brut = int(brut.strip())
+        if isinstance(brut, bool) or not isinstance(brut, int) or not 1 <= brut <= materiel_module.VOITURES_MAX:
+            raise HTTPException(
+                status_code=422,
+                detail=f"nombre de voitures invalide : de 1 à {materiel_module.VOITURES_MAX}",
+            )
+        nb_voitures = brut
+    if nb_voitures is not None and materiel_module.formation(materiel) is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="le matériel donne déjà le nombre de voitures",
+        )
+    representativite = str(body.get("representativite") or "").strip().lower() or None
+    if representativite is None:
+        return nb_voitures, None
+    if representativite not in REPRESENTATIVITES:
+        raise HTTPException(
+            status_code=422,
+            detail="représentativité inconnue : representative, moins ou plus",
+        )
+    if perimetre != "voiture" or detail_voitures:
+        raise HTTPException(
+            status_code=422,
+            detail="la représentativité se dit d'une seule voiture comptée",
+        )
+    if nb_voitures is None and materiel_module.formation(materiel) is None:
+        raise HTTPException(
+            status_code=422,
+            detail="une voiture seule demande le nombre de voitures de la rame",
+        )
+    return nb_voitures, representativite
+
+
 def _liste(brut: object, champs: tuple[str, ...], nom: str) -> list[dict] | None:
     """Une liste d'objets à champs entiers, ou `None` si elle est absente.
 
@@ -2378,6 +2449,9 @@ def _save_saisie(
     voitures_text, rames_text = (
         _repartition(body, materiel, composition, perimetre) if kind == "count" else (None, None)
     )
+    nb_voitures, representativite = (
+        _echelle(body, materiel, perimetre, voitures_text is not None) if kind == "count" else (None, None)
+    )
     is_historical = body.get("is_historical", False)
     if not isinstance(is_historical, bool):
         raise HTTPException(status_code=422, detail="indicateur historique invalide")
@@ -2442,9 +2516,9 @@ def _save_saisie(
                 client_id, origin_stop_id, destination_stop_id, origin_name, destination_name, trip_id,
                 passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
                 materiel, composition, perimetre, snapshot, legs, trajet, voitures, rames, kind, created_at,
-                compte_id, is_historical, observed_at
+                compte_id, is_historical, observed_at, nb_voitures, representativite
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (client_id, kind) DO NOTHING
             """,
             (
@@ -2474,6 +2548,8 @@ def _save_saisie(
                 compte_id,
                 int(is_historical),
                 observed_at.isoformat(),
+                nb_voitures,
+                representativite,
             ),
         )
         if cursor.rowcount == 0:
@@ -2637,6 +2713,11 @@ def _edition_values(body: dict, kind: str, frozen_legs: str | None = None) -> di
             values[nom] = _indicator(parsed)
     materiel, composition, perimetre = _materiel(body, strict=False)
     values.update(materiel=materiel, composition=composition, perimetre=perimetre)
+    if kind == "count":
+        # Le détail voiture par voiture n'est pas éditable : sa présence se lit
+        # dans le formulaire, qui la signale par un champ caché.
+        nb_voitures, representativite = _echelle(body, materiel, perimetre, bool(body.get("detail_voitures")))
+        values.update(nb_voitures=nb_voitures, representativite=representativite)
     return values
 
 
@@ -2665,6 +2746,9 @@ def _edition_page(row: dict, admin: bool = False) -> str:
                        ("seats_free", "Places libres (%)"), ("imbalance", "Déséquilibre (%)"),
                        ("materiel", "Matériel"), ("composition", "Composition"),
                        ("perimetre", "Périmètre")))
+        if row.get("kind") == "count":
+            champs.extend((("nb_voitures", "Voitures par rame (sans matériel)"),
+                           ("representativite", "Voiture comptée seule")))
     for name, label in champs:
         value = "" if row.get(name) is None else str(row[name])
         if name == "comment":
@@ -2673,6 +2757,8 @@ def _edition_page(row: dict, admin: bool = False) -> str:
             inputs.append(_edition_select(name, label, value, ("US", "UM2", "UM3")))
         elif name == "perimetre":
             inputs.append(_edition_select(name, label, value, ("voiture", "um")))
+        elif name == "representativite":
+            inputs.append(_edition_select(name, label, value, tuple(REPRESENTATIVITES)))
         elif name == "materiel":
             # Le matériel est une liste fermée, mais une ligne écrite avant la
             # phase 10 porte encore un texte libre. On la garde sélectionnable
@@ -2685,7 +2771,9 @@ def _edition_page(row: dict, admin: bool = False) -> str:
         else:
             maxlen = ' maxlength="40"' if name in {"pseudo", "materiel"} else ""
             maximum = ' max="100"' if name in {"reliability", "standing", "seats_free", "imbalance"} else ""
-            numeric = name in {"passengers", "reliability", "standing", "seats_free", "imbalance"}
+            if name == "nb_voitures":
+                maximum = f' max="{materiel_module.VOITURES_MAX}"'
+            numeric = name in {"passengers", "reliability", "standing", "seats_free", "imbalance", "nb_voitures"}
             inputs.append(f'<label>{escape(label)}<input name="{name}" value="{escape(value)}"'
                           + (' type="number" min="0"' if numeric else ' type="text"') + maximum + maxlen
                           + (' required' if name in {"passengers", "reliability"} else '') + '></label>')
@@ -2708,6 +2796,8 @@ def _edition_page(row: dict, admin: bool = False) -> str:
                               + (' required' if name in {"onboard", "boarded"} else '') + '></label>')
             inputs.append('</section>')
         inputs.append('</fieldset>')
+    if row.get("voitures"):
+        inputs.append('<input type="hidden" name="detail_voitures" value="1">')
     key = (f'<input type="hidden" name="client_id" value="{escape(str(row["client_id"]))}">'
            f'<input type="hidden" name="kind" value="{escape(str(row["kind"]))}">')
     origin = escape(str(row.get("origin_name") or row.get("origin_stop_id") or ""))
@@ -2739,7 +2829,8 @@ _COLONNES_SAISIE = """
             SELECT client_id, origin_stop_id, destination_stop_id, origin_name, destination_name,
                    trip_id, passengers, reliability, pseudo, comment, standing, seats_free, imbalance,
                    materiel, composition, perimetre,
-                   snapshot, kind, created_at, legs, trajet, voitures, rames, is_historical, observed_at
+                   snapshot, kind, created_at, legs, trajet, voitures, rames, is_historical, observed_at,
+                   nb_voitures, representativite
             FROM saisie
 """
 
@@ -3097,6 +3188,8 @@ def _ligne_saisie(row) -> dict:
         "rames": json.loads(row[22]) if row[22] else None,
         "is_historical": bool(row[23]),
         "observed_at": row[24],
+        "nb_voitures": row[25],
+        "representativite": row[26],
     }
 
 
@@ -3351,11 +3444,14 @@ def _materiel_texte(row: dict) -> str:
     composition = row.get("composition") or ""
     perimetre = row.get("perimetre") or ""
     materiel = row.get("materiel") or ""
-    if not composition and not perimetre:
+    nb_voitures = row.get("nb_voitures")
+    if not composition and not perimetre and not isinstance(nb_voitures, int):
         return ""
     parties = []
     if materiel:
         parties.append(escape(materiel))
+    if isinstance(nb_voitures, int):
+        parties.append(f"rame de {nb_voitures} voiture{'s' if nb_voitures > 1 else ''}")
     if composition:
         formation = materiel_module.formation(materiel) if materiel else None
         if row.get("voitures") and formation is not None:
@@ -3368,6 +3464,9 @@ def _materiel_texte(row: dict) -> str:
             etendue = {"voiture": "compté sur une voiture", "um": "compté sur toute la rame"}.get(perimetre)
         label = f"{escape(composition)}" + (f", {etendue}" if etendue else "")
         parties.append(label)
+    representativite = REPRESENTATIVITES.get(row.get("representativite") or "")
+    if representativite:
+        parties.append(f"voiture {representativite}")
     return " · ".join(parties)
 
 
@@ -4469,6 +4568,13 @@ rame, et pas seulement combien ils sont.</p>
 vous comptez plusieurs rames, l'outil enregistre un effectif par rame. C'est la
 même distinction que ci-dessus&nbsp;: 180 voyageurs dans une voiture d'une UM3 et
 180 dans les trois ne sont pas le même relevé.</p>
+
+<p>Sans matériel reconnu, vous pouvez indiquer le nombre de voitures de la rame,
+et choisir de ne compter qu'une seule voiture. Dites alors si elle est
+représentative des autres voitures, moins fréquentée ou plus fréquentée&nbsp;:
+c'est ce qui permet de rapporter son effectif au train entier, sans prétendre
+qu'elle vaut exactement la moyenne. Le CSV porte ces deux renseignements dans
+les colonnes <code>nb_voitures</code> et <code>representativite</code>.</p>
 
 <h3>3) Comptage « serpent de charge »</h3>
 

@@ -1,7 +1,7 @@
 import json
 
 from comptagefer.affichage import NAV_STYLE, navigation_html
-from comptagefer.materiel import FORMATIONS, libelles
+from comptagefer.materiel import FORMATIONS, VOITURES_MAX, libelles
 
 
 PAGE = """<!doctype html>
@@ -123,6 +123,21 @@ PAGE = """<!doctype html>
       <div id="rames-schema" class="choices hidden"></div>
       <button class="ghost" id="rames-tout" type="button">Tout le train</button>
       <button class="ghost" id="rames-aucune" type="button">Aucune rame</button>
+    </div>
+    <div id="echelle-zone" class="hidden">
+      <label for="nb-voitures">Voitures par rame (facultatif)</label>
+      <input id="nb-voitures" type="number" inputmode="numeric" min="1" max="{VOITURES_MAX}" step="1" placeholder="ex. 5">
+      <fieldset id="portee">
+        <legend>Ce que vous comptez</legend>
+        <label><input type="radio" name="portee" value="rame" checked> Toutes les voitures des rames choisies</label>
+        <label><input type="radio" name="portee" value="voiture"> Une seule voiture</label>
+      </fieldset>
+      <fieldset id="representativite-zone" class="hidden">
+        <legend>Votre voiture, par rapport aux autres</legend>
+        <label><input type="radio" name="representativite" value="representative"> Représentative</label>
+        <label><input type="radio" name="representativite" value="moins"> Moins fréquentée</label>
+        <label><input type="radio" name="representativite" value="plus"> Plus fréquentée</label>
+      </fieldset>
     </div>
     <p id="rames-error" class="bad" role="status" hidden></p>
     <p><button id="materiel-next" type="button">Passer au comptage</button></p>
@@ -425,7 +440,30 @@ function chooseMaterial(item) {
   $("composition-choices").classList.remove("hidden");
   renderRames();
 }
+// Sans matériel reconnu, l'usager peut dire combien de voitures a sa rame, et
+// compter une seule voiture en disant ce qu'elle vaut face aux autres. Avec un
+// matériel, la formation donne déjà le nombre : le bloc se tait.
+function renderEchelle() {
+  $("echelle-zone").classList.toggle("hidden", !state.composition || !!state.material);
+  $("representativite-zone").classList.toggle("hidden", !uneSeuleVoiture());
+}
+function uneSeuleVoiture() {
+  return !!state.composition && !state.material
+    && document.querySelector('input[name="portee"]:checked').value === "voiture";
+}
+function nbVoitures() {
+  if (state.material || !state.composition) return null;
+  const v = $("nb-voitures").value.trim();
+  return v === "" ? null : Number(v);
+}
+function representativite() {
+  if (!uneSeuleVoiture()) return null;
+  const choix = document.querySelector('input[name="representativite"]:checked');
+  return choix ? choix.value : null;
+}
+for (const radio of document.querySelectorAll('input[name="portee"]')) radio.onchange = renderEchelle;
 function renderRames() {
+  renderEchelle();
   const size = { US: 1, UM2: 2, UM3: 3 }[state.composition] || 0;
   const schema = $("rames-schema");
   schema.replaceChildren();
@@ -498,7 +536,7 @@ function startUnique() {
   state.pad = { kind: "unique", rame: null, position: null };
   state.passengers = 0; state.voitures = []; state.rames = [];
   $("count-display").textContent = "0"; $("passengers").value = "0";
-  $("pad-label").textContent = "Voyageurs dans le train";
+  $("pad-label").textContent = uneSeuleVoiture() ? "Voyageurs dans votre voiture" : "Voyageurs dans le train";
   $("count-modes").classList.remove("hidden"); $("voitures-schema").classList.add("hidden");
   $("voiture-prev").classList.add("hidden"); $("voiture-next").classList.add("hidden");
   $("count-next").classList.remove("hidden");
@@ -516,6 +554,17 @@ function goCounting(directCars = false) {
   }
   if (state.material && !state.composition) {
     $("rames-error").textContent = "Choisissez une composition et au moins une rame à compter.";
+    $("rames-error").hidden = false;
+    return;
+  }
+  const nb = nbVoitures();
+  if (nb !== null && !(Number.isInteger(nb) && nb >= 1 && nb <= {VOITURES_MAX})) {
+    $("rames-error").textContent = "Le nombre de voitures va de 1 à {VOITURES_MAX}.";
+    $("rames-error").hidden = false;
+    return;
+  }
+  if (uneSeuleVoiture() && (nb === null || !representativite())) {
+    $("rames-error").textContent = "Pour une seule voiture, indiquez le nombre de voitures de la rame et si la vôtre est représentative.";
     $("rames-error").hidden = false;
     return;
   }
@@ -542,8 +591,8 @@ function goCounting(directCars = false) {
     state.pad = { kind: "unique", rame: null, position: null };
     state.passengers = 0; state.voitures = []; state.rames = [];
     $("count-display").textContent = "0"; $("passengers").value = "0";
-    $("pad-label").textContent = "Voyageurs dans le train";
-    const multi = state.composition.startsWith("UM") && state.selectedRames.length > 1;
+    $("pad-label").textContent = uneSeuleVoiture() ? "Voyageurs dans votre voiture" : "Voyageurs dans le train";
+    const multi = state.composition.startsWith("UM") && state.selectedRames.length > 1 && !uneSeuleVoiture();
     $("mode-rame").classList.toggle("hidden", !multi);
     $("count-modes").classList.remove("hidden"); $("count-next").classList.remove("hidden");
     $("voitures-schema").classList.add("hidden");
@@ -1060,10 +1109,13 @@ function countPayload() {
     seats_free: optionalNumber("seats"), imbalance: optionalNumber("imbalance"),
     materiel: state.material ? state.material.label : "",
     composition: state.composition || "",
-    // On compte toujours une rame entière, jamais une voiture isolée : une
-    // composition suffit donc à dire « um ». Le détail voiture par voiture,
-    // avec un matériel, garde « voiture » parce qu'il porte la répartition.
-    perimetre: state.pad.kind === "car" ? "voiture" : state.composition ? "um" : "",
+    // Par défaut on compte une rame entière : une composition suffit à dire
+    // « um ». Le détail voiture par voiture, avec un matériel, garde
+    // « voiture » parce qu'il porte la répartition. Une voiture comptée seule,
+    // sans matériel, aussi : sa représentativité dit ce qu'elle vaut.
+    perimetre: state.pad.kind === "car" || uneSeuleVoiture() ? "voiture" : state.composition ? "um" : "",
+    nb_voitures: nbVoitures(),
+    representativite: representativite(),
     rames: rameRows.length ? rameRows : null,
     voitures: cars.length ? cars : null,
     snapshot: state.photo
@@ -1189,6 +1241,7 @@ def page_avec_pseudo(pseudo: str) -> str:
         {"label": f.label, "famille": f.famille, "voitures": f.voitures, "mot": f.mot, "pluriel": f.pluriel}
         for f in FORMATIONS
     ]
+    page = page.replace("{VOITURES_MAX}", str(VOITURES_MAX))
     page = page.replace("{FORMATIONS_JSON}", json.dumps(formations, ensure_ascii=False))
     if not pseudo:
         return page

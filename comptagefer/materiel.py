@@ -81,7 +81,18 @@ FORMATIONS: tuple[Formation, ...] = (
     Formation("Z 50000 7 voitures", "Francilien Z 50000 (Transilien)", 7, VOITURE),
     Formation("Z 50000 8 voitures", "Francilien Z 50000 (Transilien)", 8, VOITURE),
     Formation("Z 6400 4 caisses", "Z 6400 (Transilien)", 4, CAISSE),
+    Formation("MI 09 5 voitures", "MI 09 (RER A)", 5, VOITURE),
+    Formation("MI 2N Altéo 5 voitures", "MI 2N Altéo (Z 1500, RER A)", 5, VOITURE),
+    Formation("MI 79 / MI 84 4 voitures", "MI 79 / MI 84 (Z 8100, RER B)", 4, VOITURE),
+    Formation("Z 8800 4 voitures", "Z 8800 (RER C)", 4, VOITURE),
+    Formation("Avanto 5 caisses", "Tram-train Avanto (U 25500, T4)", 5, CAISSE),
+    Formation("Citadis Dualis 4 caisses", "Tram-train Citadis Dualis (U 53600, T11, T13)", 4, CAISSE),
 )
+
+# Un train sans matériel reconnu peut quand même dire combien de voitures il a.
+# La borne attrape une faute de frappe, pas une capacité : aucune rame
+# française ne dépasse vingt unités.
+VOITURES_MAX = 20
 
 PAR_LABELLE = {formation.label: formation for formation in FORMATIONS}
 

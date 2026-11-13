@@ -78,7 +78,7 @@ def test_export_preserve_les_cinq_etats_figes_apres_post(tmp_path: Path):
     # Les colonnes historiques gardent leur place ; les nouvelles se rajoutent
     # à la fin, donc aucun consommateur existant n'est décalé.
     assert headers[: len(HISTORIQUES)] == HISTORIQUES
-    assert headers[-4:] == ["voitures", "rames", "is_historical", "observed_at"]
+    assert headers[-6:] == ["voitures", "rames", "is_historical", "observed_at", "nb_voitures", "representativite"]
     assert [values[key] for key in ETATS] == [
         "PREVIOUS",
         "CURRENT",
@@ -136,7 +136,7 @@ def test_etats_absents_partiels_et_malformes_restent_vides(tmp_path: Path):
             ]
         )
     )
-    assert headers[-2:] == ["is_historical", "observed_at"]
+    assert headers[-4:-2] == ["is_historical", "observed_at"]
     assert values["is_historical"] == "1"
     assert values["observed_at"] == "2026-10-14T12:30:00+02:00"
 

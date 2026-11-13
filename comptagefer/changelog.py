@@ -7,6 +7,19 @@ from comptagefer.affichage import chrome
 
 CHANGEMENTS = (
     (
+        "2026-11-13",
+        "13 novembre 2026",
+        (
+            (
+                "Améliorations",
+                (
+                    "Le matériel francilien rejoint la liste : MI 09, MI 2N Altéo, MI 79 / MI 84, Z 8800, tram-trains Avanto et Citadis Dualis.",
+                    "Sans matériel choisi, on peut indiquer le nombre de voitures de la rame et ne compter qu’une seule voiture, en disant si elle est représentative, moins ou plus fréquentée que les autres.",
+                ),
+            ),
+        ),
+    ),
+    (
         "2026-10-23",
         "23 octobre 2026",
         (
