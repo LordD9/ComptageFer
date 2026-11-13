@@ -79,6 +79,8 @@ def render_csv(rows: list[dict]) -> str:
             "rames",
             "is_historical",
             "observed_at",
+            "nb_voitures",
+            "representativite",
         ]
     )
     for row in rows:
@@ -112,6 +114,8 @@ def render_csv(rows: list[dict]) -> str:
                 json.dumps(row["rames"], ensure_ascii=False) if row.get("rames") else "",
                 int(bool(row.get("is_historical", False))),
                 row.get("observed_at") or "",
+                row["nb_voitures"] if row.get("nb_voitures") is not None else "",
+                row.get("representativite") or "",
             ]
         )
     return buffer.getvalue()

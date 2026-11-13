@@ -390,3 +390,43 @@ def test_a_direct_count_without_material_works_offline_and_is_sent_once(page, si
     assert lignes[0]["composition"] == "UM2" and lignes[0]["perimetre"] == "um"
     assert lignes[0]["rames"] == corps["rames"]
     assert lignes[0]["pseudo"] == "direct"
+
+
+def test_one_car_without_material_sends_its_scale(page, site):
+    """Sans matériel : le nombre de voitures, une seule voiture comptée, et ce qu'elle vaut."""
+    _reach_material(page, site)
+    assert page.locator("#echelle-zone").is_hidden()
+    page.click("#compo-UM2")
+    page.click('.rame-box[data-rame="1"]')
+    assert page.locator("#echelle-zone").is_visible()
+    assert page.locator("#representativite-zone").is_hidden()
+    page.fill("#nb-voitures", "5")
+    page.check('input[name="portee"][value="voiture"]')
+    assert page.locator("#representativite-zone").is_visible()
+
+    page.click("#materiel-next")
+    assert page.locator("#rames-error").is_visible(), "la représentativité manque, l'écran doit le dire"
+    page.check('input[name="representativite"][value="moins"]')
+    page.click("#materiel-next")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
+    assert page.text_content("#pad-label") == "Voyageurs dans votre voiture"
+    page.click("#plus20")
+    page.click("#count-next")
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    row = _sessions(site)[0]
+    assert (row["composition"], row["perimetre"], row["passengers"]) == ("UM2", "voiture", 20)
+    assert (row["nb_voitures"], row["representativite"]) == (5, "moins")
+    assert row["materiel"] is None
+
+
+def test_choosing_a_material_hides_the_car_count(page, site):
+    _reach_material(page, site)
+    page.click("#compo-US")
+    assert page.locator("#echelle-zone").is_visible()
+    page.click("#materiel-ouvrir")
+    page.fill("#materiel-q", "MI 09")
+    page.click("#materiel-list button:has-text('MI 09 5 voitures')")
+    assert page.locator("#echelle-zone").is_hidden()
+    assert "5 voitures" in page.text_content("#formation-resume")
