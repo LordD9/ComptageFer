@@ -237,8 +237,8 @@ def test_the_new_six_carriage_regio_2n_is_valid_for_us_and_um2(tmp_path):
     row = _store(tmp_path / "um2", materiel=materiel, composition="UM2", perimetre="voiture", voitures=um2)
     assert row["materiel"] == materiel and row["voitures"] == um2
 
-    assert "toutes les voitures" in _refuse(
-        tmp_path / "refus", materiel=materiel, composition="US", perimetre="voiture", passengers=180,
+    assert "représentatives" in _refuse(
+        tmp_path / "refus", materiel=materiel, composition="US", perimetre="voiture", passengers=150,
         voitures=us[:-1],
     )
 
@@ -308,11 +308,11 @@ def test_a_breakdown_that_does_not_sum_to_the_total_is_refused(tmp_path):
     assert "total" in detail
 
 
-def test_a_missing_car_of_a_counted_unit_is_refused(tmp_path):
+def test_a_skipped_car_without_representativeness_is_refused(tmp_path):
     """Une voiture vide comptée et une voiture non comptée ne sont pas la même chose.
 
-    Exiger les trois positions oblige à dire « zéro » plutôt que de laisser un
-    trou qu'un lecteur du CSV interprétera comme une voiture oubliée.
+    Une voiture absente est une voiture passée : le comptage devient partiel,
+    et il faut dire ce que valent les voitures comptées face aux autres.
     """
     detail = _refuse(
         tmp_path,
@@ -325,7 +325,7 @@ def test_a_missing_car_of_a_counted_unit_is_refused(tmp_path):
             {"rame": 1, "position": 3, "passengers": 30},
         ],
     )
-    assert "toutes les voitures" in detail
+    assert "représentatives" in detail
 
 
 def test_a_car_outside_the_formation_is_refused(tmp_path):

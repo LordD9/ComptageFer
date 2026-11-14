@@ -392,33 +392,85 @@ def test_a_direct_count_without_material_works_offline_and_is_sent_once(page, si
     assert lignes[0]["pseudo"] == "direct"
 
 
-def test_one_car_without_material_sends_its_scale(page, site):
-    """Sans matériel : le nombre de voitures, une seule voiture comptée, et ce qu'elle vaut."""
+def test_skipped_cars_with_material_ask_for_representativeness(page, site):
+    """Avec un matériel : on passe des voitures, puis on dit ce que valent les comptées."""
     _reach_material(page, site)
-    assert page.locator("#echelle-zone").is_hidden()
-    page.click("#compo-UM2")
-    page.click('.rame-box[data-rame="1"]')
-    assert page.locator("#echelle-zone").is_visible()
-    assert page.locator("#representativite-zone").is_hidden()
-    page.fill("#nb-voitures", "5")
-    page.check('input[name="portee"][value="voiture"]')
+    page.click("#compo-US")
+    page.click("#materiel-ouvrir")
+    page.fill("#materiel-q", "MI 09")
+    page.click("#materiel-list button:has-text('MI 09 5 voitures')")
+    page.click("#materiel-compter")
+    page.wait_for_selector("#comptage-step:not(.hidden)")
+    assert page.locator('.voiture-box[data-rame="1"]').count() == 5
+
+    page.click("#voiture-skip")
+    page.click("#plus10")
+    page.click("#voiture-next")
+    page.click("#plus20")
+    page.click("#voiture-next")
+    page.click("#voiture-skip")
+    assert page.locator('.voiture-box[data-position="1"]').text_content().endswith("non comptée")
+    page.click("#voiture-skip")
+    page.wait_for_selector("#form-step:not(.hidden)")
     assert page.locator("#representativite-zone").is_visible()
 
-    page.click("#materiel-next")
-    assert page.locator("#rames-error").is_visible(), "la représentativité manque, l'écran doit le dire"
-    page.check('input[name="representativite"][value="moins"]')
-    page.click("#materiel-next")
-    page.wait_for_selector("#comptage-step:not(.hidden)")
-    assert page.text_content("#pad-label") == "Voyageurs dans votre voiture"
-    page.click("#plus20")
-    page.click("#count-next")
+    page.click("#send")
+    assert "représentatives" in page.text_content("#error")
+    page.check('input[name="representativite"][value="plus"]')
     page.click("#send")
     page.wait_for_selector("#done-step:not(.hidden)")
 
     row = _sessions(site)[0]
-    assert (row["composition"], row["perimetre"], row["passengers"]) == ("UM2", "voiture", 20)
-    assert (row["nb_voitures"], row["representativite"]) == (5, "moins")
-    assert row["materiel"] is None
+    assert (row["materiel"], row["perimetre"], row["passengers"]) == ("MI 09 5 voitures", "voiture", 30)
+    assert row["representativite"] == "plus"
+    assert row["voitures"] == [
+        {"rame": 1, "position": 2, "passengers": 10},
+        {"rame": 1, "position": 3, "passengers": 20},
+    ]
+
+
+def test_car_count_without_material_draws_the_cars(page, site):
+    """Sans matériel : le nombre de voitures donne le schéma, et une voiture passée suffit."""
+    _reach_material(page, site)
+    assert page.locator("#echelle-zone").is_hidden()
+    page.click("#compo-US")
+    assert page.locator("#echelle-zone").is_visible()
+    page.fill("#nb-voitures", "3")
+    page.click("#materiel-next")
+    page.click("#mode-unique")
+    assert page.locator('.voiture-box[data-rame="1"]').count() == 3
+    page.click("#plus5")
+    page.click("#voiture-next")
+    page.click("#voiture-skip")
+    page.click("#plus1")
+    page.click("#voiture-next")
+    page.wait_for_selector("#form-step:not(.hidden)")
+    page.check('input[name="representativite"][value="moins"]')
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+
+    row = _sessions(site)[0]
+    assert (row["materiel"], row["nb_voitures"], row["representativite"]) == (None, 3, "moins")
+    assert row["passengers"] == 6
+    assert [v["position"] for v in row["voitures"]] == [1, 3]
+
+
+def test_a_full_count_does_not_ask_for_representativeness(page, site):
+    _reach_material(page, site)
+    page.click("#compo-US")
+    page.fill("#nb-voitures", "2")
+    page.click("#materiel-next")
+    page.click("#mode-unique")
+    page.click("#plus5")
+    page.click("#voiture-next")
+    page.click("#plus5")
+    page.click("#voiture-next")
+    page.wait_for_selector("#form-step:not(.hidden)")
+    assert page.locator("#representativite-zone").is_hidden()
+    page.click("#send")
+    page.wait_for_selector("#done-step:not(.hidden)")
+    row = _sessions(site)[0]
+    assert (row["representativite"], row["passengers"]) == (None, 10)
 
 
 def test_choosing_a_material_hides_the_car_count(page, site):

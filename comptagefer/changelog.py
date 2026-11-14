@@ -14,7 +14,8 @@ CHANGEMENTS = (
                 "Améliorations",
                 (
                     "Le matériel francilien rejoint la liste : MI 09, MI 2N Altéo, MI 79 / MI 84, Z 8800, tram-trains Avanto et Citadis Dualis.",
-                    "Sans matériel choisi, on peut indiquer le nombre de voitures de la rame et ne compter qu’une seule voiture, en disant si elle est représentative, moins ou plus fréquentée que les autres.",
+                    "Sans matériel choisi, on peut indiquer le nombre de voitures de la rame pour compter voiture par voiture.",
+                    "Pendant le comptage par voiture, « Je ne compte pas cette voiture » permet un comptage partiel ; on indique à la fin si les voitures comptées sont représentatives, moins ou plus fréquentées que les autres.",
                 ),
             ),
         ),
